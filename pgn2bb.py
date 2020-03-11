@@ -1,31 +1,34 @@
 import chess
 import chess.pgn
-import sys
 
-from chess import pgn
+def pgn2bb(file):
 
-if len(sys.argv) != 2:
-	print("Usage: " + sys.argv[0] + " <PGN file>")
-	sys.exit(1)
-else:
-    pgn = open(sys.argv[1])
+	gamelist = []
 
+	with open(file,'r') as f:
+		while True:
+			game = chess.pgn.read_game(f)
 
-game1 = chess.pgn.read_game(pgn)
+			if game is None:
+				break  # end of file
+			else:
+				gamelist.append(game)
+	
+	
+	return gamelist
 
-print(game1)
+if __name__ == "__main__":
+	
+	games = pgn2bb(file = "data/test.pgn")
+	print(len(games))
+	print(games)
 
-game2 = chess.pgn.read_game(pgn)
+#for i in range(1,6):
+#    print(board.pieces(i,0))
+#    print("\n vars",(i,0),"\n")
+#    print(board.pieces(i,1))
+#    print("\n vars",(i,1),"\n")
 
-print(game2)
-
-
-  #for i in range(1,6):
-  #    print(board.pieces(i,0))
-  #    print("\n vars",(i,0),"\n")
-  #    print(board.pieces(i,1))
-  #    print("\n vars",(i,1),"\n")
-
-  #for move in game.mainline_moves():
-  #    board.push(move)
-  #    print(board.fen())
+#for move in game.mainline_moves():
+#    board.push(move)
+#    print(board.fen())
