@@ -3,68 +3,57 @@
 import chess
 import chess.pgn
 import numpy as np
-
+import h5py
 
 def pgn2pos(file, ptype='bb'):
 
 	game_list = []
+	counter = 1
 
-	with open(file, 'r') as f:
+	with open(file, 'r') as rf:
 
 		while True:
-			game = chess.pgn.read_game(f)
+			game = chess.pgn.read_game(rf)
 
 			if game is None:
 				break  # end of file
 			else:
-				temp_game = game_fen(game=game, ptype=ptype)
+				temp_game = game_pos(game=game, ptype=ptype)
 				game_list.append(temp_game)
+				print(counter, end="\r")
+				counter += 1
 
 	return game_list
 
-def game_fen(game, ptype='bb'):
+def game_pos(game, ptype='bb'):
 
 	board = chess.Board()
 	pos = []
 
 	for move in game.mainline_moves():
 		board.push(move)
-		s = []
 		embedding = np.array([], dtype=bool)
 
 		if ptype == 'fen':
 			pos.append(board.fen())
 		elif ptype == 'bb':
-			for i in range(1,7): # P N B R Q K / white
-				s.append(list(board.pieces(i,0)))
-				bmp = np.zeros(shape=(64,))
-				for j in range(64):
-					if j in list(board.pieces(i,1)):
+			for color in [1, 0]:
+				for i in range(1, 7): # P N B R Q K / white
+					bmp = np.zeros(shape=(64,)).astype(bool)
+					for j in list(board.pieces(i, color)):
 						bmp[j] = True
-				print(bmp)
-				embedding = np.concatenate((embedding,bmp))
-			for i in range(1,7): # P N B R Q K / black
-				s.append(list(board.pieces(i,0)))
-				bmp = np.zeros(shape=(64,))
-				for j in range(64):
-					if j in list(board.pieces(i,0)):
-						bmp[j] = True
-				print(bmp)
-				embedding = np.concatenate((embedding,bmp))
-			embedding = np.concatenate((embedding, [bool(board.turn)])) # white=1, black=0
-			print(s)
-			embedding = np.concatenate((embedding, [bool(board.castling_rights & chess.BB_A1)]))
-			embedding = np.concatenate((embedding, [bool(board.castling_rights & chess.BB_H1)]))
-			embedding = np.concatenate((embedding, [bool(board.castling_rights & chess.BB_A8)]))
-			embedding = np.concatenate((embedding, [bool(board.castling_rights & chess.BB_H8)]))
-			
-			print(embedding, len(embedding))
-			
+					embedding = np.concatenate((embedding, bmp))
 
-#	print(board.pieces(i,0))
-#	print("\n vars",(i,0),"\n")
-#	print(board.pieces(i,1))
-#	print("\n vars",(i,1),"\n")
+			additional = np.array([
+				bool(board.turn),
+				bool(board.castling_rights & chess.BB_A1),
+				bool(board.castling_rights & chess.BB_H1),
+				bool(board.castling_rights & chess.BB_A8),
+				bool(board.castling_rights & chess.BB_H8)
+			])
+
+			embedding = np.concatenate((embedding, additional))
+			pos.append(embedding)
 		else:
 			raise ValueError("This ptype is not implemented")
 
@@ -73,7 +62,22 @@ def game_fen(game, ptype='bb'):
 
 if __name__ == "__main__":
 
-	test_games = pgn2pos(file="data/test2.pgn", ptype='bb')
+	test_games = pgn2pos(file="data/lichess_db_standard_rated_2013-01.pgn", ptype='bb')
+	position = []
+	game_id = []
 
-	for tg in test_games:
-		print(tg)
+	for (num, g) in enumerate(test_games):
+		for p in g:
+			position.append(p)
+			game_id.append(num)
+
+	print(len(position), len(game_id))
+
+	with h5py.File("data/lichess_db_standard_rated_2013-01.hdf5", "w") as f:
+		data1 = f.create_dataset("positions", shape=(len(position), 773),
+				compression="gzip", compression_opts=9)
+		data2 = f.create_dataset("game_id", shape=(len(position),),
+			compression="gzip", compression_opts=9)
+		
+		data1[:] = position[:]
+		data2[:] = game_id[:]
