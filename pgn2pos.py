@@ -4,8 +4,9 @@ import chess
 import chess.pgn
 import numpy as np
 import h5py
+from numpy.random import randint, shuffle
 
-def pgn2pos(file, ptype='bitboard', save_file=None):
+def pgn2pos(file, ptype='bitboard', generate_tuples=False, save_file=None, tuple_file=None):
 
 	game_list = []
 	counter = 1
@@ -31,13 +32,19 @@ def pgn2pos(file, ptype='bitboard', save_file=None):
 			print(f" Games processed: {counter}", end="\r")
 			counter += 1
 
-		if save_file is not None:
-			if ptype == 'fen':
-				save_fen(game_list, save_file)
-			elif ptype == 'bitboard':
-				save_bb(game_list, save_file)
+	if save_file is not None:
+		if ptype == 'fen':
+			save_fen(game_list, save_file)
+		elif ptype == 'bitboard':
+			save_bb(game_list, save_file)
 
-	return game_list
+	if generate_tuples:
+		tup = tuple_generator(game_list)
+
+		if tuple_file is not None:
+			save_tuples(tup, tuple_file)
+
+	return 0
 
 def game_fen(game):
 
@@ -125,10 +132,45 @@ def save_fen(game_list, file):
 		data1[:] = position[:]
 		data2[:] = game_id[:]
 
+def tuple_generator(game_list):
+	tuples = []
+
+	for (i, game) in enumerate(game_list):
+		if len(game) <= 20 or len(game_list[(i+1)%len(game_list)]) <= 20:
+			pass
+		else:
+			game_len = len(game)
+			offset = 10
+			sample_index = randint(offset, high=game_len-10, size=(2,)) # two samples per game
+			next_game = np.copy(game_list[(i+1)%len(game_list)][10:])
+			shuffle(next_game)
+			tmp_tuple = np.array([
+				game[sample_index[0]], game[1+sample_index[0]], # anchor + positive
+				game[2+sample_index[0]], game[3+sample_index[0]], # 2 positive
+				game[4+sample_index[0]], game[(14+sample_index[0])%game_len], #positive, distant
+				*next_game[:9]
+			])
+			tuples.append(tmp_tuple)
+
+	print(len(tuples), tuples[0].shape)
+	
+	return tuples
+
+def save_tuples(tuples, file):
+	fname = correct_file_ending(file, "h5py")
+
+	with h5py.File(fname, "w") as f:
+		data1 = f.create_dataset("tuples", shape=(len(tuples),15, 773),
+			dtype=bool, compression="gzip", compression_opts=9)
+
+		data1[:] = tuples[:]
+
 if __name__ == "__main__":
 
 	test_file = "data/test3.pgn"
 	test_ptype = 'bitboard'
 	test_save_file = "data/test3_bb.h5py"
+	test_tuple_file = "data/test3_tuples.h5py"
 
-	test_games = pgn2pos(test_file, ptype=test_ptype, save_file=test_save_file)
+	pgn2pos(test_file, ptype=test_ptype, save_file=test_save_file,
+			generate_tuples=True, tuple_file=test_tuple_file)
