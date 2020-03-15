@@ -5,6 +5,7 @@ import chess.pgn
 import numpy as np
 import h5py
 from numpy.random import randint, shuffle
+import argparse
 
 def pgn2pos(file, ptype='bitboard', generate_tuples=False, save_file=None, tuple_file=None):
 
@@ -148,11 +149,10 @@ def tuple_generator(game_list):
 				game[sample_index[0]], game[1+sample_index[0]], # anchor + positive
 				game[2+sample_index[0]], game[3+sample_index[0]], # 2 positive
 				game[4+sample_index[0]], game[(14+sample_index[0])%game_len], #positive, distant
-				*next_game[:9]
+				*next_game[:9] # negative samples
 			])
 			tuples.append(tmp_tuple)
-
-	print(len(tuples), tuples[0].shape)
+			print(f"Tuples generated: {i}", end="\r")	
 	
 	return tuples
 
@@ -167,10 +167,28 @@ def save_tuples(tuples, file):
 
 if __name__ == "__main__":
 
-	test_file = "data/test3.pgn"
-	test_ptype = 'bitboard'
-	test_save_file = "data/test3_bb.h5py"
-	test_tuple_file = "data/test3_tuples.h5py"
+	parser = argparse.ArgumentParser(description='Parse argumants to generate files')
+
+	parser.add_argument('input', type=str, help='pgn file with input games')
+	parser.add_argument('--format', type=str, defualt='bitboard', help='Encoding format for positions: fen, bitboard')
+	parser.add_argument('--save_position', type=str, help='h5py file to store the encoded positions')
+	parser.add_argument('--tuples', type=bool, default=False, help='h5py file to sore the encoded positions')
+	parser.add_argument('--save_tuples', type=str, help='h5py file to store the encoded tuples')
+
+	args = parser.parse_args()
+
+	print(f"Input file at: {args.input}")
+	print(f"Chess positions encoded as: {args.format}")
+	print(f"Positions saved at: {args.save_position}")
+	print(f"Tuples generated: {args.tuples}")
+	print(f"Tuples saved at: {args.save_tuples}")
+
+
+	test_file = args.input
+	test_ptype = args.format
+	test_save_file = args.save_position
+	test_generate_tuples = args.tuples
+	test_tuple_file = args.save_tuples
 
 	pgn2pos(test_file, ptype=test_ptype, save_file=test_save_file,
-			generate_tuples=True, tuple_file=test_tuple_file)
+			generate_tuples=test_generate_tuples, tuple_file=test_tuple_file)
