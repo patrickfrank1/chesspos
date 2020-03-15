@@ -169,11 +169,11 @@ if __name__ == "__main__":
 
 	parser = argparse.ArgumentParser(description='Parse argumants to generate files')
 
-	parser.add_argument('input', type=str, help='pgn file with input games')
-	parser.add_argument('--format', type=str, defualt='bitboard', help='Encoding format for positions: fen, bitboard')
-	parser.add_argument('--save_position', type=str, help='h5py file to store the encoded positions')
-	parser.add_argument('--tuples', type=bool, default=False, help='h5py file to sore the encoded positions')
-	parser.add_argument('--save_tuples', type=str, help='h5py file to store the encoded tuples')
+	parser.add_argument('input', type=str, action="store", help='pgn file with input games')
+	parser.add_argument('--format', type=str, default='bitboard', action="store", help='Encoding format for positions: fen, bitboard')
+	parser.add_argument('--save_position', type=str, action="store", help='h5py file to store the encoded positions')
+	parser.add_argument('--tuples', type=bool, default=False, action="store", help='h5py file to sore the encoded positions')
+	parser.add_argument('--save_tuples', type=str, action="store", help='h5py file to store the encoded tuples')
 
 	args = parser.parse_args()
 
@@ -182,7 +182,6 @@ if __name__ == "__main__":
 	print(f"Positions saved at: {args.save_position}")
 	print(f"Tuples generated: {args.tuples}")
 	print(f"Tuples saved at: {args.save_tuples}")
-
 
 	test_file = args.input
 	test_ptype = args.format
