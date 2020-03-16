@@ -7,10 +7,12 @@ import h5py
 from numpy.random import randint, shuffle
 import argparse
 
-def pgn2pos(file, ptype='bitboard', generate_tuples=False, save_file=None, tuple_file=None):
+def pgn2pos(file, ptype='bitboard', generate_tuples=False, save_file=None,
+			tuple_file=None, chunksize=100000):
 
 	game_list = []
 	counter = 1
+	save_number = 0
 	fname = correct_file_ending(file, "pgn")
 
 	with open(fname, 'r') as f:
@@ -29,21 +31,32 @@ def pgn2pos(file, ptype='bitboard', generate_tuples=False, save_file=None, tuple
 				else:
 					raise ValueError("ptype not implemented")
 
+			# info on this chunks progress
 			game_list.append(temp_game)
 			print(f" Games processed: {counter}", end="\r")
-			counter += 1
 
-	if save_file is not None:
-		if ptype == 'fen':
-			save_fen(game_list, save_file)
-		elif ptype == 'bitboard':
-			save_bb(game_list, save_file)
+			# save to file if chunksize is reached
+			if counter % chunksize == 0:
+				if save_file is not None:
+					if ptype == 'fen':
+						save_fen(game_list, save_file, dset_num=save_number)
+					elif ptype == 'bitboard':
+						save_bb(game_list, save_file, dset_num=save_number)
 
-	if generate_tuples:
-		tup = tuple_generator(game_list)
+				if generate_tuples:
+					tup = tuple_generator(game_list)
 
-		if tuple_file is not None:
-			save_tuples(tup, tuple_file)
+					if tuple_file is not None:
+						save_tuples(tup, tuple_file, dset_num=save_number)
+
+				# chunk infos
+				print(f"Chunk {save_number} processed.\n")
+				save_number += 1
+				counter = 1
+				game_list = []
+
+			else:
+				counter += 1
 
 	return 0
 
@@ -95,8 +108,8 @@ def correct_file_ending(file, ending):
 		out_file = f"{file}.{ending}"
 	return out_file
 
-def save_bb(game_list, file):
-	fname = correct_file_ending(file, "h5py")
+def save_bb(game_list, file, dset_num=0):
+	fname = correct_file_ending(file, "h5")
 	position = []
 	game_id = []
 
@@ -105,17 +118,17 @@ def save_bb(game_list, file):
 			position.append(pos)
 			game_id.append(i)
 
-	with h5py.File(fname, "w") as f:
-		data1 = f.create_dataset("position", shape=(len(position), 773),
+	with h5py.File(fname, "a") as f:
+		data1 = f.create_dataset(f"position_{dset_num}", shape=(len(position), 773),
 			dtype=bool, compression="gzip", compression_opts=9)
-		data2 = f.create_dataset("game_id", shape=(len(position),),
+		data2 = f.create_dataset(f"game_id_{dset_num}", shape=(len(position),),
 			dtype=np.int, compression="gzip", compression_opts=9)
 
 		data1[:] = position[:]
 		data2[:] = game_id[:]
 
-def save_fen(game_list, file):
-	fname = correct_file_ending(file, "h5py")
+def save_fen(game_list, file, dset_num=0):
+	fname = correct_file_ending(file, "h5")
 	position = []
 	game_id = []
 
@@ -125,9 +138,9 @@ def save_fen(game_list, file):
 			game_id.append(i)
 
 	with h5py.File(fname, "w") as f:
-		data1 = f.create_dataset("position", shape=(len(position),),
+		data1 = f.create_dataset(f"position_{dset_num}", shape=(len(position),),
 			dtype=h5py.string_dtype(encoding='ascii'), compression="gzip", compression_opts=9)
-		data2 = f.create_dataset("game_id", shape=(len(position),),
+		data2 = f.create_dataset(f"game_id_{dset_num}", shape=(len(position),),
 			dtype=np.int, compression="gzip", compression_opts=9)
 
 		data1[:] = position[:]
@@ -152,15 +165,15 @@ def tuple_generator(game_list):
 				*next_game[:9] # negative samples
 			])
 			tuples.append(tmp_tuple)
-			print(f"Tuples generated: {i}", end="\r")	
-	
+			print(f"Tuples generated: {i}", end="\r")
+
 	return tuples
 
-def save_tuples(tuples, file):
-	fname = correct_file_ending(file, "h5py")
+def save_tuples(tuples, file, dset_num=0):
+	fname = correct_file_ending(file, "h5")
 
-	with h5py.File(fname, "w") as f:
-		data1 = f.create_dataset("tuples", shape=(len(tuples),15, 773),
+	with h5py.File(fname, "a") as f:
+		data1 = f.create_dataset(f"tuples_{dset_num}", shape=(len(tuples), 15, 773),
 			dtype=bool, compression="gzip", compression_opts=9)
 
 		data1[:] = tuples[:]
@@ -174,6 +187,7 @@ if __name__ == "__main__":
 	parser.add_argument('--save_position', type=str, action="store", help='h5py file to store the encoded positions')
 	parser.add_argument('--tuples', type=bool, default=False, action="store", help='h5py file to sore the encoded positions')
 	parser.add_argument('--save_tuples', type=str, action="store", help='h5py file to store the encoded tuples')
+	parser.add_argument('--chunksize', type=int, action="store", default=100000, help='Chunk size for paginating games')
 
 	args = parser.parse_args()
 
@@ -182,12 +196,8 @@ if __name__ == "__main__":
 	print(f"Positions saved at: {args.save_position}")
 	print(f"Tuples generated: {args.tuples}")
 	print(f"Tuples saved at: {args.save_tuples}")
+	print(f"Chunksize: {args.chunksize}\n\n")
 
-	test_file = args.input
-	test_ptype = args.format
-	test_save_file = args.save_position
-	test_generate_tuples = args.tuples
-	test_tuple_file = args.save_tuples
-
-	pgn2pos(test_file, ptype=test_ptype, save_file=test_save_file,
-			generate_tuples=test_generate_tuples, tuple_file=test_tuple_file)
+	pgn2pos(args.input, ptype=args.format, save_file=args.save_position,
+			generate_tuples=args.tuples, tuple_file=args.save_tuples,
+			chunksize=args.chunksize)
