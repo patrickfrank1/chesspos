@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 
+import argparse
 import chess
 import chess.pgn
 import numpy as np
 import h5py
 from numpy.random import randint, shuffle
-import argparse
 
 def pgn2pos(file, ptype='bitboard', generate_tuples=False, save_file=None,
 			tuple_file=None, chunksize=100000):
