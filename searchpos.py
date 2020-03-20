@@ -3,6 +3,7 @@ import faiss
 import numpy as np
 import h5py
 from pgn2pos import correct_file_ending
+import chess
 
 def init_binary_index(dim, threads=4):
 	# set threads
@@ -40,8 +41,10 @@ def load_h5_bb(file, id_string, faiss_index, chunks=int(1e6)):
 def load_h5_array(file_list, id_string, faiss_index, chunks=int(1e6)):
 	for file in file_list:
 		faiss_index = load_h5_bb(file, id_string, faiss_index, chunks=chunks)
-
 	return faiss_index
+
+#def bb_from_fen(fen):
+#	board = chess.Board(fen)
 
 if __name__ == "__main__":
 

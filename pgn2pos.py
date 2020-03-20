@@ -87,40 +87,39 @@ def game_fen(game):
 
 	board = chess.Board()
 	pos = []
-
 	for move in game.mainline_moves():
 		board.push(move)
 		pos.append(board.fen())
-
 	return pos
 
 def game_bb(game):
 
 	board = chess.Board()
 	pos = []
-
 	for move in game.mainline_moves():
 		board.push(move)
-		embedding = np.array([], dtype=bool)
-
-		for color in [1, 0]:
-			for i in range(1, 7): # P N B R Q K / white
-				bmp = np.zeros(shape=(64,)).astype(bool)
-				for j in list(board.pieces(i, color)):
-					bmp[j] = True
-				embedding = np.concatenate((embedding, bmp))
-
-		additional = np.array([
-			bool(board.turn),
-			bool(board.castling_rights & chess.BB_A1),
-			bool(board.castling_rights & chess.BB_H1),
-			bool(board.castling_rights & chess.BB_A8),
-			bool(board.castling_rights & chess.BB_H8)
-		])
-		embedding = np.concatenate((embedding, additional))
+		embedding = board_to_bb(board)
 		pos.append(embedding)
-
 	return pos
+
+def board_to_bb(board):
+
+	embedding = np.array([], dtype=bool)
+	for color in [1, 0]:
+		for i in range(1, 7): # P N B R Q K / white
+			bmp = np.zeros(shape=(64,)).astype(bool)
+			for j in list(board.pieces(i, color)):
+				bmp[j] = True
+			embedding = np.concatenate((embedding, bmp))
+	additional = np.array([
+		bool(board.turn),
+		bool(board.castling_rights & chess.BB_A1),
+		bool(board.castling_rights & chess.BB_H1),
+		bool(board.castling_rights & chess.BB_A8),
+		bool(board.castling_rights & chess.BB_H8)
+	])
+	embedding = np.concatenate((embedding, additional))
+	return embedding
 
 def correct_file_ending(file, ending):
 	len_ending = len(ending)
