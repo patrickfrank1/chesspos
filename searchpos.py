@@ -2,7 +2,7 @@ import math
 import faiss
 import numpy as np
 import h5py
-from pgn2pos import correct_file_ending
+from pgn2pos import correct_file_ending, board_to_bb
 import chess
 
 def init_binary_index(dim, threads=4):
@@ -12,10 +12,19 @@ def init_binary_index(dim, threads=4):
 	# build index
 	return faiss.IndexBinaryFlat(dim)
 
+def bb_convert_bool_uint8(bb_array):
+	bb_len = None
+	vec_len = None
+	if len(bb_array.shape) == 1:
+		bb_len = 1
+		vec_len = bb_array.shape[0]
+	else:
+		bb_len, vec_len = bb_array.shape
+	uint = np.copy(bb_array).reshape((bb_len, int(vec_len/8), 8)).astype(bool)
+	return np.reshape(np.packbits(uint, axis=-1), (bb_len, int(vec_len/8)))
+
 def load_bb(bb_array, faiss_index):
-	bb_len, vec_len = bb_array.shape
-	uint = np.copy(bb_array).reshape((bb_len, int(vec_len/8), 8))
-	uint = np.reshape(np.packbits(uint, axis=-1), (bb_len, int(vec_len/8)))
+	uint = bb_convert_bool_uint8(bb_array)
 	faiss_index.add(uint)
 	print(f"{faiss_index.ntotal / 1.e6} million positions stored", end="\r")
 	return faiss_index
@@ -43,23 +52,31 @@ def load_h5_array(file_list, id_string, faiss_index, chunks=int(1e6)):
 		faiss_index = load_h5_bb(file, id_string, faiss_index, chunks=chunks)
 	return faiss_index
 
-#def bb_from_fen(fen):
-#	board = chess.Board(fen)
+def search_bb(query_array, faiss_index, num_results=10):
+	D = faiss_index.search(query_array, k=num_results)
+	return D
 
 if __name__ == "__main__":
 
-	#index = faiss_load_bb(["data/db/lichess_db_standard_rated_2013-01-bb"])
+	# test loading
 	index = init_binary_index(776)
-	index = load_h5_array(["data/db/lichess_db_standard_rated_2013-01-bb"], "position", index)
+	index = load_h5_array(["data/db/lichess_db_standard_rated_2013-01-bb"], "position_1", index)
 
+	# test querying
+	print("Testing.............")
+	board = chess.Board("rnb1kb1r/pp2pppp/2p2n2/3qN3/2pP4/6P1/PP2PP1P/RNBQKB1R w KQkq - 2 6")
+	print(board)
+	bitboard = board_to_bb(board)
+	print(bitboard.shape)
+	bitboard = np.concatenate((bitboard, np.zeros((3,),dtype=bool)))
+	print(bitboard.shape)
+	search_uint8 = bb_convert_bool_uint8(bitboard)
+	print(search_uint8)
+	dist, idx = search_bb(search_uint8, index)
+	print(dist, idx)
 
-
-
-
-# k = 4                          # we want to see 4 nearest neighbors
-# D, I = index.search(xb[:5], k) # sanity check
-# print(I)
-# print(D)
-# D, I = index.search(xq, k)     # actual search
-# print(I[:5])                   # neighbors of the 5 first queries
-# print(I[-5:])    
+	with h5py.File("data/db/lichess_db_standard_rated_2013-01-bb.h5", 'r') as hf:
+		for i in idx[0]:
+			near_board = hf["position_1"][i]
+			print(near_board)
+			# TODO: convert bitboard to chess.board

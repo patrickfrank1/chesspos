@@ -103,7 +103,6 @@ def game_bb(game):
 	return pos
 
 def board_to_bb(board):
-
 	embedding = np.array([], dtype=bool)
 	for color in [1, 0]:
 		for i in range(1, 7): # P N B R Q K / white
