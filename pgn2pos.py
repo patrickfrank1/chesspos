@@ -51,35 +51,35 @@ def pgn2pos(file, ptype='bitboard', generate_tuples=False, save_file=None,
 				else:
 					raise ValueError("ptype not implemented")
 
-			# info on this chunks progress
-			game_list.append(temp_game)
-			print(f" Games processed: {counter}", end="\r")
+				# info on this chunks progress
+				game_list.append(temp_game)
+				print(f" Games processed: {counter}", end="\r")
 
-			# save to file if chunksize is reached
-			if counter % chunksize == 0:
-				print("")
-				if save_file is not None:
-					if ptype == 'fen':
-						save_fen(game_list, save_file, dset_num=save_number)
-					elif ptype == 'bitboard':
-						save_bb(game_list, save_file, dset_num=save_number)
-					print("Game positions saved.")
+				# save to file if chunksize is reached
+				if counter % chunksize == 0:
+					print("")
+					if save_file is not None:
+						if ptype == 'fen':
+							save_fen(game_list, save_file, dset_num=save_number)
+						elif ptype == 'bitboard':
+							save_bb(game_list, save_file, dset_num=save_number)
+						print("Game positions saved.")
 
-				if generate_tuples:
-					tup = tuple_generator(game_list)
-					print("Tuples generated.")
+					if generate_tuples:
+						tup = tuple_generator(game_list)
+						print("Tuples generated.")
 
-					if tuple_file is not None:
-						save_tuples(tup, tuple_file, dset_num=save_number)
-						print("Tuples saved.")
+						if tuple_file is not None:
+							save_tuples(tup, tuple_file, dset_num=save_number)
+							print("Tuples saved.")
 
-				print(f"\rChunk {save_number} processed.")
-				save_number += 1
-				counter = 1
-				game_list = []
+					print(f"\rChunk {save_number} processed.")
+					save_number += 1
+					counter = 1
+					game_list = []
 
-			else:
-				counter += 1
+				else:
+					counter += 1
 
 	return 0
 
