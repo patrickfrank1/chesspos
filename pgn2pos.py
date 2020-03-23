@@ -46,7 +46,8 @@ def pgn_to_bitboard(pgn_file, generate_tuples=False, save_file=None,
 				save_number += 1
 				counter = 1
 				game_list = []
-				break  # end of file, break the while True loop
+				if next_game is None:
+					break  # end of file, break the while True loop
 
 			else:
 				temp_game = game_bb(next_game, game_nr=counter)
