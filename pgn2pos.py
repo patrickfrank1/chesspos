@@ -79,6 +79,7 @@ def filter_out(header, game_filter):
 		except Exception as e:
 			#print(f"\n{header.get('TimeControl').split('+')}")
 			#print(e)
+			pass
 	return out
 
 def game_fen(game):
