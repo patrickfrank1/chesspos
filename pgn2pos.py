@@ -7,81 +7,79 @@ import numpy as np
 import h5py
 from numpy.random import randint, shuffle
 
-def pgn2pos(file, ptype='bitboard', generate_tuples=False, save_file=None,
-			tuple_file=None, chunksize=100000):
-
+def pgn_to_bitboard(pgn_file, generate_tuples=False, save_file=None,
+			tuple_file=None, chunksize=100000, game_filter=None):
 	game_list = []
+	game_id = []
 	counter = 1
+	game_index = -1
 	save_number = 0
-	fname = correct_file_ending(file, "pgn")
+	pgn_name = correct_file_ending(pgn_file, "pgn")
 
-	with open(fname, 'r') as f:
-
+	with open(pgn_name, 'r') as f:
 		while True:
-			game = chess.pgn.read_game(f)
-			temp_game = None
+			next_game = chess.pgn.read_game(f)
+			game_index += 1
 
-			if game is None:
+			if next_game is not None and game_filter is not None and \
+				filter_out(next_game.headers, game_filter):
+				continue
+
+			if counter % chunksize == 0 or next_game is None:
 				print("")
 				if save_file is not None:
-					if ptype == 'fen':
-						save_fen(game_list, save_file, dset_num=save_number)
-					elif ptype == 'bitboard':
-						save_bb(game_list, save_file, dset_num=save_number)
+					save_bb(game_list, game_id, save_file, dset_num=save_number)
 					print("Game positions saved.")
+				else:
+					raise ValueError("Save bitbaord file path not provided.")
 
 				if generate_tuples:
 					tup = tuple_generator(game_list)
 					print("Tuples generated.")
-
 					if tuple_file is not None:
 						save_tuples(tup, tuple_file, dset_num=save_number)
 						print("Tuples saved.")
+					else:
+						raise ValueError("Save tuple file path not provided.")
 
 				print(f"\rChunk {save_number} processed.")
 				save_number += 1
 				counter = 1
 				game_list = []
-				break  # end of file
+				break  # end of file, break the while True loop
+
 			else:
-				if ptype == 'fen':
-					temp_game = game_fen(game)
-				elif ptype == 'bitboard':
-					temp_game = game_bb(game)
-				else:
-					raise ValueError("ptype not implemented")
+				temp_game = game_bb(next_game, game_nr=counter)
+				if len(temp_game) > 0:
+					game_list.append(temp_game)
+					game_id.append(game_index)
+				print(f" Games parsed: {game_index} Games processed: {counter}", end="\r")
 
-				# info on this chunks progress
-				game_list.append(temp_game)
-				print(f" Games processed: {counter}", end="\r")
-
-				# save to file if chunksize is reached
-				if counter % chunksize == 0:
-					print("")
-					if save_file is not None:
-						if ptype == 'fen':
-							save_fen(game_list, save_file, dset_num=save_number)
-						elif ptype == 'bitboard':
-							save_bb(game_list, save_file, dset_num=save_number)
-						print("Game positions saved.")
-
-					if generate_tuples:
-						tup = tuple_generator(game_list)
-						print("Tuples generated.")
-
-						if tuple_file is not None:
-							save_tuples(tup, tuple_file, dset_num=save_number)
-							print("Tuples saved.")
-
-					print(f"\rChunk {save_number} processed.")
-					save_number += 1
-					counter = 1
-					game_list = []
-
-				else:
-					counter += 1
+				counter += 1
 
 	return 0
+
+def filter_out(header, game_filter):
+	#headers are often non-standard, try..except!
+	out = False
+	if 'elo_min' in game_filter.keys():
+		try:
+			if int(header.get("WhiteElo")) < game_filter["elo_min"] \
+			or int(header.get("BlackElo")) < game_filter["elo_min"]:
+				out = True
+		except Exception as e:
+			print(f"\n WhiteElo {header.get('WhiteElo')}, BlackElo {header.get('BlackElo')}")
+			print(e)
+			out = True
+	if 'time_min' in game_filter.keys():
+		try:
+			minute, second = header.get("TimeControl").split("+")
+			if int(minute) + int(second) < game_filter["time_min"]:
+				out = True
+		except Exception as e:
+			print(f"\n{header.get('TimeControl').split('+')}")
+			print(e)
+	return out
 
 def game_fen(game):
 
@@ -92,14 +90,20 @@ def game_fen(game):
 		pos.append(board.fen())
 	return pos
 
-def game_bb(game):
+def game_bb(game, game_nr=0):
 
 	board = chess.Board()
 	pos = []
 	for move in game.mainline_moves():
-		board.push(move)
-		embedding = board_to_bb(board)
-		pos.append(embedding)
+		try:
+			board.push(move)
+		except Exception as e:
+			print(f"Exception occurred in game number {game_nr}")
+			print(e)
+			return pos
+		else:
+			embedding = board_to_bb(board)
+			pos.append(embedding)
 	return pos
 
 def board_to_bb(board):
@@ -129,15 +133,15 @@ def correct_file_ending(file, ending):
 		out_file = f"{file}.{ending}"
 	return out_file
 
-def save_bb(game_list, file, dset_num=0):
+def save_bb(game_list, game_id, file, dset_num=0):
 	fname = correct_file_ending(file, "h5")
 	position = []
-	game_id = []
+	gid = []
 
 	for (i, game) in enumerate(game_list):
 		for pos in game:
 			position.append(pos)
-			game_id.append(i)
+			gid.append(game_id[i])
 
 	with h5py.File(fname, "a") as f:
 		data1 = f.create_dataset(f"position_{dset_num}", shape=(len(position), 773),
@@ -146,7 +150,7 @@ def save_bb(game_list, file, dset_num=0):
 			dtype=np.int, compression="gzip", compression_opts=9)
 
 		data1[:] = position[:]
-		data2[:] = game_id[:]
+		data2[:] = gid[:]
 
 def save_fen(game_list, file, dset_num=0):
 	fname = correct_file_ending(file, "h5")
@@ -218,6 +222,11 @@ if __name__ == "__main__":
 	print(f"Tuples saved at: {args.save_tuples}")
 	print(f"Chunksize: {args.chunksize}\n\n")
 
-	pgn2pos(args.input, ptype=args.format, save_file=args.save_position,
-			generate_tuples=args.tuples, tuple_file=args.save_tuples,
-			chunksize=args.chunksize)
+	# pgn2pos(args.input, ptype=args.format, save_file=args.save_position,
+	# 		generate_tuples=args.tuples, tuple_file=args.save_tuples,
+	# 		chunksize=args.chunksize)
+
+	pgn_to_bitboard("data/db/lichess_db_standard_rated_2013-01.pgn",
+					False,
+					"data/db/lichess_db_standard_rated_2013-01",
+					game_filter={"time_min":121, "elo_min":1500})
