@@ -64,8 +64,8 @@ def filter_out(header, game_filter):
 	out = False
 	if 'elo_min' in game_filter.keys():
 		try:
-			if int(header.get("WhiteElo")) < game_filter["elo_min"] \
-			or int(header.get("BlackElo")) < game_filter["elo_min"]:
+			if int(header.get("WhiteElo")) < int(game_filter["elo_min"]) \
+			or int(header.get("BlackElo")) < int(game_filter["elo_min"]):
 				out = True
 		except Exception as e:
 			print(f"\n WhiteElo {header.get('WhiteElo')}, BlackElo {header.get('BlackElo')}")
@@ -74,7 +74,7 @@ def filter_out(header, game_filter):
 	if 'time_min' in game_filter.keys():
 		try:
 			minute, second = header.get("TimeControl").split("+")
-			if int(minute) + int(second) < game_filter["time_min"]:
+			if int(minute) + int(second) < int(game_filter["time_min"]):
 				out = True
 		except Exception as e:
 			print(f"\n{header.get('TimeControl').split('+')}")
@@ -204,29 +204,44 @@ def save_tuples(tuples, file, dset_num=0):
 
 if __name__ == "__main__":
 
-	parser = argparse.ArgumentParser(description='Parse argumants to generate files')
+	# https://stackoverflow.com/questions/29335145/python-argparse-extra-args/29335524#29335524
+	def ensure_value(namespace, dest, default):
+		stored = getattr(namespace, dest, None)
+		if stored is None:
+			return default
+		return stored
+
+	class store_dict(argparse.Action):
+		def __call__(self, parser, namespace, values, option_string=None):
+			vals = dict(ensure_value(namespace, self.dest, {}))
+			k, _, v = values.partition('=')
+			vals[k] = v
+			setattr(namespace, self.dest, vals)
+
+	parser = argparse.ArgumentParser(description='Generate bitboards and training samples')
 
 	parser.add_argument('input', type=str, action="store", help='pgn file with input games')
-	parser.add_argument('--format', type=str, default='bitboard', action="store", help='Encoding format for positions: fen, bitboard')
-	parser.add_argument('--save_position', type=str, action="store", help='h5py file to store the encoded positions')
-	parser.add_argument('--tuples', type=bool, default=False, action="store", help='h5py file to sore the encoded positions')
-	parser.add_argument('--save_tuples', type=str, action="store", help='h5py file to store the encoded tuples')
-	parser.add_argument('--chunksize', type=int, action="store", default=100000, help='Chunk size for paginating games')
+	parser.add_argument('--save_position', type=str, action="store",\
+						help='h5py file to store the encoded positions')
+	parser.add_argument('--tuples', type=bool, default=False, action="store",\
+						help='h5py file to sore the encoded positions')
+	parser.add_argument('--save_tuples', type=str, action="store",\
+						help='h5py file to store the encoded tuples')
+	parser.add_argument('--chunksize', type=int, action="store", default=100000,\
+						help='Chunk size for paginating games')
+	parser.add_argument('--filter', default={}, action=store_dict,\
+						help="Filter out games. Options: time_min, elo_min. Usage: --filter key1=val1 --filter key2=val2",\
+						metavar="KEY1=VAL1")
 
 	args = parser.parse_args()
 
 	print(f"Input file at: {args.input}")
-	print(f"Chess positions encoded as: {args.format}")
+	print(f"Filter options: {args.filter}")
 	print(f"Positions saved at: {args.save_position}")
 	print(f"Tuples generated: {args.tuples}")
 	print(f"Tuples saved at: {args.save_tuples}")
 	print(f"Chunksize: {args.chunksize}\n\n")
 
-	# pgn2pos(args.input, ptype=args.format, save_file=args.save_position,
-	# 		generate_tuples=args.tuples, tuple_file=args.save_tuples,
-	# 		chunksize=args.chunksize)
-
-	pgn_to_bitboard("data/db/lichess_db_standard_rated_2013-01.pgn",
-					False,
-					"data/db/lichess_db_standard_rated_2013-01",
-					game_filter={"time_min":121, "elo_min":1500})
+	pgn_to_bitboard(args.input, save_file=args.save_position,
+					generate_tuples=args.tuples, tuple_file=args.save_tuples,
+					chunksize=args.chunksize, game_filter=args.filter)
