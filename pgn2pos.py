@@ -21,7 +21,7 @@ def pgn_to_bitboard(pgn_file, generate_tuples=False, save_file=None,
 			next_game = chess.pgn.read_game(f)
 			game_index += 1
 
-			if next_game is not None and game_filter is not None and \
+			if next_game is not None and game_filter is not {} and \
 				filter_out(next_game.headers, game_filter):
 				continue
 
