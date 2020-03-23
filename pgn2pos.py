@@ -68,8 +68,8 @@ def filter_out(header, game_filter):
 			or int(header.get("BlackElo")) < int(game_filter["elo_min"]):
 				out = True
 		except Exception as e:
-			print(f"\n WhiteElo {header.get('WhiteElo')}, BlackElo {header.get('BlackElo')}")
-			print(e)
+			#print(f"\n WhiteElo {header.get('WhiteElo')}, BlackElo {header.get('BlackElo')}")
+			#print(e)
 			out = True
 	if 'time_min' in game_filter.keys():
 		try:
@@ -77,8 +77,8 @@ def filter_out(header, game_filter):
 			if int(minute) + int(second) < int(game_filter["time_min"]):
 				out = True
 		except Exception as e:
-			print(f"\n{header.get('TimeControl').split('+')}")
-			print(e)
+			#print(f"\n{header.get('TimeControl').split('+')}")
+			#print(e)
 	return out
 
 def game_fen(game):
