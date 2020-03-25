@@ -1,9 +1,15 @@
+# ignore personal files
+tools/submit_jobs.sh
+
 # ignore all the data files
 data/*
 !data/README.md
 
 # VS Code specific
 .vscode/
+
+# Tensorflow
+metric_learning/checkpoints/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
