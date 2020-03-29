@@ -38,6 +38,3 @@ def triplet_network_model(input_shape, embedding_size, alpha=0.2):
 	network = keras.models.Model(inputs=[anchor_input, positive_input, negative_input], outputs=loss_layer)
 
 	return network
-
-#def triplet_metric(y_pred, y_true):
-#	pass
