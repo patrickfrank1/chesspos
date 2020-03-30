@@ -18,6 +18,31 @@ class TripletLossLayer(keras.layers.Layer):
 		self.add_loss(loss)
 		return loss
 
+def embedding_network(input_shape, embedding_size, hidden_layers=None):
+	if hidden_layers is None:
+		return keras.layers.Dense(embedding_size, activation='relu', input_shape=input_shape,
+									name="embedding_layer")
+	else:
+		embedding = keras.Sequential(name="embedding_model")
+		embedding.add(keras.layers.Dense(hidden_layers[0], activation='relu',
+						input_shape=input_shape,name="embedding_layer_0")
+		)
+		#embedding = keras.layers.Dense(hidden_layers[0], activation='relu',
+		#	name="embedding_layer_0")
+		for i in range(1, len(hidden_layers)-1):
+			#embedding = keras.layers.Dense(hidden_layers[i], activation='relu',
+			#	name=f"embedding_layer_{i}")(embedding)
+			embedding.add(keras.layers.Dense(hidden_layers[i], activation='relu',
+							name=f"embedding_layer_{i}")
+			)
+		#embedding = keras.layers.Dense(embedding_size, activation='relu',
+		#	name=f"embedding_layer_last")(embedding)
+		embedding.add(keras.layers.Dense(embedding_size, activation='relu',
+						name=f"embedding_layer_{len(hidden_layers)}")
+		)
+		return embedding
+
+
 def triplet_network_model(input_shape, embedding_size, alpha=0.2):
 	# Input layers
 	anchor_input = keras.layers.Input(input_shape, name="anchor_input", dtype=float)
@@ -25,8 +50,10 @@ def triplet_network_model(input_shape, embedding_size, alpha=0.2):
 	negative_input = keras.layers.Input(input_shape, name="negative_input", dtype=float)
 
 	# Generate the encodings (feature vectors) for the three positions
-	embedding = keras.layers.Dense(embedding_size, activation='relu', input_shape=input_shape,
-									name="embedding_layer")
+	#embedding = keras.layers.Dense(embedding_size, activation='relu', input_shape=input_shape,
+	#								name="embedding_layer")
+	embedding = embedding_network(input_shape, embedding_size, hidden_layers=[42])
+	embedding.summary()
 
 	# Tie them together
 	embedding_a = embedding(anchor_input)

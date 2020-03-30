@@ -71,7 +71,7 @@ def inputs_from_tuples(tuple_array, test_split=True, test_size=0.2):
 
 	return data_train, data_test
 
-def train_inputs_file_array_generator(files, table_id_prefix, tuple_indices=[0,1,6], batch_size=16):
+def train_inputs_file_array_generator(files, table_id_prefix, tuple_indices=[0,1,2,3,4,5,6], batch_size=16):
 	tuples = np.empty(shape=(0, len(tuple_indices), 773), dtype=bool)
 	for file in files:
 		fname = correct_file_ending(file, 'h5')
@@ -81,13 +81,32 @@ def train_inputs_file_array_generator(files, table_id_prefix, tuple_indices=[0,1
 					new_tuples = np.asarray(hf[key][:, tuple_indices], dtype=bool)
 					tuples = np.concatenate((tuples, new_tuples))
 					while len(tuples) >= batch_size:
-						batch_train = [
+						batch_train_easy = [
+							tuples[:batch_size,0,:],
+							tuples[:batch_size,1,:],
+							tuples[:batch_size,6,:]
+						]
+						yield batch_train_easy
+						batch_train_medium = [
+							tuples[:batch_size,0,:],
+							tuples[:batch_size,1,:],
+							tuples[:batch_size,5,:]
+						]
+						yield batch_train_medium
+						batch_train_semi_hard = [
+							tuples[:batch_size,0,:],
+							tuples[:batch_size,1,:],
+							tuples[:batch_size,5,:]
+						]
+						yield batch_train_semi_hard
+						batch_train_hard = [
 							tuples[:batch_size,0,:],
 							tuples[:batch_size,1,:],
 							tuples[:batch_size,2,:]
 						]
+						yield batch_train_hard
 						tuples = tuples[batch_size:,:,:]
-						yield batch_train
+						
 
 def train_inputs_length(files, table_id_prefix):
 	samples = 0
