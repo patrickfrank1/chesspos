@@ -71,10 +71,33 @@ def inputs_from_tuples(tuple_array, test_split=True, test_size=0.2):
 
 	return data_train, data_test
 
-# def train_inputs_file_array_generator(files, table_id_prefix, tuple_indices=[0, 1, 6],batch_size=16):
-# 	tuples = np.empty(shape=(0, len(tuple_indices), 773), dtype=bool)
-# 	for file in files:
-# 		fname = correct_file_ending(file, 'h5')
+def train_inputs_file_array_generator(files, table_id_prefix, tuple_indices=[0,1,6], batch_size=16):
+	tuples = np.empty(shape=(0, len(tuple_indices), 773), dtype=bool)
+	for file in files:
+		fname = correct_file_ending(file, 'h5')
+		with h5py.File(fname, 'r') as hf:
+			for key in hf.keys():
+				if table_id_prefix in key:
+					new_tuples = np.asarray(hf[key][:, tuple_indices], dtype=bool)
+					tuples = np.concatenate((tuples, new_tuples))
+					while len(tuples) >= batch_size:
+						batch_train = [
+							tuples[:batch_size,0,:],
+							tuples[:batch_size,1,:],
+							tuples[:batch_size,2,:]
+						]
+						tuples = tuples[batch_size:,:,:]
+						yield batch_train
+
+def train_inputs_length(files, table_id_prefix):
+	samples = 0
+	for file in files:
+		fname = correct_file_ending(file, 'h5')
+		with h5py.File(fname, 'r') as hf:
+			for key in hf.keys():
+				if table_id_prefix in key:
+					samples += len(hf[key])
+	return samples
 
 
 if __name__ == "__main__":
@@ -90,8 +113,15 @@ if __name__ == "__main__":
 		os.path.abspath('data/samples/lichess_db_standard_rated_2020-02-06-tuples-strong.h5') #,
 		#os.path.abspath('data/samples/lichess_db_standard_rated_2020-02-07-tuples-strong.h5')
 	]
-	test3 = tuples_from_file_array(file_paths, table_id_prefix="tuples", tuple_indices=[0,1,2])
-	print(f"test3.shape={test3.shape}")
-	train, test = inputs_from_tuples(test3)
-	print(f"len(train): {len(train)}, train[0].shape: {train[0].shape}")
-	print(f"len(test): {len(test)}, test[0].shape: {test[0].shape}")
+	# test3 = tuples_from_file_array(file_paths, table_id_prefix="tuples", tuple_indices=[0,1,2])
+	# print(f"test3.shape={test3.shape}")
+	# train, test = inputs_from_tuples(test3)
+	# print(f"len(train): {len(train)}, train[0].shape: {train[0].shape}")
+	# print(f"len(test): {len(test)}, test[0].shape: {test[0].shape}")
+
+	print(train_inputs_length(file_paths, table_id_prefix="tuples"))
+
+	generator = train_inputs_file_array_generator(file_paths, table_id_prefix="tuples",
+					tuple_indices=[0,1,6], batch_size=128)
+	for batch in generator:
+		print(f"batch[0].shape: {batch[0].shape}")
