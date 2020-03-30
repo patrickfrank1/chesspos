@@ -25,12 +25,13 @@ def triplet_network_model(input_shape, embedding_size, alpha=0.2):
 	negative_input = keras.layers.Input(input_shape, name="negative_input", dtype=float)
 
 	# Generate the encodings (feature vectors) for the three positions
-	embedding = keras.layers.Dense(embedding_size, activation='relu', input_shape=input_shape, name="dense layer embedding")
+	embedding = keras.layers.Dense(embedding_size, activation='relu', input_shape=input_shape,
+									name="embedding_layer")
 
 	# Tie them together
-	embedding_a = embedding(anchor_input, name="anchor embedding")
-	embedding_p = embedding(positive_input, name="positive embedding")
-	embedding_n = embedding(negative_input, name="negative embedding")
+	embedding_a = embedding(anchor_input)
+	embedding_p = embedding(positive_input)
+	embedding_n = embedding(negative_input)
 
 	# TripletLoss Layer, initialize and incorporate into network
 	loss_layer = TripletLossLayer(alpha=alpha, name='triplet_loss_layer')([embedding_a, embedding_p, embedding_n])

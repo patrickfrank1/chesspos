@@ -1,8 +1,13 @@
 import os
 import numpy as np
 import h5py
+from sklearn.model_selection import train_test_split
 
 def correct_file_ending(file, ending):
+	'''
+	Check if file has the desired file ending, if it does not, then append the
+	correct ending.
+	'''
 	len_ending = len(ending)
 	out_file = ""
 	if file[-len_ending:] == ending:
@@ -11,51 +16,82 @@ def correct_file_ending(file, ending):
 		out_file = f"{file}.{ending}"
 	return out_file
 
-def tuples_from_table(file, table, tuple_indices=[0,1,6]):
+def tuples_from_table(file, table, tuple_indices=[0, 1, 6]):
+	'''
+	Fetch tuples form a table in an h5 file.
+	'''
 	fname = correct_file_ending(file, 'h5')
+	tuples = None
 	with h5py.File(fname, 'r') as hf:
 		keys = hf.keys()
 		print(keys)
 		if table in keys:
-			return hf[table][:,tuple_indices]
+			tuples = np.asarray(hf[table][:, tuple_indices], dtype=bool)
+	return tuples
 
-def tuples_from_file(file, table_id_prefix, tuple_indices=[0,1,6]):
+def tuples_from_file(file, table_id_prefix, tuple_indices=[0, 1, 6]):
+	'''
+	Return specified tuples from all relevant tables in a file.
+	'''
 	fname = correct_file_ending(file, 'h5')
-	triplets = []
+	tuples = []
 	with h5py.File(fname, 'r') as hf:
 		print(hf.keys())
 		for key in hf.keys():
 			if table_id_prefix in key:
-				triplets.extend(hf[key][:, tuple_indices])
-	return np.asarray(triplets)
+				tuples.extend(hf[key][:, tuple_indices])
+	return np.asarray(tuples, dtype=bool)
+
+def tuples_from_file_array(files, table_id_prefix, tuple_indices=[0, 1, 6]):
+	'''
+	Return specified tuples from all relevant tables in a list of files.
+	'''
+	tuples = np.empty(shape=(0, len(tuple_indices), 773), dtype=bool)
+	for file in files:
+		tmp_tuples = tuples_from_file(file, table_id_prefix, tuple_indices=[0, 1, 6])
+		tuples = np.concatenate((tuples,tmp_tuples))
+	return tuples
+
+def inputs_from_tuples(tuple_array, test_split=True, test_size=0.2):
+	'''
+	Split tuples into train/test and anchor/positive/negative.
+	'''
+	train_tuples = None
+	test_tuples = None
+	if test_split:
+		train_tuples, test_tuples = train_test_split(tuple_array, test_size=test_size, shuffle=False)
+	else:
+		train_tuples = tuple_array
+
+	data_train = [train_tuples[:,0,:], train_tuples[:,1,:], train_tuples[:,2,:]]
+	data_test = None
+
+	if test_tuples is not None:
+		data_test = [test_tuples[:,0,:], test_tuples[:,1,:], test_tuples[:,2,:]]
+
+	return data_train, data_test
+
+# def train_inputs_file_array_generator(files, table_id_prefix, tuple_indices=[0, 1, 6],batch_size=16):
+# 	tuples = np.empty(shape=(0, len(tuple_indices), 773), dtype=bool)
+# 	for file in files:
+# 		fname = correct_file_ending(file, 'h5')
+
 
 if __name__ == "__main__":
 
-	file_path = os.path.abspath('data/samples/lichess_db_standard_rated_2020-02-06-tuples-strong.h5')
+	#file_path = os.path.abspath('data/samples/lichess_db_standard_rated_2020-02-06-tuples-strong.h5')
 	#test_arr = tuples_from_table(file_path,"tuples_0")
 	#print(test_arr.shape)
 
-	test2 = tuples_from_file(file_path, table_id_prefix="tuples", tuple_indices=[0,1,2])
-	print(f"test2.shape={test2.shape}")
-	
+	#test2 = tuples_from_file(file_path, table_id_prefix="tuples", tuple_indices=[0,1,2])
+	#print(f"test2.shape={test2.shape}")
 
-
-
-
-# 	'''Test Dataset'''
-
-# file_path = os.path.abspath('../data/samples/lichess_db_standard_rated_2013-01-tuples.h5')
-# triplets = tuples_from_table(file_path, "tuples_0", tuple_indices=[0,1,2])
-
-# train_triplets, test_triplets = train_test_split(triplets, test_size=0.2, random_state=42)
-# #train_dummy_label = np.zeros_like( (train_triplets.shape[0]),) )
-# #test_dummy_label = np.zeros_like( (test_triplets.shape[0],) )
-# train_triplets.shape, test_triplets.shape #, train_dummy_label.shape, test_dummy_label.shape
-
-# anc_train = train_triplets[:,0,:]
-# pos_train = train_triplets[:,1,:]
-# neg_train = train_triplets[:,2,:]
-
-# anc_test = test_triplets[:,0,:]
-# pos_test = test_triplets[:,1,:]
-# neg_test = test_triplets[:,2,:]
+	file_paths = [
+		os.path.abspath('data/samples/lichess_db_standard_rated_2020-02-06-tuples-strong.h5') #,
+		#os.path.abspath('data/samples/lichess_db_standard_rated_2020-02-07-tuples-strong.h5')
+	]
+	test3 = tuples_from_file_array(file_paths, table_id_prefix="tuples", tuple_indices=[0,1,2])
+	print(f"test3.shape={test3.shape}")
+	train, test = inputs_from_tuples(test3)
+	print(f"len(train): {len(train)}, train[0].shape: {train[0].shape}")
+	print(f"len(test): {len(test)}, test[0].shape: {test[0].shape}")
