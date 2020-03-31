@@ -1,5 +1,6 @@
 import tensorflow as tf
 from tensorflow import keras
+import numpy as np
 
 
 class TripletLossLayer(keras.layers.Layer):
@@ -43,7 +44,7 @@ def embedding_network(input_shape, embedding_size, hidden_layers=None):
 		return embedding
 
 
-def triplet_network_model(input_shape, embedding_size, alpha=0.2):
+def triplet_network_model(input_shape, embedding_size, hidden_layers=None, alpha=0.2):
 	# Input layers
 	anchor_input = keras.layers.Input(input_shape, name="anchor_input", dtype=float)
 	positive_input = keras.layers.Input(input_shape, name="positive_input", dtype=float)
@@ -52,7 +53,7 @@ def triplet_network_model(input_shape, embedding_size, alpha=0.2):
 	# Generate the encodings (feature vectors) for the three positions
 	#embedding = keras.layers.Dense(embedding_size, activation='relu', input_shape=input_shape,
 	#								name="embedding_layer")
-	embedding = embedding_network(input_shape, embedding_size, hidden_layers=[42])
+	embedding = embedding_network(input_shape, embedding_size, hidden_layers=hidden_layers)
 	embedding.summary()
 
 	# Tie them together
@@ -65,4 +66,19 @@ def triplet_network_model(input_shape, embedding_size, alpha=0.2):
 	# Cast as tf model
 	network = keras.models.Model(inputs=[anchor_input, positive_input, negative_input], outputs=loss_layer)
 
-	return network
+	return network, embedding_a, embedding_p, embedding_n
+
+def triplet_accuracy(embeddings):
+	'''
+	Wrapper function that returns a loss function: loss(y_true, y_pred).
+	Neither of which is actually used for calculating the metric.
+	See: https://towardsdatascience.com/advanced-keras-constructing-complex-custom-losses-and-metrics-c07ca130a618
+	'''
+
+	def loss(y_true, y_pred):
+		anchor, positive, negative = embeddings
+		pos_dist = tf.reduce_sum(tf.square(anchor-positive), axis=-1)
+		neg_dist = tf.reduce_sum(tf.square(anchor-negative), axis=-1)
+		return tf.reduce_sum(tf.cast(tf.cast(pos_dist < neg_dist, dtype=tf.int32), dtype=tf.float32), axis=0)
+
+	return loss
