@@ -18,6 +18,7 @@ Inputs
 model_dir = os.path.abspath('metric_learning/model/simple_triplet')
 train_dir = os.path.abspath('data/train_small')
 validation_dir = os.path.abspath('data/validation_small')
+save_metrics = True
 hide_warnings = True
 plot_model = True
 # model specs
@@ -55,9 +56,9 @@ class SkMetrics(keras.callbacks.Callback):
 		return tf.reduce_sum(tf.cast(pos_dist < neg_dist, dtype=tf.int32), axis=0)
 
 	def on_train_begin(self, logs={}): # pylint: disable=unused-argument,dangerous-default-value
-		self.num_correct = []
-		self.frac_correct = []
-		self.diagnostics = []
+		self.num_correct = [] # pylint: disable=attribute-defined-outside-init
+		self.frac_correct = [] # pylint: disable=attribute-defined-outside-init
+		self.diagnostics = [] # pylint: disable=attribute-defined-outside-init
 
 	def on_epoch_end(self, epoch, logs={}): # pylint: disable=unused-argument,dangerous-default-value
 		correct = tf.Variable(0)
@@ -84,7 +85,9 @@ if plot_model:
 Initialise trainig, and validation data
 '''
 train_files = [
-	os.path.abspath('data/train_small/lichess_db_standard_rated_2013-02-tuples.h5')
+	os.path.abspath('data/train_small/lichess_db_standard_rated_2013-02-tuples.h5'),
+	os.path.abspath('data/train_large/lichess_db_standard_rated_2013-03-tuples.h5'),
+	os.path.abspath('data/train_large/lichess_db_standard_rated_2013-04-tuples.h5')
 ]
 validation_files = [
 	os.path.abspath('data/validation_small/lichess_db_standard_rated_2013-01-tuples.h5')
@@ -93,7 +96,7 @@ validation_files = [
 # TODO: print WARNING if too few validation examples
 train_len = train_inputs_length(train_files, table_id_prefix="tuples")
 val_len = train_inputs_length(validation_files, table_id_prefix="tuples")
-print(f"{train_len} training samples.")
+print(f"\n{train_len} training samples.")
 print(f"{val_len} validation samples.")
 
 # generators for train and test data
@@ -106,6 +109,9 @@ metric_generator = train_inputs_file_array_generator(validation_files, table_id_
 
 # instantiate callbacks
 skmetrics = SkMetrics(metric_generator, batch_size=validation_batch_size, steps_per_callback=10)
+early_stopping = keras.callbacks.EarlyStopping(
+	monitor='val_loss', min_delta=0.1, patience=10, verbose=0, mode='min'
+)
 
 '''Train  the model'''
 history = model.fit(
@@ -114,7 +120,7 @@ history = model.fit(
 	epochs=int(yield_augmented*train_len/train_steps_per_epoch/train_batch_size),
 	validation_data=validation_generator,
 	validation_steps=validation_steps_per_epoch,
-	callbacks=[skmetrics]
+	callbacks=[skmetrics, early_stopping]
 )
 
 print('history dict:', history.history.keys())
