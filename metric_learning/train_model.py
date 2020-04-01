@@ -90,7 +90,7 @@ train_files = [
 	os.path.abspath('data/train_large/lichess_db_standard_rated_2013-04-tuples.h5')
 ]
 validation_files = [
-	os.path.abspath('data/validation_small/lichess_db_standard_rated_2013-01-tuples.h5')
+	os.path.abspath('data/validation_small/lichess_db_standard_rated_2020-02-07-tuples-strong.h5')
 ]
 
 # TODO: print WARNING if too few validation examples
@@ -112,6 +112,13 @@ skmetrics = SkMetrics(metric_generator, batch_size=validation_batch_size, steps_
 early_stopping = keras.callbacks.EarlyStopping(
 	monitor='val_loss', min_delta=0.1, patience=10, verbose=0, mode='min'
 )
+cp = keras.callbacks.ModelCheckpoint(
+	filepath=model_dir+"/checkpoints/cp-{epoch:04d}.ckpt",
+	save_weights_only=False,
+	save_best_only=True,
+	mode='min',
+	verbose=1
+)
 
 '''Train  the model'''
 history = model.fit(
@@ -120,7 +127,7 @@ history = model.fit(
 	epochs=int(yield_augmented*train_len/train_steps_per_epoch/train_batch_size),
 	validation_data=validation_generator,
 	validation_steps=validation_steps_per_epoch,
-	callbacks=[skmetrics, early_stopping]
+	callbacks=[skmetrics, early_stopping, cp]
 )
 
 print('history dict:', history.history.keys())
