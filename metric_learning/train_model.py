@@ -1,5 +1,4 @@
 import os
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2' #hide warnings during training
 
 import numpy as np
 import tensorflow as tf
@@ -9,7 +8,9 @@ import matplotlib.pyplot as plt
 from triplet_preparation import train_inputs_file_array_generator, train_inputs_length
 from model_architecture import triplet_network_model
 
-print(f"tf.__version__: {tf.__version__}")
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2' # hide warnings during training
+
+print(f"tf.__version__: {tf.__version__}") # pylint: disable=no-member
 print(f"tf.keras.__version__: {tf.keras.__version__}")
 
 '''
@@ -55,6 +56,8 @@ Initialize triplet network
 input_shape = (773,)
 embedding_size = 10
 model = triplet_network_model(input_shape, embedding_size, hidden_layers=[512,256,64])
+
+keras.utils.plot_model(model, 'triplet_network.png', show_shapes=True) #Import error
 
 '''
 Initialise trainig, and validation data
