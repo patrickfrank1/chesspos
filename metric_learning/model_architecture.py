@@ -99,5 +99,6 @@ def triplet_network_model(input_shape, embedding_size, hidden_layers=None, alpha
 	)
 
 	triplet_network.summary()
+	keras.utils.plot_model(triplet_network, 'triplet_network.png', show_shapes=True)
 
 	return triplet_network
