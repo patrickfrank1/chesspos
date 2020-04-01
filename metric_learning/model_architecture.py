@@ -69,8 +69,8 @@ def triplet_network_model(input_shape, embedding_size, hidden_layers=None, alpha
 	# Compile the model
 	optimizer = keras.optimizers.Adam(lr=0.00006)
 
-	def mean_pred(y_true, y_pred):
-		return tf.reduce_mean(y_true + y_pred)
+	def mean_pred(y_true, y_pred): # pylint: disable=unused-argument,dangerous-default-value
+		return print("hello")
 
 	triplet_network.compile(
 		loss=None,

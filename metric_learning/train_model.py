@@ -8,10 +8,33 @@ import matplotlib.pyplot as plt
 from triplet_preparation import train_inputs_file_array_generator, train_inputs_length
 from model_architecture import triplet_network_model
 
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2' # hide warnings during training
-
 print(f"tf.__version__: {tf.__version__}") # pylint: disable=no-member
 print(f"tf.keras.__version__: {tf.keras.__version__}")
+
+'''
+Inputs
+'''
+# environment
+model_dir = os.path.abspath('metric_learning/model/simple_triplet')
+train_dir = os.path.abspath('data/train_small')
+validation_dir = os.path.abspath('data/validation_small')
+hide_warnings = True
+plot_model = True
+# model specs
+input_shape = (773,)
+embedding_size = 10
+# training specs
+train_batch_size = 16
+validation_batch_size = 16
+train_steps_per_epoch = 1000
+validation_steps_per_epoch = 10
+yield_augmented = 1
+
+'''
+Training environment
+'''
+if hide_warnings:
+	os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2' # hide warnings during training
 
 '''
 Define custom callback to monitor a custom metric on epoch end
@@ -31,12 +54,12 @@ class SkMetrics(keras.callbacks.Callback):
 		neg_dist = tf.reduce_sum(tf.square(anchor-negative), axis=-1)
 		return tf.reduce_sum(tf.cast(pos_dist < neg_dist, dtype=tf.int32), axis=0)
 
-	def on_train_begin(self, logs={}):
+	def on_train_begin(self, logs={}): # pylint: disable=unused-argument,dangerous-default-value
 		self.num_correct = []
 		self.frac_correct = []
 		self.diagnostics = []
 
-	def on_epoch_end(self, epoch, logs={}):
+	def on_epoch_end(self, epoch, logs={}): # pylint: disable=unused-argument,dangerous-default-value
 		correct = tf.Variable(0)
 		self.diagnostics.append("correct variable initialized")
 		for i in range(self.steps_per_callback):
@@ -53,34 +76,25 @@ class SkMetrics(keras.callbacks.Callback):
 '''
 Initialize triplet network
 '''
-input_shape = (773,)
-embedding_size = 10
 model = triplet_network_model(input_shape, embedding_size, hidden_layers=[512,256,64])
-
-keras.utils.plot_model(model, 'triplet_network.png', show_shapes=True) #Import error
+if plot_model:
+	keras.utils.plot_model(model, model_dir+'/triplet_network.png', show_shapes=True)
 
 '''
 Initialise trainig, and validation data
 '''
 train_files = [
-	os.path.abspath('data/samples/lichess_db_standard_rated_2020-02-06-tuples-strong.h5'),
-	os.path.abspath('data/samples/lichess_db_standard_rated_2013-02-tuples.h5')
+	os.path.abspath('data/train_small/lichess_db_standard_rated_2013-02-tuples.h5')
 ]
 validation_files = [
-	os.path.abspath('data/samples/lichess_db_standard_rated_2013-01-tuples.h5')
+	os.path.abspath('data/validation_small/lichess_db_standard_rated_2013-01-tuples.h5')
 ]
 
-train_batch_size = 16
-validation_batch_size = 16
-train_steps_per_epoch = 1000
-validation_steps_per_epoch = 10
-yield_augmented = 1
-
+# TODO: print WARNING if too few validation examples
 train_len = train_inputs_length(train_files, table_id_prefix="tuples")
 val_len = train_inputs_length(validation_files, table_id_prefix="tuples")
 print(f"{train_len} training samples.")
 print(f"{val_len} validation samples.")
-# TODO: print WARNING if too few validation examples
 
 # generators for train and test data
 train_generator = train_inputs_file_array_generator(train_files, table_id_prefix="tuples",
@@ -90,8 +104,8 @@ validation_generator = train_inputs_file_array_generator(validation_files, table
 metric_generator = train_inputs_file_array_generator(validation_files, table_id_prefix="tuples",
 					tuple_indices=[0,1,2,3,4,5,6], batch_size=validation_batch_size)
 
+# instantiate callbacks
 skmetrics = SkMetrics(metric_generator, batch_size=validation_batch_size, steps_per_callback=10)
-
 
 '''Train  the model'''
 history = model.fit(
@@ -113,4 +127,5 @@ plt.figure()
 plt.plot(np.arange(len(loss)), loss, label="training loss")
 plt.plot(np.arange(len(val_loss)), val_loss, label="validation loss")
 plt.plot(np.arange(len(triplet_accuracy)), triplet_accuracy, label="triplet_accuracy")
-plt.show()
+plt.legend()
+plt.savefig(model_dir+"/train_loss.png")

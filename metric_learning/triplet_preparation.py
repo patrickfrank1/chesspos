@@ -107,7 +107,7 @@ def train_inputs_file_array_generator(files, table_id_prefix, tuple_indices=[0,1
 						]
 						yield batch_train_hard
 						tuples = tuples[batch_size:,:,:]
-						
+
 
 def train_inputs_length(files, table_id_prefix):
 	samples = 0
