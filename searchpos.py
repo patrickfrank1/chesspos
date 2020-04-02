@@ -25,6 +25,8 @@ def bb_convert_bool_uint8(bb_array):
 	uint = np.copy(bb_array).reshape((bb_len, int(vec_len/8), 8)).astype(bool)
 	return np.reshape(np.packbits(uint, axis=-1), (bb_len, int(vec_len/8)))
 
+
+
 def load_bb(bb_array, faiss_index):
 	uint = bb_convert_bool_uint8(bb_array)
 	faiss_index.add(uint)
@@ -71,7 +73,7 @@ def convert_bb_to_board(bb):
 			bitmask = bb[index*64:(index+1)*64]
 			squares = np.argwhere(bitmask)
 			squares = [square for sublist in squares for square in sublist] # flatten list of lists
-			
+
 			for square in squares:
 				reconstructed.set_piece_at(square,piece)
 	# set global board information
@@ -90,26 +92,59 @@ def convert_bb_to_board(bb):
 
 	return reconstructed
 
+def index_query_positions(query_array, faiss_index, input_format='fen',
+	output_format='fen', num_results=10):
+	"""
+	Query the faiss index of stored bitboards and retrieve nearest neighbors for
+	each provided position.
+
+	:param input_format: format that the query is provided in valid choices 'fen' | 'bitboard'
+	:param output_format: format that the results are provided in valid choices 'fen' | 'bitboard'
+	"""
+	query = []
+	if input_format == 'fen':
+		for fen in query_array:
+			tmp = chess.Board(fen) # fen -> chess.Board
+			tmp = board_to_bb(tmp) # chess.Board -> bitboard
+			tmp = np.concatenate((tmp,np.zeros((3,),dtype=bool))) # bitboard -> padded bitboard
+			query.append(tmp)
+		query = np.asarray(query)
+		query = bb_convert_bool_uint8(query)
+		print(query.shape)
+	elif input_format == 'bitboard':
+		print("hello")
+	else:
+		raise ValueError("Invalid input format provided.")
+
 if __name__ == "__main__":
 
 	# test loading
-	print("\nTesting bitboard conversion")
-	fen = "rnb1kb1r/pp2pppp/2p2n2/3qN3/2pP4/6P1/PP2PP1P/RNBQKB1R w KQkq - 2 6"
-	board = chess.Board(fen)
-	print(board)
-	bitboard = board_to_bb(board)
-	print(bitboard.shape)
-	bitboard = np.concatenate((bitboard, np.zeros((3,),dtype=bool)))
-	print(bitboard.shape)
+	# print("\nTesting bitboard conversion")
+	# fen = "rnb1kb1r/pp2pppp/2p2n2/3qN3/2pP4/6P1/PP2PP1P/RNBQKB1R w KQkq - 2 6"
+	# board = chess.Board(fen)
+	# print(board)
+	# bitboard = board_to_bb(board)
+	# print(bitboard.shape)
+	# bitboard = np.concatenate((bitboard, np.zeros((3,),dtype=bool)))
+	# print(bitboard.shape)
 
-	reconstructed_board = convert_bb_to_board(bitboard)
-	print(board)
-	
+	# reconstructed_board = convert_bb_to_board(bitboard)
+	# print(board)
 
 	# test querying
-	# print("\nTesting index")
-	# index = init_binary_index(776)
-	# index = index_load_file_array(["data/bitboards/lichess_db_standard_rated_2013-01-bb"], "position_1", index)
+	print("\nTesting index")
+	index = init_binary_index(776)
+	index = index_load_file_array(
+		["data/bitboards/lichess_db_standard_rated_2013-01-bb"],
+		"position_1",
+		index
+	)
+	test_queries = [
+		"rnb1kb1r/pp2pppp/2p2n2/3qN3/2pP4/6P1/PP2PP1P/RNBQKB1R w KQkq - 2 6",
+		"r2qkb1r/ppp2pp1/2np1n1p/4p3/2B1P1b1/2NPBN2/PPP2PPP/R2Q1RK1 b kq - 3 7"
+	]
+	index_query_positions(test_queries, index, input_format='fen',
+	output_format='fen', num_results=10)
 	# # search board from previous test
 	# search_uint8 = bb_convert_bool_uint8(bitboard)
 	# print(search_uint8)
@@ -120,4 +155,3 @@ if __name__ == "__main__":
 	# 	for id in idx[0]:
 	# 		near_board = hf["position_1"][id]
 	# 		print(near_board)
-	# 		# TODO: convert bitboard to chess.board
