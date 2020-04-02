@@ -41,6 +41,7 @@ def index_add_bitboards(bb_array, faiss_index):
 def index_load_bitboard_file(file, id_string, faiss_index, chunks=int(1e6)):
 	fname = correct_file_ending(file, "h5")
 	chunks = int(chunks)
+	table_id = []
 
 	with h5py.File(fname, 'r') as hf:
 		print(f"File {fname} has keys {hf.keys()}")
@@ -51,15 +52,18 @@ def index_load_bitboard_file(file, id_string, faiss_index, chunks=int(1e6)):
 				for i in range(math.floor(hf_len/chunks)):
 					faiss_index = index_add_bitboards(hf[key][i*chunks:(i+1)*chunks,:], faiss_index)
 				rest_len = hf_len % chunks
-				
-				faiss_index = index_add_bitboards(hf[key][math.floor(hf_len/chunks)*chunks:,:], faiss_index)
 
-	return faiss_index
+				faiss_index = index_add_bitboards(hf[key][math.floor(hf_len/chunks)*chunks:,:], faiss_index)
+				table_id.append(faiss_index.ntotal)
+
+	return faiss_index, table_id
 
 def index_load_bitboard_file_array(file_list, id_string, faiss_index, chunks=int(1e6)):
+	file_ids = []
 	for file in file_list:
-		faiss_index = index_load_bitboard_file(file, id_string, faiss_index, chunks=chunks)
-	return faiss_index
+		faiss_index, t_id = index_load_bitboard_file(file, id_string, faiss_index, chunks=chunks)
+		file_ids.append(t_id)
+	return faiss_index, file_ids
 
 def bitboard_to_board(bb):
 	# set up empty board
@@ -124,10 +128,15 @@ def index_query_positions(query_array, faiss_index, input_format='fen',
 if __name__ == "__main__":
 	# test querying
 	print("\nTesting index")
+	# create binary index 
 	index = init_binary_index(776)
-	index = index_load_bitboard_file_array(
-		["data/bitboards/lichess_db_standard_rated_2013-01-bb"],
-		"position_1",
+	# load files
+	index, file_ids = index_load_bitboard_file_array(
+		[
+			"data/bitboards/lichess_db_standard_rated_2013-01-bb",
+			"data/bitboards/lichess_db_standard_rated_2013-02-bb"
+		],
+		"position",
 		index
 	)
 	test_queries = [
@@ -137,3 +146,4 @@ if __name__ == "__main__":
 	dist, idx = index_query_positions(test_queries, index, input_format='fen',
 	output_format='fen', num_results=10)
 	print(dist, idx)
+	print(file_ids)
