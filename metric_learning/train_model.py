@@ -144,15 +144,15 @@ def plot_metrics(train_loss, validation_loss, triplet_accuracy=None):
 
 	ax1.set_xlabel('epoch')
 	ax1.set_ylabel('loss')
-	ax1.plot(np.arange(len(train_loss)), train_loss, color='green', label="training loss")
-	ax1.plot(np.arange(len(validation_loss)), validation_loss, color='red', label="validation loss")
+	ax1.plot(np.arange(len(train_loss)), train_loss, 'gx-', label="training loss")
+	ax1.plot(np.arange(len(validation_loss)), validation_loss, 'rx-', label="validation loss")
 	plt.legend()
 
 	if triplet_accuracy is not None:
 		ax2 = ax1.twinx()  # instantiate a second axes that shares the same x-axis
 		color = 'tab:blue'
 		ax2.set_ylabel('triplet accuracy', color=color)
-		ax2.plot(np.arange(len(triplet_accuracy)), triplet_accuracy, color=color, label="triplet_accuracy")
+		ax2.plot(np.arange(len(triplet_accuracy)), triplet_accuracy, 'bo-', label="triplet_accuracy")
 		ax2.tick_params(axis='y', labelcolor=color)
 		plt.legend()
 
