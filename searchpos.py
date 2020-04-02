@@ -14,17 +14,6 @@ def init_binary_index(dim, threads=4):
 	# build index
 	return faiss.IndexBinaryFlat(dim)
 
-# def bb_convert_bool_uint8(bb_array):
-# 	bb_len = None
-# 	vec_len = None
-# 	if len(bb_array.shape) == 1:
-# 		bb_len = 1
-# 		vec_len = bb_array.shape[0]
-# 	else:
-# 		bb_len, vec_len = bb_array.shape
-# 	uint = np.copy(bb_array).reshape((bb_len, int(vec_len/8), 8)).astype(bool)
-# 	return np.reshape(np.packbits(uint, axis=-1), (bb_len, int(vec_len/8)))
-
 def bitboard_to_uint8(bb_array):
 	bb_arr = np.asarray(bb_array, dtype=bool)
 	if len(bb_arr.shape) == 1: #reshape if single vector provided
@@ -71,10 +60,6 @@ def index_load_bitboard_file_array(file_list, id_string, faiss_index, chunks=int
 	for file in file_list:
 		faiss_index = index_load_bitboard_file(file, id_string, faiss_index, chunks=chunks)
 	return faiss_index
-
-# def index_search_bitboard(query_array, faiss_index, num_results=10):
-# 	D, I = faiss_index.search(query_array, k=num_results)
-# 	return D, I
 
 def bitboard_to_board(bb):
 	# set up empty board
@@ -149,13 +134,6 @@ if __name__ == "__main__":
 		"rnb1kb1r/pp2pppp/2p2n2/3qN3/2pP4/6P1/PP2PP1P/RNBQKB1R w KQkq - 2 6",
 		"r2qkb1r/ppp2pp1/2np1n1p/4p3/2B1P1b1/2NPBN2/PPP2PPP/R2Q1RK1 b kq - 3 7"
 	]
-	D, I = index_query_positions(test_queries, index, input_format='fen',
+	dist, idx = index_query_positions(test_queries, index, input_format='fen',
 	output_format='fen', num_results=10)
-	print(D, I)
-
-	
-
-	# with h5py.File("data/bitboards/lichess_db_standard_rated_2013-01-bb.h5", 'r') as hf:
-	# 	for id in idx[0]:
-	# 		near_board = hf["position_1"][id]
-	# 		print(near_board)
+	print(dist, idx)
