@@ -25,7 +25,23 @@ def bb_convert_bool_uint8(bb_array):
 	uint = np.copy(bb_array).reshape((bb_len, int(vec_len/8), 8)).astype(bool)
 	return np.reshape(np.packbits(uint, axis=-1), (bb_len, int(vec_len/8)))
 
+def bitboard_to_uint8(bb_array):
+	bb_arr = np.asarray(bb_array, dtype=bool)
+	if len(bb_arr.shape) == 1: #reshape if single vector provided
+		bb_arr = bb_arr.reshape((1,bb_arr.shape[0]))
 
+	arr_len, vec_len = bb_arr.shape
+
+	if vec_len % 8 != 0: # bitboard padding
+		bb_arr = np.hstack(( bb_arr, np.zeros((arr_len,8-vec_len%8), dtype=bool) ))
+
+	uint = bb_arr.reshape((arr_len, 1+int(vec_len/8), 8)).astype(bool)
+
+	if arr_len == 1:
+		uint = np.reshape(np.packbits(uint, axis=-1), (1+int(vec_len/8,)))
+	else:
+		uint = np.reshape(np.packbits(uint, axis=-1), (arr_len, 1+int(vec_len/8)))
+	return uint
 
 def load_bb(bb_array, faiss_index):
 	uint = bb_convert_bool_uint8(bb_array)
