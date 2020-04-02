@@ -49,43 +49,46 @@ def load_h5_bb(file, id_string, faiss_index, chunks=int(1e6)):
 				faiss_index = load_bb(vectors, faiss_index)
 	return faiss_index
 
-def load_h5_array(file_list, id_string, faiss_index, chunks=int(1e6)):
+def index_load_file_array(file_list, id_string, faiss_index, chunks=int(1e6)):
 	for file in file_list:
 		faiss_index = load_h5_bb(file, id_string, faiss_index, chunks=chunks)
 	return faiss_index
 
-def search_bb(query_array, faiss_index, num_results=10):
+def index_search_bb(query_array, faiss_index, num_results=10):
 	D = faiss_index.search(query_array, k=num_results)
 	return D
 
 def convert_bb_to_board(bb):
-	rec_board = chess.Board()
-	rec_board.clear()
-	pieces = list(zip(6*["white"],["pawn","knight","bishop","rook","queen","king"]))
-	pieces = pieces + list(zip(6*["black"],["pawn","knight","bishop","rook","queen","king"]))
-	#print(pieces)
-	for color in [1, 0]:
-		for i in range(1, 7): # P N B R Q K / white
+	# set up empty board
+	reconstructed = chess.Board()
+	reconstructed.clear()
+	# loop over all pieces and squares
+	for color in [1, 0]: # white, black
+		for i in range(1, 7): # P N B R Q K
 			index = (1-color)*6+i-1
-			print(f"bitmask for pieces: {pieces[index]}")
-			print(f"start index: {index*64}")
-			print(f"end index: {(index+1)*64}")
-			bitmask = bb[index*64:(index+1)*64]
-			print(len(bitmask))
-			squares = np.argwhere(bitmask)
-			squares = [square for sublist in squares for square in sublist]
-			print(squares)
 			piece = chess.Piece(i,color)
+
+			bitmask = bb[index*64:(index+1)*64]
+			squares = np.argwhere(bitmask)
+			squares = [square for sublist in squares for square in sublist] # flatten list of lists
+			
 			for square in squares:
-				rec_board.set_piece_at(square,piece)
-	turn = bb[768]
-	castling_a1 = bb[769]
-	castling_h1 = bb[770]
-	castling_a8 = bb[771]
-	castling_h8 = bb[772]
-	print(turn,castling_a1,castling_a8,castling_h1,castling_h8)
-	print(bb[773:])
-	print(rec_board)
+				reconstructed.set_piece_at(square,piece)
+	# set global board information
+	reconstructed.turn = bb[768]
+
+	castling_rights = ''
+	if bb[770]: # castling_h1
+		castling_rights += 'K'
+	if bb[769]: # castling_a1
+		castling_rights += 'Q'
+	if bb[772]: # castling_h8
+		castling_rights += 'k'
+	if bb[771]: # castling_a8
+		castling_rights += 'q'
+	reconstructed.set_castling_fen(castling_rights)
+
+	return reconstructed
 
 if __name__ == "__main__":
 
@@ -106,11 +109,11 @@ if __name__ == "__main__":
 	# test querying
 	# print("\nTesting index")
 	# index = init_binary_index(776)
-	# index = load_h5_array(["data/bitboards/lichess_db_standard_rated_2013-01-bb"], "position_1", index)
+	# index = index_load_file_array(["data/bitboards/lichess_db_standard_rated_2013-01-bb"], "position_1", index)
 	# # search board from previous test
 	# search_uint8 = bb_convert_bool_uint8(bitboard)
 	# print(search_uint8)
-	# dist, idx = search_bb(search_uint8, index)
+	# dist, idx = index_search_bb(search_uint8, index)
 	# print(dist, idx)
 
 	# with h5py.File("data/bitboards/lichess_db_standard_rated_2013-01-bb.h5", 'r') as hf:
