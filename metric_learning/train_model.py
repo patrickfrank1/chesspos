@@ -85,8 +85,8 @@ if plot_model:
 Initialise trainig, and validation data
 '''
 train_files = [
-	os.path.abspath('data/train_small/lichess_db_standard_rated_2013-02-tuples.h5'),
-	os.path.abspath('data/train_large/lichess_db_standard_rated_2013-03-tuples.h5'),
+	#os.path.abspath('data/train_small/lichess_db_standard_rated_2013-02-tuples.h5'),
+	#os.path.abspath('data/train_large/lichess_db_standard_rated_2013-03-tuples.h5'),
 	os.path.abspath('data/train_large/lichess_db_standard_rated_2013-04-tuples.h5')
 ]
 validation_files = [
@@ -130,15 +130,34 @@ history = model.fit(
 	callbacks=[skmetrics, early_stopping, cp]
 )
 
+'''
+Visualise results
+'''
 print('history dict:', history.history.keys())
 
 loss = history.history['loss']
 val_loss = history.history['val_loss']
-triplet_accuracy = skmetrics.frac_correct
+triplet_acc = skmetrics.frac_correct
 
-plt.figure()
-plt.plot(np.arange(len(loss)), loss, label="training loss")
-plt.plot(np.arange(len(val_loss)), val_loss, label="validation loss")
-plt.plot(np.arange(len(triplet_accuracy)), triplet_accuracy, label="triplet_accuracy")
-plt.legend()
-plt.savefig(model_dir+"/train_loss.png")
+def plot_metrics(train_loss, validation_loss, triplet_accuracy=None):
+	fig, ax1 = plt.subplots()
+
+	ax1.set_xlabel('epoch')
+	ax1.set_ylabel('loss')
+	ax1.plot(np.arange(len(train_loss)), train_loss, color='green', label="training loss")
+	ax1.plot(np.arange(len(validation_loss)), validation_loss, color='red', label="validation loss")
+	plt.legend()
+
+	if triplet_accuracy is not None:
+		ax2 = ax1.twinx()  # instantiate a second axes that shares the same x-axis
+		color = 'tab:blue'
+		ax2.set_ylabel('triplet accuracy', color=color)
+		ax2.plot(np.arange(len(triplet_accuracy)), triplet_accuracy, color=color, label="triplet_accuracy")
+		ax2.tick_params(axis='y', labelcolor=color)
+		plt.legend()
+
+	fig.tight_layout()
+	plt.savefig(model_dir+"/train_loss.png")
+	return 1
+
+plot_metrics(loss, val_loss, triplet_accuracy=triplet_acc)
