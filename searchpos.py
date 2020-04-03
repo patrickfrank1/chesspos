@@ -32,6 +32,11 @@ def bitboard_to_uint8(bb_array):
 		uint = np.reshape(np.packbits(uint, axis=-1), (arr_len, 1+int(vec_len/8)))
 	return uint
 
+def uint8_to_bitboard(uint8_array, trim_last_bits=3):
+	unpacked = np.unpackbits(uint8_array, axis=-1, count=-int(trim_last_bits))
+	return np.asarray(unpacked, dtype=bool)
+
+
 def index_add_bitboards(bb_array, faiss_index):
 	uint = bitboard_to_uint8(bb_array)
 	faiss_index.add(uint)
@@ -51,7 +56,6 @@ def index_load_bitboard_file(file, id_string, faiss_index, chunks=int(1e6)):
 
 				for i in range(math.floor(hf_len/chunks)):
 					faiss_index = index_add_bitboards(hf[key][i*chunks:(i+1)*chunks,:], faiss_index)
-				rest_len = hf_len % chunks
 
 				faiss_index = index_add_bitboards(hf[key][math.floor(hf_len/chunks)*chunks:,:], faiss_index)
 				table_id.append(faiss_index.ntotal)
@@ -67,8 +71,8 @@ def index_load_bitboard_file_array(file_list, id_string, faiss_index, chunks=int
 
 def bitboard_to_board(bb):
 	# set up empty board
-	reconstructed = chess.Board()
-	reconstructed.clear()
+	reconstructed_board = chess.Board()
+	reconstructed_board.clear()
 	# loop over all pieces and squares
 	for color in [1, 0]: # white, black
 		for i in range(1, 7): # P N B R Q K
@@ -80,9 +84,9 @@ def bitboard_to_board(bb):
 			squares = [square for sublist in squares for square in sublist] # flatten list of lists
 
 			for square in squares:
-				reconstructed.set_piece_at(square,piece)
+				reconstructed_board.set_piece_at(square,piece)
 	# set global board information
-	reconstructed.turn = bb[768]
+	reconstructed_board.turn = bb[768]
 
 	castling_rights = ''
 	if bb[770]: # castling_h1
@@ -93,9 +97,20 @@ def bitboard_to_board(bb):
 		castling_rights += 'k'
 	if bb[771]: # castling_a8
 		castling_rights += 'q'
-	reconstructed.set_castling_fen(castling_rights)
+	reconstructed_board.set_castling_fen(castling_rights)
 
-	return reconstructed
+	return reconstructed_board
+
+def index_search_and_retrieve(queries, faiss_index, num_results=10):
+	D, I = faiss_index.search(queries, k=num_results)
+	results = []
+	for q_nr in range(len(queries)): # loop over queries
+		q_res = []
+		for res_nr in range(num_results): # loop over results for that query
+			R = faiss_index.reconstruct(int(I[q_nr,res_nr]))
+			q_res.append(R)
+		results.append(q_res)
+	return D, I, results
 
 def index_query_positions(query_array, faiss_index, input_format='fen',
 	output_format='fen', num_results=10):
@@ -104,46 +119,65 @@ def index_query_positions(query_array, faiss_index, input_format='fen',
 	each provided position.
 
 	:param input_format: format that the query is provided in valid choices 'fen' | 'bitboard'
-	:param output_format: format that the results are provided in valid choices 'fen' | 'bitboard'
+	:param output_format: format that the results are provided in valid choices 'fen' | 'bitboard' | 'board'
 	"""
+	#prepare input
 	query = []
-	if input_format == 'fen':
-		for fen in query_array:
-			tmp = chess.Board(fen) # fen -> chess.Board
-			tmp = board_to_bb(tmp) # chess.Board -> bitboard
-			query.append(tmp)
+	if input_format in ['fen','bitboard']:
+		if input_format == 'fen':
+			for fen in query_array:
+				tmp = chess.Board(fen) # fen -> chess.Board
+				tmp = board_to_bb(tmp) # chess.Board -> bitboard
+				query.append(tmp)
 		query = np.asarray(query)
 		query = bitboard_to_uint8(query)
 		print("\n",query.shape)
-
-	elif input_format == 'bitboard':
-		print("hello")
 	else:
 		raise ValueError("Invalid input format provided.")
 
-	D, I = faiss_index.search(query, k=num_results)
+	# search faiss index and retrieve closest bitboards
+	distance, _, results = index_search_and_retrieve(query, faiss_index, num_results=num_results)
 
-	return D, I
+	# prepare output
+	if output_format in ['fen','bitboard','board']:
+		for q_nr in range(len(results)): # loop over queries
+			for res_nr in range(num_results): # loop over resluts per query
+				results[q_nr][res_nr] = uint8_to_bitboard(results[q_nr][res_nr], trim_last_bits=3)
+				if output_format in ['fen','board']:
+					results[q_nr][res_nr] = bitboard_to_board(results[q_nr][res_nr])
+					if output_format == 'fen':
+						results[q_nr][res_nr] = results[q_nr][res_nr].fen()
+	else:
+		raise ValueError("Invalid input format provided.")
+
+	return distance, results
 
 if __name__ == "__main__":
+
 	# test querying
 	print("\nTesting index")
-	# create binary index 
-	index = init_binary_index(776)
-	# load files
-	index, file_ids = index_load_bitboard_file_array(
-		[
-			"data/bitboards/lichess_db_standard_rated_2013-01-bb",
-			"data/bitboards/lichess_db_standard_rated_2013-02-bb"
-		],
-		"position",
-		index
-	)
+	# # create binary index 
+	# index = init_binary_index(776)
+	# # load files
+	# index, file_ids = index_load_bitboard_file_array(
+	# 	[
+	# 		"data/bitboards/lichess_db_standard_rated_2013-01-bb",
+	# 		"data/bitboards/lichess_db_standard_rated_2013-02-bb"
+	# 	],
+	# 	"position",
+	# 	index
+	# )
+	# faiss.write_index_binary(index,"test.index")
+
+	# Load index from file
+	index = faiss.read_index_binary("data/test.index") 
 	test_queries = [
 		"rnb1kb1r/pp2pppp/2p2n2/3qN3/2pP4/6P1/PP2PP1P/RNBQKB1R w KQkq - 2 6",
 		"r2qkb1r/ppp2pp1/2np1n1p/4p3/2B1P1b1/2NPBN2/PPP2PPP/R2Q1RK1 b kq - 3 7"
 	]
-	dist, idx = index_query_positions(test_queries, index, input_format='fen',
-	output_format='fen', num_results=10)
-	print(dist, idx)
-	print(file_ids)
+	dist, reconstructed = index_query_positions(test_queries, index, input_format='fen',
+	output_format='board', num_results=10)
+	print(dist)
+	#print(file_ids)
+	print(reconstructed[0][0])
+	
