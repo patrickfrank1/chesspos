@@ -152,6 +152,26 @@ def index_query_positions(query_array, faiss_index, input_format='fen',
 
 	return distance, results
 
+def index_save(faiss_index, save_name, is_binary):
+	save = correct_file_ending(save_name, 'faiss')
+
+	if is_binary:
+		faiss.write_index_binary(faiss_index, name)
+	else:
+		faiss.write_index(faiss_index, name)
+	
+	return f"Index saved to file {name}"
+
+def index_load(faiss_index, load_name, is_binary):
+	load = correct_file_ending(load_name, 'faiss')
+	if is_binary:
+		faiss.read_index_binary(faiss_index, load)
+	else:
+		faiss.read_index_binary(faiss_index, load)
+
+	return f"Index loaded from file {load}"
+
+
 if __name__ == "__main__":
 
 	# test querying
@@ -179,5 +199,4 @@ if __name__ == "__main__":
 	output_format='board', num_results=10)
 	print(dist)
 	#print(file_ids)
-	print(reconstructed[0][0])
-	
+	print(reconstructed)
