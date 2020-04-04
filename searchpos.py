@@ -156,11 +156,11 @@ def index_save(faiss_index, save_name, is_binary):
 	save = correct_file_ending(save_name, 'faiss')
 
 	if is_binary:
-		faiss.write_index_binary(faiss_index, name)
+		faiss.write_index_binary(faiss_index, save)
 	else:
-		faiss.write_index(faiss_index, name)
+		faiss.write_index(faiss_index, save)
 	
-	return f"Index saved to file {name}"
+	return f"Index saved to file {save}"
 
 def index_load(faiss_index, load_name, is_binary):
 	load = correct_file_ending(load_name, 'faiss')
