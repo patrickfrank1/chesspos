@@ -131,7 +131,6 @@ def index_query_positions(query_array, faiss_index, input_format='fen',
 				query.append(tmp)
 		query = np.asarray(query)
 		query = bitboard_to_uint8(query)
-		print("\n",query.shape)
 	else:
 		raise ValueError("Invalid input format provided.")
 
