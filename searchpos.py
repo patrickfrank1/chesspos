@@ -135,6 +135,9 @@ def index_query_positions(query_array, faiss_index, input_format='fen',
 	else:
 		raise ValueError("Invalid input format provided.")
 
+	#reshape if only single query
+	if len(query.shape) == 1:
+		query = query.reshape((1,-1)) 
 	# search faiss index and retrieve closest bitboards
 	distance, _, results = index_search_and_retrieve(query, faiss_index, num_results=num_results)
 
@@ -162,14 +165,15 @@ def index_save(faiss_index, save_name, is_binary):
 	
 	return f"Index saved to file {save}"
 
-def index_load(faiss_index, load_name, is_binary):
+def index_load(load_name, is_binary):
 	load = correct_file_ending(load_name, 'faiss')
+	faiss_index = None
 	if is_binary:
-		faiss.read_index_binary(faiss_index, load)
+		faiss_index = faiss.read_index_binary(load)
 	else:
-		faiss.read_index_binary(faiss_index, load)
+		faiss_index = faiss.read_index_binary(load)
 
-	return f"Index loaded from file {load}"
+	return faiss_index
 
 
 if __name__ == "__main__":
