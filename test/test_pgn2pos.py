@@ -7,7 +7,6 @@ import numpy as np
 import chess
 import pgn2pos
 
-
 start_board = chess.Board(chess.STARTING_FEN)
 start_bb = np.load("test/startpos.npy")
 
