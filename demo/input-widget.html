@@ -1,0 +1,72 @@
+<!-- '''Cell 2: run once to create the widget''' -->
+<style>
+.spare-pieces-7492f img {
+    display: inline-block
+}
+</style>
+
+<link rel="stylesheet" href="https://unpkg.com/@chrisoakman/chessboardjs@1.0.0/dist/chessboard-1.0.0.min.css" integrity="sha384-q94+BZtLrkL1/ohfjR8c6L+A6qzNH9R2hBLwyoAfu3i/WCvQjzL2RQJ3uNHDISdU" crossorigin="anonymous">
+
+<table>
+  <tr>
+    <td>
+      <div id="myBoard" style="width: 400px"></div>
+      <button id="startBtn">Start Position</button>
+      <button id="clearBtn">Clear Board</button>
+      <button id="export">Export Position</button>
+    </td>
+    <td>
+      <span style="font-weight:bold">Side to play</span><br>
+      <label>White <input type="radio" id="sideW" name="side" value="w" checked></label><br>
+      <label>Black <input type="radio" id="sideB" name="side" value="b"></label><br>
+      <span style="font-weight:bold">Castling Rights</span><br>
+      <label>White Queenside <input type="checkbox" id="Q" value="Q" checked></label><br>
+      <label>White Kingside <input type="checkbox" id="K" value="K" checked></label><br>
+      <label>Black Queenside <input type="checkbox" id="q" value="q" checked></label><br>
+      <label>Black Kingside <input type="checkbox" id="k" value="k" checked></label>
+    </td>
+  </tr>
+
+</table>
+
+
+<script src="https://unpkg.com/@chrisoakman/chessboardjs@1.0.0/dist/chessboard-1.0.0.min.js" integrity="sha384-8Vi8VHwn3vjQ9eUHUxex3JSN/NFqUg3QbPyX8kWyb93+8AC/pPWTzj+nHtbC5bxD" crossorigin="anonymous"></script>
+
+<script>
+var board = Chessboard('myBoard', {
+  draggable: true,
+  dropOffBoard: 'trash',
+  sparePieces: true
+});
+var fen = undefined;
+document.getElementById('startBtn').onclick = board.start;
+document.getElementById('clearBtn').onclick = board.clear;
+document.getElementById('export').onclick = function(){
+  var fen = board.fen();
+  var side = "";
+  var castling = "";
+  if(document.getElementById('sideW').checked){
+    side = document.getElementById('sideW').value;
+  }
+  if(document.getElementById('sideB').checked){
+    side = document.getElementById('sideB').value;
+  }
+  if(document.getElementById('K').checked){
+    castling += 'K';
+  }
+  if(document.getElementById('Q').checked){
+    castling += 'Q';
+  }
+  if(document.getElementById('k').checked){
+    castling += 'k';
+  }
+  if(document.getElementById('q').checked){
+    castling += 'q';
+  }
+  if(castling == ""){
+    castling = "-";
+  }
+  alert(`The fen string for your position is '${fen} ${side} ${castling} - 0 1' please execute the cell below to add it to the query queue.`);
+  IPython.notebook.kernel.execute(`fen='${fen} ${side} ${castling} - 0 1'`);
+};
+</script>
