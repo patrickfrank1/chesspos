@@ -1,12 +1,8 @@
-import os
-import sys
-sys.path.insert(1, os.path.join(sys.path[0], '..'))
-
 import numpy as np
 import chess
 
-from pgn2pos import board_to_bb
-import searchpos
+from chesspos.convert import board_to_bitboard
+import chesspos.searchpos as searchpos
 
 def test_bitboard_to_uint8():
 	BITBOARD = np.round(np.random.random_sample((773,))).astype(bool)
@@ -35,12 +31,11 @@ def test_unit8_to_bitboard():
 	assert bitboards_restored.dtype == bool
 	assert np.all(bitboards_restored == BITBOARDS)
 
-
 def test_bitboard_to_board():
 	FEN = "rnb1kb1r/pp2pppp/2p2n2/3qN3/2pP4/6P1/PP2PP1P/RNBQKB1R w KQkq - 2 6"
 
 	board = chess.Board(FEN)
-	bitboard = board_to_bb(board)
+	bitboard = board_to_bitboard(board)
 	assert bitboard.dtype == bool 
 	assert bitboard.shape == (773,)
 

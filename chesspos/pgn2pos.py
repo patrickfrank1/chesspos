@@ -1,11 +1,10 @@
-#!/usr/bin/env python3
-
 import argparse
+
+import numpy as np
+from numpy.random import randint, shuffle
+import h5py
 import chess
 import chess.pgn
-import numpy as np
-import h5py
-from numpy.random import randint, shuffle
 
 from chesspos.utils import correct_file_ending
 from chesspos.convert import board_to_bitboard
@@ -50,7 +49,7 @@ def pgn_to_bitboard(pgn_file, generate_tuples=False, save_file=None,
 				counter = 1
 				game_list = []
 				if next_game is None:
-					break  # end of file, break the while True loop
+					break # end of file, break the while True loop
 
 			else:
 				temp_game = game_bb(next_game, game_nr=counter)
