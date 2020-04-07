@@ -86,15 +86,6 @@ def filter_out(header, game_filter):
 			pass
 	return out
 
-def game_fen(game):
-
-	board = chess.Board()
-	pos = []
-	for move in game.mainline_moves():
-		board.push(move)
-		pos.append(board.fen())
-	return pos
-
 def game_bb(game, game_nr=0):
 
 	board = chess.Board()
@@ -130,24 +121,6 @@ def save_bb(game_list, game_id, file, dset_num=0):
 		data1[:] = position[:]
 		data2[:] = gid[:]
 
-def save_fen(game_list, file, dset_num=0):
-	fname = correct_file_ending(file, "h5")
-	position = []
-	game_id = []
-
-	for (i, game) in enumerate(game_list):
-		for pos in game:
-			position.append(pos)
-			game_id.append(i)
-
-	with h5py.File(fname, "w") as f:
-		data1 = f.create_dataset(f"position_{dset_num}", shape=(len(position),),
-			dtype=h5py.string_dtype(encoding='ascii'), compression="gzip", compression_opts=9)
-		data2 = f.create_dataset(f"game_id_{dset_num}", shape=(len(position),),
-			dtype=np.int, compression="gzip", compression_opts=9)
-
-		data1[:] = position[:]
-		data2[:] = game_id[:]
 
 def tuple_generator(game_list):
 	tuples = []
