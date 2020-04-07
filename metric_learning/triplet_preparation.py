@@ -2,19 +2,7 @@ import os
 import numpy as np
 import h5py
 from sklearn.model_selection import train_test_split
-
-def correct_file_ending(file, ending):
-	'''
-	Check if file has the desired file ending, if it does not, then append the
-	correct ending.
-	'''
-	len_ending = len(ending)
-	out_file = ""
-	if file[-len_ending:] == ending:
-		out_file = file
-	else:
-		out_file = f"{file}.{ending}"
-	return out_file
+from chesspos.utils import correct_file_ending
 
 def tuples_from_table(file, table, tuple_indices=[0, 1, 6]):
 	'''

@@ -6,9 +6,10 @@ import chess.pgn
 import numpy as np
 import h5py
 from numpy.random import randint, shuffle
+from chesspos.utils import correct_file_ending
 
 def pgn_to_bitboard(pgn_file, generate_tuples=False, save_file=None,
-			tuple_file=None, chunksize=100000, game_filter=None):
+	tuple_file=None, chunksize=100000, game_filter=None):
 	game_list = []
 	game_id = []
 	counter = 1
@@ -125,15 +126,6 @@ def board_to_bb(board):
 	])
 	embedding = np.concatenate((embedding, additional))
 	return embedding
-
-def correct_file_ending(file, ending):
-	len_ending = len(ending)
-	out_file = ""
-	if file[-len_ending:] == ending:
-		out_file = file
-	else:
-		out_file = f"{file}.{ending}"
-	return out_file
 
 def save_bb(game_list, game_id, file, dset_num=0):
 	fname = correct_file_ending(file, "h5")

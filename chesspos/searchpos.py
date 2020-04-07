@@ -4,8 +4,9 @@ import faiss
 import numpy as np
 import h5py
 import chess
+from chesspos.utils import correct_file_ending
 
-from pgn2pos import correct_file_ending, board_to_bb
+from pgn2pos import board_to_bb
 
 def init_binary_index(dim, threads=4):
 	# set threads
