@@ -40,7 +40,7 @@ if __name__ == "__main__":
 		save_path = abspath(args.save_path)
 
 	# execute script with inputs
-	files = files_from_directory(args.input_directory)
+	files = files_from_directory(args.input_directory, file_type='h5')
 	print("Files to be added to index:")
 	print(files)
 	index = init_binary_index(dimension)

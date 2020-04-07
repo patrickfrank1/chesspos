@@ -1,9 +1,14 @@
 from os import listdir
 from os.path import isfile, join, abspath
 
-def files_from_directory(directory):
+def files_from_directory(directory, file_type=None):
 	absdir = abspath(directory)
-	file_arr = [join(absdir, f) for f in listdir(absdir) if isfile(join(absdir, f))]
+	file_arr = None
+	if file_type is None:
+		file_arr = [join(absdir, f) for f in listdir(absdir) if isfile(join(absdir, f))]
+	else:
+		file_arr = [join(absdir, f) for f in listdir(absdir)
+								if (isfile(join(absdir, f)) and f.endswith(file_type))]
 	return file_arr
 
 def correct_file_ending(file, ending):
@@ -16,4 +21,4 @@ def correct_file_ending(file, ending):
 	return out_file
 
 if __name__ == "__main__":
-	print(files_from_directory("data/bitboards/testdir"))
+	print(files_from_directory("data/bitboards/testdir", file_type="h5"))
