@@ -1,8 +1,8 @@
 import numpy as np
 import chess
 
-from chesspos.convert import board_to_bitboard
-import chesspos.searchpos as searchpos
+from chesspos.convert import board_to_bitboard, bitboard_to_board
+import chesspos.binary_index as searchpos
 
 def test_bitboard_to_uint8():
 	BITBOARD = np.round(np.random.random_sample((773,))).astype(bool)
@@ -39,6 +39,6 @@ def test_bitboard_to_board():
 	assert bitboard.dtype == bool 
 	assert bitboard.shape == (773,)
 
-	reconstructed_board = searchpos.bitboard_to_board(bitboard)
+	reconstructed_board = bitboard_to_board(bitboard)
 	reconstructed_fen = reconstructed_board.fen()
 	assert FEN[:-3] == reconstructed_fen[:-3]
