@@ -1,8 +1,9 @@
 from os import listdir
-from os.path import isfile, join
+from os.path import isfile, join, abspath
 
 def files_from_directory(directory):
-	file_arr = [f for f in listdir(directory) if isfile(join(directory, f))]
+	absdir = abspath(directory)
+	file_arr = [join(absdir, f) for f in listdir(absdir) if isfile(join(absdir, f))]
 	return file_arr
 
 def correct_file_ending(file, ending):
@@ -13,3 +14,6 @@ def correct_file_ending(file, ending):
 	else:
 		out_file = f"{file}.{ending}"
 	return out_file
+
+if __name__ == "__main__":
+	print(files_from_directory("data/bitboards/testdir"))

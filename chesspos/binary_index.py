@@ -10,7 +10,6 @@ from chesspos.convert import bitboard_to_board, board_to_bitboard
 def init_binary_index(dim, threads=4):
 	# set threads
 	faiss.omp_set_num_threads(threads)
-
 	# build index
 	return faiss.IndexBinaryFlat(dim)
 
@@ -129,7 +128,7 @@ def index_save(faiss_index, save_name, is_binary):
 		faiss.write_index_binary(faiss_index, save)
 	else:
 		faiss.write_index(faiss_index, save)
-	
+
 	return f"Index saved to file {save}"
 
 def index_load(load_name, is_binary):
@@ -145,29 +144,30 @@ def index_load(load_name, is_binary):
 
 if __name__ == "__main__":
 
+	from chesspos.utils import files_from_directory
+
+	files = files_from_directory("data/bitboards/testdir")
+	print(files)
 	# test querying
 	print("\nTesting index")
-	# # create binary index 
-	# index = init_binary_index(776)
-	# # load files
-	# index, file_ids = index_load_bitboard_file_array(
-	# 	[
-	# 		"data/bitboards/lichess_db_standard_rated_2013-01-bb",
-	# 		"data/bitboards/lichess_db_standard_rated_2013-02-bb"
-	# 	],
-	# 	"position",
-	# 	index
-	# )
-	# faiss.write_index_binary(index,"test.index")
+	# create binary index 
+	index = init_binary_index(776)
+	# load files
+	index, file_ids = index_load_bitboard_file_array(
+		files,
+		"position",
+		index
+	)
+	index_save(index, "data/test_index", is_binary=True)
 
 	# Load index from file
-	index = faiss.read_index_binary("data/test.index") 
-	test_queries = [
-		"rnb1kb1r/pp2pppp/2p2n2/3qN3/2pP4/6P1/PP2PP1P/RNBQKB1R w KQkq - 2 6",
-		"r2qkb1r/ppp2pp1/2np1n1p/4p3/2B1P1b1/2NPBN2/PPP2PPP/R2Q1RK1 b kq - 3 7"
-	]
-	dist, reconstructed = index_query_positions(test_queries, index, input_format='fen',
-	output_format='board', num_results=10)
-	print(dist)
-	#print(file_ids)
-	print(reconstructed)
+	# index = faiss.read_index_binary("data/test.index") 
+	# test_queries = [
+	# 	"rnb1kb1r/pp2pppp/2p2n2/3qN3/2pP4/6P1/PP2PP1P/RNBQKB1R w KQkq - 2 6",
+	# 	"r2qkb1r/ppp2pp1/2np1n1p/4p3/2B1P1b1/2NPBN2/PPP2PPP/R2Q1RK1 b kq - 3 7"
+	# ]
+	# dist, reconstructed = index_query_positions(test_queries, index, input_format='fen',
+	# output_format='board', num_results=10)
+	# print(dist)
+	# #print(file_ids)
+	# print(reconstructed)
