@@ -6,7 +6,9 @@ import chess.pgn
 import numpy as np
 import h5py
 from numpy.random import randint, shuffle
+
 from chesspos.utils import correct_file_ending
+from chesspos.convert import board_to_bitboard
 
 def pgn_to_bitboard(pgn_file, generate_tuples=False, save_file=None,
 	tuple_file=None, chunksize=100000, game_filter=None):
@@ -105,27 +107,9 @@ def game_bb(game, game_nr=0):
 			print(e)
 			return pos
 		else:
-			embedding = board_to_bb(board)
+			embedding = board_to_bitboard(board)
 			pos.append(embedding)
 	return pos
-
-def board_to_bb(board):
-	embedding = np.array([], dtype=bool)
-	for color in [1, 0]:
-		for i in range(1, 7): # P N B R Q K / white
-			bmp = np.zeros(shape=(64,)).astype(bool)
-			for j in list(board.pieces(i, color)):
-				bmp[j] = True
-			embedding = np.concatenate((embedding, bmp))
-	additional = np.array([
-		bool(board.turn),
-		bool(board.castling_rights & chess.BB_A1),
-		bool(board.castling_rights & chess.BB_H1),
-		bool(board.castling_rights & chess.BB_A8),
-		bool(board.castling_rights & chess.BB_H8)
-	])
-	embedding = np.concatenate((embedding, additional))
-	return embedding
 
 def save_bb(game_list, game_id, file, dset_num=0):
 	fname = correct_file_ending(file, "h5")
