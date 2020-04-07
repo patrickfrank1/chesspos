@@ -26,7 +26,7 @@ if __name__ == "__main__":
 	)
 	parser.add_argument(
 		'--tuples', type=bool, default=False, action="store",
-		help='h5py file to sore the encoded positions'
+		help='Do you want to generate tuples as well? True|False(default)'
 	)
 	parser.add_argument(
 		'--save_tuples', type=str, action="store",
