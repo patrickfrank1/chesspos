@@ -19,6 +19,3 @@ def correct_file_ending(file, ending):
 	else:
 		out_file = f"{file}.{ending}"
 	return out_file
-
-if __name__ == "__main__":
-	print(files_from_directory("data/bitboards/testdir", file_type="h5"))

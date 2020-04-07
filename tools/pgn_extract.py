@@ -1,4 +1,5 @@
 import argparse
+
 from chesspos.pgnextract import pgn_to_bitboard
 
 if __name__ == "__main__":
@@ -52,7 +53,10 @@ if __name__ == "__main__":
 	print(f"Chunksize: {args.chunksize}\n\n")
 
 	pgn_to_bitboard(
-		args.input, save_file=args.save_position,
-		generate_tuples=args.tuples, tuple_file=args.save_tuples,
-		chunksize=args.chunksize, game_filter=args.filter
+		args.input,
+		save_file=args.save_position,
+		generate_tuples=args.tuples,
+		tuple_file=args.save_tuples,
+		chunksize=args.chunksize,
+		game_filter=args.filter
 	)

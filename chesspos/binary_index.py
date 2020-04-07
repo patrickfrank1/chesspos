@@ -4,6 +4,7 @@ import faiss
 import numpy as np
 import h5py
 import chess
+
 from chesspos.utils import correct_file_ending
 from chesspos.convert import bitboard_to_board, board_to_bitboard
 
@@ -103,7 +104,7 @@ def index_query_positions(query_array, faiss_index, input_format='fen',
 
 	#reshape if only single query
 	if len(query.shape) == 1:
-		query = query.reshape((1,-1)) 
+		query = query.reshape((1,-1))
 	# search faiss index and retrieve closest bitboards
 	distance, _, results = index_search_and_retrieve(query, faiss_index, num_results=num_results)
 

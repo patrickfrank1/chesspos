@@ -32,7 +32,7 @@ if __name__ == "__main__":
 	if index_type == 'bitboard':
 		dimension = 776
 		is_binary = True
-	
+
 	save_path = None
 	if args.save_path == "":
 		save_path = join(abspath(args.input_directory), "bitboard_index")
