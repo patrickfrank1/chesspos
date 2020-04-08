@@ -4,7 +4,7 @@ from os.path import join, abspath
 import faiss
 
 from chesspos.utils import files_from_directory, correct_file_ending
-from chesspos.binary_index import index_load_bitboard_file_array, index_save, init_binary_index
+from chesspos.binary_index import index_load_bitboard_file_array, init_binary_index
 
 if __name__ == "__main__":
 
