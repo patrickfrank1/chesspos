@@ -6,13 +6,13 @@ This repository allows you to search a chess position against billions of chess 
 ## Guide
 
 1. Install the package
-2. Search your positions in a provided database
+2. Demo: Search your positions in a provided database
 3. Extract positions from your own database for search and metric learning
 4. Train and evaluate your own chess position embeddings
 5. Contribute
 6. Cite this project
 
-## Install the package
+## 1. Install the package
 
 Make sure you have python3 installed. You will also need the following packages:
 - [h5py](https://github.com/h5py/h5py) to read and write large chunks of data
@@ -44,3 +44,7 @@ Congartulations you have successfully installed the package. It contains the fol
 - `chesspos.binary_index`: functions for loading and searching of bitboards in faiss.
 
 Furthermore this repository contains folders for tests, demos, command line tools and data files.
+
+## 2. Demo: Search your positions in a provided database
+
+![animation of demo notebook](./demo/gif/animation.gif)
