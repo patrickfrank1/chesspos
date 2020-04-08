@@ -21,8 +21,26 @@ Make sure you have python3 installed. You will also need the following packages:
 
 and numpy.
 
-All packages except for faiss can be pip installed. To instal faiss either use anaconda, e.g.
+Additionally for the metric learning part of this project you will need [tensorflow (v2)](https://www.tensorflow.org/).
+
+All packages except for faiss can be pip installed. To install faiss either use anaconda, e.g.
 
 ```conda install faiss-cpu -c pytorch```
 
-or 
+or follow alternative instructions like [here](https://gist.github.com/korakot/d0a49d7280bd3fb856ae6517bfe8da7a) or [here](https://stackoverflow.com/questions/47967252/installing-faiss-on-google-colaboratory).
+
+Finally pip install this package from source.
+```
+git clone https://github.com/patrickfrank1/chess-embedding.git
+cd chess-embedding
+python -m pip install .
+# test if installation was successful, the following should run without error
+python -c "import chesspos"
+```
+Congartulations you have successfully installed the package. It contains the following modules:
+- `chesspos.utils`: general purpose functions,
+- `chesspos.convert`: convert between different chess position encodings like fen, bitboards and chess.Board(),
+- `chesspos.pgnextract`: functions to extract and save bitboards from pgn files,
+- `chesspos.binary_index`: functions for loading and searching of bitboards in faiss.
+
+Furthermore this repository contains folders for tests, demos, command line tools and data files.
