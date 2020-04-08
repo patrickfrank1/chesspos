@@ -51,20 +51,22 @@ Now that you installed the package you can ckeck out the demo notebook at [./dem
 
 ![animation of demo notebook](https://github.com/patrickfrank1/chess-embedding/demo/gif/animation.gif)
 
-The demo enables you to search a small database of bitbaords for similar positions. I provide some more precompiled databases. The following databases can be downloaded from google drive.
+The demo enables you to search a small database of bitbaords for similar positions. I provide some more precompiled databases. The following databases contain high quality games that are generated from [freely available lichess games](https://database.lichess.org/), where we only extracted games with both players above elo 2000 and a time control greater or equal 60+1 seconds.
 
 |          file/link              | positions [million] | download size | RAM needed |
 |:-------------------------------:|:-------------------:|:-------------:|:----------:|
 | [index_2013.faiss.bz2][1]       |                 1.7 |         12 MB |     171 MB |
 | [index_2014.faiss.bz2][2]       |                11.5 |         80 MB |     1.2 GB |
 | [index_2015.faiss.bz2][3]       |                  47 |        324 MB |     4.6 GB |
-| [index_2016.faiss.bz2][4]       |                     |               |            |
+| [index_2016.faiss.bz2][4]       |                 337 |        2.4 GB |      31 GB |
 | [index_2020_01_02.faiss.bz2][5] |                 510 |        3.6 GB |      50 GB |
 
 [1]:https://drive.google.com/open?id=1MQKJ6KSmYRyPbIP1ldsNBo-0dGhi-CpQ
 [2]:https://drive.google.com/open?id=1eehvnDIbhP4HD6XEH-YeyVJMVX-vRkXc
 [3]:https://drive.google.com/open?id=1_abWaGWzkpGd02CYokhWwGlDEEBdCOZl
-[4]:-
+[4]:https://drive.google.com/open?id=126NbR0EIVzoIU5xd_6eIYPIFz0XrcwEq
 [5]:https://drive.google.com/open?id=1u3R5t5jC3I5FFAxywZQ0K4_QZPQLL8cy
 
 However, as you can find out by playing with the notebook the similarity search with bitboards is not optimal, this is why we explore metric learning later on.
+
+## 3. Extract positions from your own database for search and metric learning
