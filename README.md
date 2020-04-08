@@ -11,3 +11,18 @@ This repository allows you to search a chess position against billions of chess 
 4. Train and evaluate your own chess position embeddings
 5. Contribute
 6. Cite this project
+
+## Install the package
+
+Make sure you have python3 installed. You will also need the following packages:
+- [h5py](https://github.com/h5py/h5py) to read and write large chunks of data
+- [python-chess](https://github.com/niklasf/python-chess) for parsing chess games
+- [faiss](https://github.com/facebookresearch/faiss) for billion scale nearest neighbor search
+
+and numpy.
+
+All packages except for faiss can be pip installed. To instal faiss either use anaconda, e.g.
+
+```conda install faiss-cpu -c pytorch```
+
+or 
