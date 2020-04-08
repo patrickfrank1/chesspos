@@ -1,7 +1,9 @@
 import argparse
 from os.path import join, abspath
 
-from chesspos.utils import files_from_directory
+import faiss
+
+from chesspos.utils import files_from_directory, correct_file_ending
 from chesspos.binary_index import index_load_bitboard_file_array, index_save, init_binary_index
 
 if __name__ == "__main__":
@@ -50,5 +52,9 @@ if __name__ == "__main__":
 		index
 	)
 	print(f"The index contains {round(index.ntotal/1.e6,3)} million positions.")
-	index_save(index, save_path, is_binary=is_binary)
+
+	save = correct_file_ending(save_path, 'faiss')
+	if is_binary:
+		faiss.write_index_binary(index, save)
+
 	print(f"Index successfully saved at {save_path}.")
