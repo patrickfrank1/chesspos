@@ -4,6 +4,7 @@ metric_learning/model/*
 # ignore all the data files
 data/*
 !data/README.md
+demo/gif/*.png
 
 # VS Code specific
 .vscode/
