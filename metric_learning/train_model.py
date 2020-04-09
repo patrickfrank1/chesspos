@@ -77,7 +77,15 @@ class SkMetrics(keras.callbacks.Callback):
 '''
 Initialize triplet network
 '''
-model = triplet_network_model(input_shape, embedding_size, hidden_layers=[512,256,64])
+model = triplet_autoencoder(
+	input_size,
+	embedding_size,
+	alpha=0.2,
+	triplet_weight_ratio=20.0,
+	hidden_layers=[512,0.2,256,0.2,64]
+)
+model = triplet_network_autoencoder(input_shape, embedding_size, hidden_layers=[512,256,64])
+
 if plot_model:
 	keras.utils.plot_model(model, model_dir+'/triplet_network.png', show_shapes=True)
 
@@ -94,8 +102,8 @@ validation_files = [
 ]
 
 # TODO: print WARNING if too few validation examples
-train_len = train_inputs_length(train_files, table_id_prefix="tuples")
-val_len = train_inputs_length(validation_files, table_id_prefix="tuples")
+train_len = pp.input_length(train_files, table_id_prefix="tuples")
+val_len = pp.input_length(validation_files, table_id_prefix="tuples")
 print(f"\n{train_len} training samples.")
 print(f"{val_len} validation samples.")
 
@@ -127,7 +135,7 @@ history = model.fit(
 	epochs=int(yield_augmented*train_len/train_steps_per_epoch/train_batch_size),
 	validation_data=validation_generator,
 	validation_steps=validation_steps_per_epoch,
-	callbacks=[skmetrics, early_stopping, cp]
+	callbacks=[skmetrics, early_stopping] #, cp]
 )
 
 '''
