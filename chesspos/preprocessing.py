@@ -79,48 +79,23 @@ def input_generator(file_arr, table_id_prefix, selector_fn, batch_size=16):
 							yield triplets
 						tuples = tuples[batch_size:]
 
-def hard_triplet_factory(indices):
+def triplet_factory(indices):
 
 	assert len(indices) == 3
 
-	def hard_triplets(tuple_batch):
-		ht = [
+	def triplets(tuple_batch):
+		t = [
 			tuple_batch[:,indices[0],:],
 			tuple_batch[:,indices[1],:],
 			tuple_batch[:,indices[2],:]
 		]
-		return ht
+		return t
 
-	return hard_triplets
+	return triplets
 
-
-
-# augment tuples, refactor later
-# batch_train_easy = [
-# 	tuples[:batch_size,0,:],
-# 	tuples[:batch_size,1,:],
-# 	tuples[:batch_size,6,:]
-# ]
-# yield batch_train_easy
-# batch_train_medium = [
-# 	tuples[:batch_size,0,:],
-# 	tuples[:batch_size,1,:],
-# 	tuples[:batch_size,5,:]
-# ]
-# yield batch_train_medium
-# batch_train_semi_hard = [
-# 	tuples[:batch_size,0,:],
-# 	tuples[:batch_size,1,:],
-# 	tuples[:batch_size,4,:]
-# ]
-# yield batch_train_semi_hard
-# batch_train_hard = [
-# 	tuples[:batch_size,0,:],
-# 	tuples[:batch_size,1,:],
-# 	tuples[:batch_size,2,:]
-# ]
-# yield batch_train_hard
-# 
+hard_triplets = triplet_factory([0,1,2])
+semihard_triplets = triplet_factory([0,1,5])
+easy_triplets = triplet_factory([0,1,6])
 
 
 def input_length(files, table_id_prefix):
@@ -132,36 +107,3 @@ def input_length(files, table_id_prefix):
 				if table_id_prefix in key:
 					samples += len(hf[key])
 	return samples
-
-
-if __name__ == "__main__":
-
-	#file_path = os.path.abspath('data/samples/lichess_db_standard_rated_2020-02-06-tuples-strong.h5')
-	#test_arr = tuples_from_table(file_path,"tuples_0")
-	#print(test_arr.shape)
-
-	#test2 = tuples_from_file(file_path, table_id_prefix="tuples", tuple_indices=[0,1,2])
-	#print(f"test2.shape={test2.shape}")
-
-	file_paths = [
-		os.path.abspath('data/train_small/lichess_db_standard_rated_2020-02-06-tuples-strong.h5') #,
-		#os.path.abspath('data/samples/lichess_db_standard_rated_2020-02-07-tuples-strong.h5')
-	]
-	# test3 = tuples_from_file_array(file_paths, table_id_prefix="tuples", tuple_indices=[0,1,2])
-	# print(f"test3.shape={test3.shape}")
-	# train, test = inputs_from_tuples(test3)
-	# print(f"len(train): {len(train)}, train[0].shape: {train[0].shape}")
-	# print(f"len(test): {len(test)}, test[0].shape: {test[0].shape}")
-
-	print(input_length(file_paths, table_id_prefix="tuples_0"))
-
-	ht1 = hard_triplet_factory([0,1,2])
-	ht2 = hard_triplet_factory([1,2,3])
-
-	test_generator = input_generator(file_paths, "tuples_0", [ht1,ht2], batch_size=128)
-
-	i = 0
-	for batch in test_generator:
-		i += 1
-		print(f"len(batch): {len(batch)}, batch[0].shape: {batch[0].shape}")
-	print(i*128)
