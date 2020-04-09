@@ -11,14 +11,35 @@ class TripletLossLayer(keras.layers.Layer):
 		anchor, positive, negative = inputs
 		pos_dist = tf.reduce_sum(tf.square(anchor-positive), axis=-1)
 		neg_dist = tf.reduce_sum(tf.square(anchor-negative), axis=-1)
-		return tf.reduce_sum(tf.maximum(pos_dist - neg_dist + self.alpha, 0), axis=0)
+		return tf.reduce_mean(tf.maximum(pos_dist - neg_dist + self.alpha, 0), axis=0)
 
 	def call(self, inputs):
 		loss = self.triplet_loss(inputs)
 		self.add_loss(loss)
 		return loss
 
-def embedding_network(input_shape, embedding_size, hidden_layers=None):
+class AutoencoderTripletLossLayer(keras.layers.Layer):
+	def __init__(self, triplet_weight, autoencoder_weight, **kwargs):
+		self.triplet_weight = triplet_weight
+		self.autoencoder_weight = autoencoder_weight
+		super(AutoencoderTripletLossLayer, self).__init__(**kwargs)
+
+	def triplet_loss(self, inputs):
+		return inputs[0]
+	
+	def autoencoder_loss(self, inputs):
+		_, inp_a, inp_p, inp_n, out_a, out_p, out_n = inputs 
+		reconstruct_anc = tf.reduce_sum(tf.square(inp_a-out_a), axis=-1)
+		reconstruct_pos = tf.reduce_sum(tf.square(inp_p-out_p), axis=-1)
+		reconstruct_neg = tf.reduce_sum(tf.square(inp_n-out_n), axis=-1)
+		return tf.multiply( 1./3., tf.reduce_mean(reconstruct_anc, axis=0) + tf.reduce_mean(reconstruct_pos, axis=0) + tf.reduce_mean(reconstruct_neg, axis=0))
+
+	def call(self, inputs):
+		loss = self.triplet_weight * self.triplet_loss(inputs) + self.autoencoder_weight * self.autoencoder_loss(inputs)
+		self.add_loss(loss)
+		return loss
+
+def embedding_network(input_shape, embedding_size, hidden_layers=None, name="embedding_model"):
 	if hidden_layers is None:
 		return keras.layers.Dense(
 			embedding_size, activation='relu', input_shape=input_shape,name="embedding_layer"
@@ -82,3 +103,58 @@ def triplet_network_model(input_shape, embedding_size, hidden_layers=None, alpha
 	triplet_network.summary()
 
 	return triplet_network
+
+def triplet_network_autoencoder(input_shape, embedding_size, hidden_layers=None, alpha=0.2):
+	# Input layers
+	anchor_input = keras.layers.Input(input_shape, name="anchor_input", dtype=float)
+	positive_input = keras.layers.Input(input_shape, name="positive_input", dtype=float)
+	negative_input = keras.layers.Input(input_shape, name="negative_input", dtype=float)
+
+	# Generate the encodings (feature vectors) for the three positions
+	encoder = embedding_network(input_shape, embedding_size, hidden_layers=hidden_layers, name="encoder_network")
+	encoder.summary()
+
+	# Embeddings for the three inputs
+	encoder_a = encoder(anchor_input)
+	encoder_p = encoder(positive_input)
+	encoder_n = encoder(negative_input)
+
+	# TripletLoss Layer, initialize and incorporate into network, tie embeddings together
+	loss_layer = TripletLossLayer(alpha=alpha, name='triplet_loss_layer')([encoder_a, encoder_p, encoder_n])
+
+	# Initialise decoder
+	decoder = embedding_network((embedding_size,), input_shape[0], hidden_layers=hidden_layers[::-1], name="decoder_network")
+	decoder.summary()
+
+	# decode embeddings
+	decoder_a = decoder(encoder_a)
+	decoder_p = decoder(encoder_p)
+	decoder_n = decoder(encoder_n)
+
+	# instantiate Autoencoder Loss Layer
+	autoencoder_loss = AutoencoderTripletLossLayer(triplet_weight=1.0, autoencoder_weight=1.0)
+
+	# combined loss
+	final_loss = autoencoder_loss([loss_layer, anchor_input, positive_input, negative_input, decoder_a, decoder_p, decoder_n])
+
+	# Cast as tf model
+	autoencoder_triplet_network = keras.models.Model(
+		inputs=[anchor_input, positive_input, negative_input],
+		outputs=[final_loss, encoder_a, encoder_p, encoder_n]
+	)
+	autoencoder_triplet_network.summary()
+
+	# Compile the model
+	optimizer = keras.optimizers.Adam(lr=0.00006)
+
+	def mean_pred(y_true, y_pred): # pylint: disable=unused-argument,dangerous-default-value
+		return print("hello")
+
+	autoencoder_triplet_network.compile(
+		loss=None,
+		optimizer=optimizer,
+		metrics=[mean_pred] # call to any metric not working, why?
+	)
+
+	return autoencoder_triplet_network
+
