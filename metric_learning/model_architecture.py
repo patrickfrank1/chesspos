@@ -131,11 +131,14 @@ def triplet_network_autoencoder(input_shape, embedding_size, hidden_layers=None,
 	decoder_p = decoder(encoder_p)
 	decoder_n = decoder(encoder_n)
 
-	# instantiate Autoencoder Loss Layer
-	autoencoder_loss = AutoencoderTripletLossLayer(triplet_weight=1.0, autoencoder_weight=1.0)
-
-	# combined loss
-	final_loss = autoencoder_loss([loss_layer, anchor_input, positive_input, negative_input, decoder_a, decoder_p, decoder_n])
+	# Autoencoder Loss Layer
+	autoencoder_layer = AutoencoderLossLayer(
+		triplet_weight_ratio=triplet_weight_ratio,
+		name="autoencoder_layer"
+	)
+	autoencoder_loss = autoencoder_layer(
+		[triplet_loss, anchor_input, positive_input, negative_input, decoder_a, decoder_p, decoder_n]
+	)
 
 	# Cast as tf model
 	autoencoder_triplet_network = keras.models.Model(
