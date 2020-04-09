@@ -4,20 +4,21 @@ import h5py
 from sklearn.model_selection import train_test_split
 from chesspos.utils import correct_file_ending
 
-def tuples_from_table(file, table, tuple_indices=[0, 1, 6]):
-	'''
-	Fetch tuples form a table in an h5 file.
-	'''
-	fname = correct_file_ending(file, 'h5')
-	tuples = None
-	with h5py.File(fname, 'r') as hf:
-		keys = hf.keys()
-		print(keys)
-		if table in keys:
-			tuples = np.asarray(hf[table][:, tuple_indices], dtype=bool)
-	return tuples
+# REDUNDANT -> DELETE
+# def tuples_from_table(file, table, tuple_indices=[0,1,6]):
+# 	'''
+# 	Fetch tuples form a table in an h5 file.
+# 	'''
+# 	fname = correct_file_ending(file, 'h5')
+# 	tuples = None
+# 	with h5py.File(fname, 'r') as hf:
+# 		keys = hf.keys()
+# 		print(keys)
+# 		if table in keys:
+# 			tuples = np.asarray(hf[table][:, tuple_indices], dtype=bool)
+# 	return tuples
 
-def tuples_from_file(file, table_id_prefix, tuple_indices=[0, 1, 6]):
+def tuples_from_file(file, table_id_prefix, tuple_indices=[0,1,6]):
 	'''
 	Return specified tuples from all relevant tables in a file.
 	'''
@@ -30,13 +31,13 @@ def tuples_from_file(file, table_id_prefix, tuple_indices=[0, 1, 6]):
 				tuples.extend(hf[key][:, tuple_indices])
 	return np.asarray(tuples, dtype=bool)
 
-def tuples_from_file_array(files, table_id_prefix, tuple_indices=[0, 1, 6]):
+def tuples_from_file_array(files, table_id_prefix, tuple_indices=[0,1,6]):
 	'''
 	Return specified tuples from all relevant tables in a list of files.
 	'''
 	tuples = np.empty(shape=(0, len(tuple_indices), 773), dtype=bool)
 	for file in files:
-		tmp_tuples = tuples_from_file(file, table_id_prefix, tuple_indices=[0, 1, 6])
+		tmp_tuples = tuples_from_file(file, table_id_prefix, tuple_indices=[0,1,6])
 		tuples = np.concatenate((tuples,tmp_tuples))
 	return tuples
 
@@ -59,45 +60,70 @@ def inputs_from_tuples(tuple_array, test_split=True, test_size=0.2):
 
 	return data_train, data_test
 
-def train_inputs_file_array_generator(files, table_id_prefix, tuple_indices=[0,1,2,3,4,5,6], batch_size=16):
-	tuples = np.empty(shape=(0, len(tuple_indices), 773), dtype=bool)
-	for file in files:
+def input_generator(file_arr, table_id_prefix, selector_fn, batch_size=16):
+	tuples = np.empty(shape=(0, 15, 773), dtype=bool)
+	for file in file_arr:
 		fname = correct_file_ending(file, 'h5')
 		with h5py.File(fname, 'r') as hf:
 			for key in hf.keys():
 				if table_id_prefix in key:
-					new_tuples = np.asarray(hf[key][:, tuple_indices], dtype=bool)
+					new_tuples = np.asarray(hf[key][:], dtype=bool)
 					tuples = np.concatenate((tuples, new_tuples))
 					while len(tuples) >= batch_size:
-						# augment tuples, refactor later
-						# batch_train_easy = [
-						# 	tuples[:batch_size,0,:],
-						# 	tuples[:batch_size,1,:],
-						# 	tuples[:batch_size,6,:]
-						# ]
-						# yield batch_train_easy
-						# batch_train_medium = [
-						# 	tuples[:batch_size,0,:],
-						# 	tuples[:batch_size,1,:],
-						# 	tuples[:batch_size,5,:]
-						# ]
-						# yield batch_train_medium
-						# batch_train_semi_hard = [
-						# 	tuples[:batch_size,0,:],
-						# 	tuples[:batch_size,1,:],
-						# 	tuples[:batch_size,4,:]
-						# ]
-						# yield batch_train_semi_hard
-						batch_train_hard = [
-							tuples[:batch_size,0,:],
-							tuples[:batch_size,1,:],
-							tuples[:batch_size,2,:]
-						]
-						yield batch_train_hard
-						tuples = tuples[batch_size:,:,:]
+						if isinstance(selector_fn, (list, tuple, np.ndarray)):
+							for fn in selector_fn:
+								triplets = fn(tuples[:batch_size])
+								yield triplets
+						else:
+							triplets = selector_fn(tuples[:batch_size])
+							yield triplets
+						tuples = tuples[batch_size:]
+
+def hard_triplet_factory(indices):
+
+	assert len(indices) == 3
+
+	def hard_triplets(tuple_batch):
+		ht = [
+			tuple_batch[:,indices[0],:],
+			tuple_batch[:,indices[1],:],
+			tuple_batch[:,indices[2],:]
+		]
+		return ht
+
+	return hard_triplets
 
 
-def train_inputs_length(files, table_id_prefix):
+
+# augment tuples, refactor later
+# batch_train_easy = [
+# 	tuples[:batch_size,0,:],
+# 	tuples[:batch_size,1,:],
+# 	tuples[:batch_size,6,:]
+# ]
+# yield batch_train_easy
+# batch_train_medium = [
+# 	tuples[:batch_size,0,:],
+# 	tuples[:batch_size,1,:],
+# 	tuples[:batch_size,5,:]
+# ]
+# yield batch_train_medium
+# batch_train_semi_hard = [
+# 	tuples[:batch_size,0,:],
+# 	tuples[:batch_size,1,:],
+# 	tuples[:batch_size,4,:]
+# ]
+# yield batch_train_semi_hard
+# batch_train_hard = [
+# 	tuples[:batch_size,0,:],
+# 	tuples[:batch_size,1,:],
+# 	tuples[:batch_size,2,:]
+# ]
+# yield batch_train_hard
+# 
+
+
+def input_length(files, table_id_prefix):
 	samples = 0
 	for file in files:
 		fname = correct_file_ending(file, 'h5')
@@ -118,7 +144,7 @@ if __name__ == "__main__":
 	#print(f"test2.shape={test2.shape}")
 
 	file_paths = [
-		os.path.abspath('data/samples/lichess_db_standard_rated_2020-02-06-tuples-strong.h5') #,
+		os.path.abspath('data/train_small/lichess_db_standard_rated_2020-02-06-tuples-strong.h5') #,
 		#os.path.abspath('data/samples/lichess_db_standard_rated_2020-02-07-tuples-strong.h5')
 	]
 	# test3 = tuples_from_file_array(file_paths, table_id_prefix="tuples", tuple_indices=[0,1,2])
@@ -127,9 +153,15 @@ if __name__ == "__main__":
 	# print(f"len(train): {len(train)}, train[0].shape: {train[0].shape}")
 	# print(f"len(test): {len(test)}, test[0].shape: {test[0].shape}")
 
-	print(train_inputs_length(file_paths, table_id_prefix="tuples"))
+	print(input_length(file_paths, table_id_prefix="tuples_0"))
 
-	generator = train_inputs_file_array_generator(file_paths, table_id_prefix="tuples",
-					tuple_indices=[0,1,6], batch_size=128)
-	for batch in generator:
-		print(f"batch[0].shape: {batch[0].shape}")
+	ht1 = hard_triplet_factory([0,1,2])
+	ht2 = hard_triplet_factory([1,2,3])
+
+	test_generator = input_generator(file_paths, "tuples_0", [ht1,ht2], batch_size=128)
+
+	i = 0
+	for batch in test_generator:
+		i += 1
+		print(f"len(batch): {len(batch)}, batch[0].shape: {batch[0].shape}")
+	print(i*128)
