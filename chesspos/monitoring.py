@@ -53,9 +53,9 @@ def plot_metrics(save_dir, loss_arr, loss_labels, other_metric=None, other_label
 
 	if other_metric is not None and other_label is not None:
 		ax2 = ax1.twinx()  # instantiate a second axes that shares the same x-axis
-		color = 'tab:blue'
+		color = 'tab:red'
 		ax2.set_ylabel(other_label, color=color)
-		ax2.plot(np.arange(len(other_metric)), other_metric, 'bo-', label=other_label)
+		ax2.plot(np.arange(len(other_metric)), other_metric, 'ro-', label=other_label)
 		ax2.tick_params(axis='y', labelcolor=color)
 		plt.legend()
 
