@@ -1,5 +1,6 @@
 import os
 import math
+import argparse
 
 import tensorflow as tf
 from tensorflow import keras
@@ -17,7 +18,7 @@ print(f"tf.keras.__version__: {tf.keras.__version__}")
 Inputs
 '''
 # environment
-model_dir = os.path.abspath('metric_learning/model/simple_triplet')
+model_dir = os.path.abspath('metric_learning/test_model')
 train_dir = os.path.abspath('data/train_small')
 validation_dir = os.path.abspath('data/validation_small')
 metrics_save = True
@@ -76,7 +77,7 @@ else:
 	print(f"\nTraining on {1.0*train_len*len(train_fn)/1.e6} million training samples.")
 	print(f"Validating on {1.0*math.floor(train_epochs)*validation_batch_size*validation_steps_per_epoch/1.e6} million validation samples.")
 	if val_epochs > 10 + train_epochs:
-		print("WARNING: your are providing much more validation samples than nessecary. Thos could be used for training instead.")
+		print("WARNING: your are providing much more validation samples than nessecary. Those could be used for training instead.")
 
 
 '''
@@ -86,7 +87,7 @@ skmetrics = SkMetrics(metric_generator, batch_size=validation_batch_size,
 	steps_per_callback=validation_steps_per_epoch
 )
 early_stopping = keras.callbacks.EarlyStopping(monitor='val_loss',
-	min_delta=0.05, patience=10, verbose=0, mode='min'
+	min_delta=0.05, patience=10, verbose=0, mode='min', restore_best_weights=True
 )
 cp = keras.callbacks.ModelCheckpoint(
 	filepath=model_dir+"/checkpoints/cp-{epoch:04d}.ckpt",
@@ -122,6 +123,11 @@ history = model.fit(
 	validation_steps=validation_steps_per_epoch,
 	callbacks=[skmetrics, early_stopping] #, cp]
 )
+
+'''
+Save the trained model
+'''
+model.save(f"{model_dir}/model", save_format='tf')
 
 '''
 Visualise and save results

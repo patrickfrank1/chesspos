@@ -1,5 +1,5 @@
 # ignore model training files for now
-metric_learning/model/*
+metric_learning/*
 
 # ignore all the data files
 data/*
