@@ -19,23 +19,24 @@ class TripletLossLayer(keras.layers.Layer):
 		return loss
 
 class AutoencoderTripletLossLayer(keras.layers.Layer):
-	def __init__(self, triplet_weight, autoencoder_weight, **kwargs):
-		self.triplet_weight = triplet_weight
-		self.autoencoder_weight = autoencoder_weight
+	def __init__(self, triplet_weight_ratio, **kwargs):
+		self.triplet_weight_ratio = triplet_weight_ratio
 		super(AutoencoderTripletLossLayer, self).__init__(**kwargs)
 
 	def triplet_loss(self, inputs):
 		return inputs[0]
-	
+
 	def autoencoder_loss(self, inputs):
 		_, inp_a, inp_p, inp_n, out_a, out_p, out_n = inputs 
 		reconstruct_anc = tf.reduce_sum(tf.square(inp_a-out_a), axis=-1)
 		reconstruct_pos = tf.reduce_sum(tf.square(inp_p-out_p), axis=-1)
 		reconstruct_neg = tf.reduce_sum(tf.square(inp_n-out_n), axis=-1)
-		return tf.multiply( 1./3., tf.reduce_mean(reconstruct_anc, axis=0) + tf.reduce_mean(reconstruct_pos, axis=0) + tf.reduce_mean(reconstruct_neg, axis=0))
+		return tf.multiply(1./3., tf.reduce_mean(reconstruct_anc, axis=0) +\
+			tf.reduce_mean(reconstruct_pos, axis=0) + tf.reduce_mean(reconstruct_neg, axis=0)
+		)
 
 	def call(self, inputs):
-		loss = self.triplet_weight * self.triplet_loss(inputs) + self.autoencoder_weight * self.autoencoder_loss(inputs)
+		loss = self.triplet_weight_ratio * self.triplet_loss(inputs) + self.autoencoder_loss(inputs)
 		self.add_loss(loss)
 		return loss
 
