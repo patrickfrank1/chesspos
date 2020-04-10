@@ -1,10 +1,8 @@
 import os
 import math
 
-import numpy as np
 import tensorflow as tf
 from tensorflow import keras
-import matplotlib.pyplot as plt
 
 from chesspos.utils import files_from_directory
 from chesspos.preprocessing import input_generator, input_length
@@ -28,17 +26,22 @@ plot_model = True
 # model specs
 input_size = 773
 embedding_size = 32
+alpha = 0.2
+triplet_weight_ratio = 20.0
+hidden_layers = [512,0.4,256,0.4,64]
 # training specs
 train_batch_size = 16
 validation_batch_size = 16
 train_steps_per_epoch = 1000
 validation_steps_per_epoch = 110
 
+
 '''
 Training environment
 '''
 if hide_warnings:
 	os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2' # hide warnings during training
+
 
 '''
 Initialise trainig, and validation data
@@ -65,7 +68,7 @@ train_len = input_length(train_files, table_id_prefix="tuples")
 val_len = input_length(validation_files, table_id_prefix="tuples")
 train_epochs = 1.0*train_len*len(train_fn)/train_batch_size/train_steps_per_epoch
 val_epochs = 1.0*val_len*len(validation_fn)/validation_batch_size/validation_steps_per_epoch
-print(f"You have enough training samples for {train_epochs} epochs and enought validation samples for {val_epochs} epochs.")
+print(f'You have enough training samples for {train_epochs} epochs and enought validation samples for {val_epochs} epochs.')
 
 if train_epochs > val_epochs:
 	raise ValueError("Not enought validation samples provided to start training! Cancelling.")
@@ -76,10 +79,14 @@ else:
 		print("WARNING: your are providing much more validation samples than nessecary. Thos could be used for training instead.")
 
 
-# instantiate callbacks
-skmetrics = SkMetrics(metric_generator, batch_size=validation_batch_size, steps_per_callback=10)
-early_stopping = keras.callbacks.EarlyStopping(
-	monitor='val_loss', min_delta=0.05, patience=10, verbose=0, mode='min'
+'''
+Initialise tensorflow callbacks
+'''
+skmetrics = SkMetrics(metric_generator, batch_size=validation_batch_size,
+	steps_per_callback=validation_steps_per_epoch
+)
+early_stopping = keras.callbacks.EarlyStopping(monitor='val_loss',
+	min_delta=0.05, patience=10, verbose=0, mode='min'
 )
 cp = keras.callbacks.ModelCheckpoint(
 	filepath=model_dir+"/checkpoints/cp-{epoch:04d}.ckpt",
@@ -89,26 +96,28 @@ cp = keras.callbacks.ModelCheckpoint(
 	verbose=1
 )
 
+
 '''
-Initialize triplet network
+Initialize model
 '''
 model = triplet_autoencoder(
 	input_size,
 	embedding_size,
-	alpha=0.2,
-	triplet_weight_ratio=20.0,
-	hidden_layers=[512,0.4,256,0.4,64]
+	alpha=alpha,
+	triplet_weight_ratio=triplet_weight_ratio,
+	hidden_layers=hidden_layers
 )
-
 if plot_model:
 	keras.utils.plot_model(model, model_dir+'/triplet_network.png', show_shapes=True)
 
 
-'''Train  the model'''
+'''
+Train the model
+'''
 history = model.fit(
 	train_generator,
 	steps_per_epoch=train_steps_per_epoch,
-	epochs=int(len(train_fn)*train_len/train_steps_per_epoch/train_batch_size),
+	epochs=math.floor(train_epochs),
 	validation_data=validation_generator,
 	validation_steps=validation_steps_per_epoch,
 	callbacks=[skmetrics, early_stopping] #, cp]
