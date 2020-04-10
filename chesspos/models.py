@@ -128,7 +128,7 @@ def triplet_autoencoder(input_size, embedding_size, hidden_layers=None,
 	triplet_loss = triplet_layer([encoder_a, encoder_p, encoder_n])
 
 	# Initialise decoder
-	decoder = embedding_network((embedding_size,), input_size,
+	decoder = embedding_network(embedding_size, input_size,
 		hidden_layers=hidden_layers[::-1], name="decoder_network"
 	)
 	decoder.summary()
