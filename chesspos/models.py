@@ -40,28 +40,29 @@ class AutoencoderTripletLossLayer(keras.layers.Layer):
 		self.add_loss(loss)
 		return loss
 
-def embedding_network(input_shape, embedding_size, hidden_layers=None, name="embedding_model"):
+def embedding_network(input_size, embedding_size, hidden_layers=None, name="embedding_model"):
 	if hidden_layers is None:
 		return keras.layers.Dense(
-			embedding_size, activation='relu', input_shape=input_shape,name="embedding_layer"
+			embedding_size, activation='relu', input_shape=(input_size,)
 		)
 	else:
-		embedding = keras.Sequential(name="embedding_model")
+		embedding = keras.Sequential(name=name)
 		embedding.add(
-			keras.layers.Dense(hidden_layers[0], activation='relu',
-				input_shape=input_shape,name="embedding_layer_0"
-			)
+			keras.layers.Dense(hidden_layers[0], activation='relu',input_shape=(input_size,))
 		)
 		for i in range(1, len(hidden_layers)-1):
-			embedding.add(
-				keras.layers.Dense(hidden_layers[i], activation='relu',name=f"embedding_layer_{i}")
-			)
+			if hidden_layers[i] > 0.0 and hidden_layers[i] < 1.0:
+				embedding.add(
+					keras.layers.Dropout(rate=hidden_layers[i])
+				)
+			else:
+				embedding.add(
+					keras.layers.Dense(hidden_layers[i], activation='relu')
+				)
 		embedding.add(
-			keras.layers.Dense(embedding_size, activation='relu',
-				name=f"embedding_layer_{len(hidden_layers)}"
-			)
+			keras.layers.Dense(embedding_size, activation='relu')
 		)
-		return embedding
+	return embedding
 
 
 def triplet_network_model(input_shape, embedding_size, hidden_layers=None, alpha=0.2):
