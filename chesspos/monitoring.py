@@ -1,3 +1,5 @@
+from os.path import abspath
+
 import tensorflow as tf
 import numpy as np
 import matplotlib.pyplot as plt
@@ -60,5 +62,18 @@ def plot_metrics(save_dir, loss_arr, loss_labels, other_metric=None, other_label
 	fig.tight_layout()
 	plt.savefig(save_dir+"/train_progress.png")
 
-def save_metrics(metric_arrays, save_dir, plot=True):
-	
+def save_metrics(metric_arrays, metric_labels, save_dir, plot=True):
+	# get absolute path
+	path = abspath(save_dir)
+	# save metrics to file
+	if len(metric_labels) == len(metric_arrays):
+		# this is recommended
+		d = dict(zip(metric_labels, metric_arrays))
+		np.savez_compressed(f"{path}/metrics",**d)
+	else:
+		raise ValueError("No metric labels provided.")
+
+	if plot:
+		*loss, special = metric_arrays
+		*label, special_label = metric_labels
+		plot_metrics(path, loss, label, other_metric=special, other_label=special_label)
