@@ -38,25 +38,27 @@ class SkMetrics(tf.keras.callbacks.Callback):
 		self.frac_correct.append(frac.numpy())
 		print(f" triplet_acc: {self.frac_correct[-1]}")
 
-def plot_metrics(train_loss, validation_loss, triplet_accuracy=None):
-	fig, ax1 = plt.subplots()
+def plot_metrics(save_dir, loss_arr, loss_labels, other_metric=None, other_label=None):
+	assert len(loss_arr) == len(loss_labels)
 
+	fig, ax1 = plt.subplots()
+	ax1.set_title('Training progress')
 	ax1.set_xlabel('epoch')
 	ax1.set_ylabel('loss')
-	ax1.plot(np.arange(len(train_loss)), train_loss, 'gx-', label="training loss")
-	ax1.plot(np.arange(len(validation_loss)), validation_loss, 'rx-', label="validation loss")
+	for (i, el) in enumerate(loss_arr):
+		ax1.plot(np.arange(len(el)), el, 'x-', label=loss_labels[i])
 	plt.legend()
 
-	if triplet_accuracy is not None:
+	if other_metric is not None and other_label is not None:
 		ax2 = ax1.twinx()  # instantiate a second axes that shares the same x-axis
 		color = 'tab:blue'
-		ax2.set_ylabel('triplet accuracy', color=color)
-		ax2.plot(np.arange(len(triplet_accuracy)), triplet_accuracy, 'bo-', label="triplet_accuracy")
+		ax2.set_ylabel(other_label, color=color)
+		ax2.plot(np.arange(len(other_metric)), other_metric, 'bo-', label=other_label)
 		ax2.tick_params(axis='y', labelcolor=color)
 		plt.legend()
 
 	fig.tight_layout()
-	plt.savefig(model_dir+"/train_loss.png")
-	return 1
+	plt.savefig(save_dir+"/train_progress.png")
 
 def save_metrics(metric_arrays, save_dir, plot=True):
+	
