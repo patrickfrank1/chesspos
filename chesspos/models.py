@@ -65,14 +65,14 @@ def embedding_network(input_size, embedding_size, hidden_layers=None, name="embe
 	return embedding
 
 
-def triplet_network_model(input_shape, embedding_size, hidden_layers=None, alpha=0.2):
+def triplet_network(input_size, embedding_size, hidden_layers=None, alpha=0.2):
 	# Input layers
-	anchor_input = keras.layers.Input(input_shape, name="anchor_input", dtype=float)
-	positive_input = keras.layers.Input(input_shape, name="positive_input", dtype=float)
-	negative_input = keras.layers.Input(input_shape, name="negative_input", dtype=float)
+	anchor_input = keras.layers.Input((input_size,), name="anchor_input", dtype=float)
+	positive_input = keras.layers.Input((input_size,), name="positive_input", dtype=float)
+	negative_input = keras.layers.Input((input_size,), name="negative_input", dtype=float)
 
 	# Generate the encodings (feature vectors) for the three positions
-	embedding = embedding_network(input_shape, embedding_size, hidden_layers=hidden_layers)
+	embedding = embedding_network(input_size, embedding_size, hidden_layers=hidden_layers)
 	embedding.summary()
 
 	# Embeddings for the three inputs
@@ -81,30 +81,30 @@ def triplet_network_model(input_shape, embedding_size, hidden_layers=None, alpha
 	embedding_n = embedding(negative_input)
 
 	# TripletLoss Layer, initialize and incorporate into network, tie embeddings together
-	loss_layer = TripletLossLayer(alpha=alpha, name='triplet_loss_layer')([embedding_a, embedding_p, embedding_n])
+	triplet_layer = TripletLossLayer(alpha=alpha, name='triplet_loss_layer')
+	triplet_loss = triplet_layer([embedding_a, embedding_p, embedding_n])
 
 	# Cast as tf model
-	triplet_network = keras.models.Model(
+	model_triplet = keras.models.Model(
 		inputs=[anchor_input, positive_input, negative_input],
-		outputs=[loss_layer, embedding_a, embedding_p, embedding_n]
+		outputs=[triplet_loss, embedding_a, embedding_p, embedding_n]
 	)
 
 	# Compile the model
-	optimizer = keras.optimizers.Adam(lr=0.00006)
-
 	def mean_pred(y_true, y_pred): # pylint: disable=unused-argument,dangerous-default-value
 		return print("hello")
 
-	triplet_network.compile(
+	optimizer = keras.optimizers.Adam(lr=0.00006)
+	model_triplet.compile(
 		loss=None,
 		optimizer=optimizer,
 		metrics=[mean_pred] # call to any metric not working, why?
 	)
 
 	# Print model summary
-	triplet_network.summary()
+	model_triplet.summary()
 
-	return triplet_network
+	return model_triplet
 
 def triplet_network_autoencoder(input_shape, embedding_size, hidden_layers=None, alpha=0.2):
 	# Input layers
