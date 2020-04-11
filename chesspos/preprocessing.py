@@ -3,20 +3,6 @@ import h5py
 from sklearn.model_selection import train_test_split
 from chesspos.utils import correct_file_ending
 
-# REDUNDANT -> DELETE
-# def tuples_from_table(file, table, tuple_indices=[0,1,6]):
-# 	'''
-# 	Fetch tuples form a table in an h5 file.
-# 	'''
-# 	fname = correct_file_ending(file, 'h5')
-# 	tuples = None
-# 	with h5py.File(fname, 'r') as hf:
-# 		keys = hf.keys()
-# 		print(keys)
-# 		if table in keys:
-# 			tuples = np.asarray(hf[table][:, tuple_indices], dtype=bool)
-# 	return tuples
-
 def tuples_from_file(file, table_id_prefix, tuple_indices=[0,1,6]):
 	'''
 	Return specified tuples from all relevant tables in a file.

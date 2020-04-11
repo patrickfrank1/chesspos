@@ -19,6 +19,7 @@ def train_embedding(train_dir, validation_dir, save_dir, input_size=773,
 	validation_sampling=['easy','semihard','hard'],
 	tf_callbacks=['early_stopping','triplet_accuracy', 'checkpoints'],
 	save_stats=True, hide_tf_warnings=True):
+
 	print(f"tf.__version__: {tf.__version__}") # pylint: disable=no-member
 	print(f"tf.keras.__version__: {tf.keras.__version__}")
 
@@ -28,20 +29,6 @@ def train_embedding(train_dir, validation_dir, save_dir, input_size=773,
 	save_dir = os.path.abspath(save_dir)
 	train_dir = os.path.abspath(train_dir)
 	validation_dir = os.path.abspath(validation_dir)
-	# metrics_save = True
-	# hide_warnings = True
-	# plot_model = True
-	# # model specs
-	# input_size = 773
-	# embedding_size = 32
-	# alpha = 0.2
-	# triplet_weight_ratio = 20.0
-	# hidden_layers = [512,0.4,256,0.4,64]
-	# # training specs
-	# train_batch_size = 16
-	# validation_batch_size = 16
-	# train_steps_per_epoch = 1000
-	# validation_steps_per_epoch = 110
 
 
 	'''
@@ -71,27 +58,6 @@ def train_embedding(train_dir, validation_dir, save_dir, input_size=773,
 			elif el == 'custom_hard':
 				samples[i] = samples[i] + [triplet_factory([1,2,3]), triplet_factory([2,3,4])]
 	train_fn, validation_fn = samples
-
-	# for el in train_sampling:
-	# 	if el == 'easy':
-	# 		train_fn.append(easy_triplets)
-	# 	elif el == 'semihard':
-	# 		train_fn.append(semihard_triplets)
-	# 	elif el == 'hard':
-	# 		train_fn.append(hard_triplets)
-	# 	elif el == 'custom_hard':
-	# 		train_fn = train_fn + [triplet_factory([1,2,3]), triplet_factory([2,3,4])]
-	# # validation sampling functions
-	# validation_fn = []
-	# for el in validation_sampling:
-	# 	if el == 'easy':
-	# 		validation_fn.append(easy_triplets)
-	# 	elif el == 'semihard':
-	# 		validation_fn.append(semihard_triplets)
-	# 	elif el == 'hard':
-	# 		validation_fn.append(hard_triplets)
-	# 	elif el == 'custom_hard':
-	# 		validation_fn = validation_fn + [triplet_factory([1,2,3]), triplet_factory([2,3,4])]
 	# generators for train and test data
 	train_generator = input_generator(train_files, table_id_prefix="tuples",
 		selector_fn=train_fn, batch_size=train_batch_size
@@ -102,7 +68,6 @@ def train_embedding(train_dir, validation_dir, save_dir, input_size=773,
 	metric_generator = input_generator(validation_files, table_id_prefix="tuples",
 		selector_fn=validation_fn, batch_size=validation_batch_size
 	)
-
 	# check if there are enough validation samples
 	train_len = input_length(train_files, table_id_prefix="tuples")
 	val_len = input_length(validation_files, table_id_prefix="tuples")
@@ -197,14 +162,16 @@ def train_embedding(train_dir, validation_dir, save_dir, input_size=773,
 if __name__ == "__main__":
 
 	parser = argparse.ArgumentParser(description='Train a chess position embedding with tensorflow.')
-	parser.add_argument('config', type=str, action="store", help='json config file to read settings from')
+	parser.add_argument('config', type=str, action="store",
+		help='json config file to read settings from'
+	)
 	args = parser.parse_args()
 
 	print(f"JSON config file at: {args.config}")
 
 	with open(args.config) as json_data:
 		data = json.load(json_data)
-	
+
 	print("The following settings are used for training:")
 	print(data)
 
