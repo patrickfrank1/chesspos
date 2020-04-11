@@ -13,7 +13,7 @@ from chesspos.models import triplet_autoencoder
 from chesspos.monitoring import SkMetrics, save_metrics
 
 def train_embedding(train_dir, validation_dir, save_dir, input_size=773,
-	embedding_size=32, alpha=0.2, triplet_weight_ratio=10.0, hidden_layers=None,
+	embedding_size=32, alpha=0.2, triplet_weight_ratio=10.0, hidden_layers=[],
 	train_batch_size=16, validation_batch_size=16, train_steps_per_epoch=1000,
 	validation_steps_per_epoch=100, train_sampling=['easy','semihard','hard'],
 	validation_sampling=['easy','semihard','hard'],

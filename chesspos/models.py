@@ -40,13 +40,13 @@ class AutoencoderTripletLossLayer(keras.layers.Layer):
 		self.add_loss(loss)
 		return loss
 
-def embedding_network(input_size, embedding_size, hidden_layers=None, name="embedding_model"):
-	if hidden_layers is None:
-		return keras.layers.Dense(
-			embedding_size, activation='relu', input_shape=(input_size,)
+def embedding_network(input_size, embedding_size, hidden_layers=[], name="embedding_model"):
+	embedding = keras.Sequential(name=name)
+	if len(hidden_layers) == 0:
+		embedding.add(
+			keras.layers.Dense(embedding_size, activation='relu', input_shape=(input_size,))
 		)
 	else:
-		embedding = keras.Sequential(name=name)
 		embedding.add(
 			keras.layers.Dense(hidden_layers[0], activation='relu',input_shape=(input_size,))
 		)
