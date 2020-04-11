@@ -7,7 +7,7 @@ import tensorflow as tf
 from tensorflow import keras
 
 from chesspos.utils import files_from_directory
-from chesspos.preprocessing import input_generator, input_length
+from chesspos.preprocessing import input_generator, input_length, triplet_factory
 from chesspos.preprocessing import easy_triplets, semihard_triplets, hard_triplets
 from chesspos.models import triplet_autoencoder
 from chesspos.monitoring import SkMetrics, save_metrics
@@ -57,23 +57,41 @@ def train_embedding(train_dir, validation_dir, save_dir, input_size=773,
 	# get files from directory
 	train_files = files_from_directory(train_dir, file_type="h5")
 	validation_files = files_from_directory(validation_dir, file_type="h5")
-	# sampling functions
-	train_fn = []
-	for el in train_sampling:
-		if el == 'easy':
-			train_fn.append(easy_triplets)
-		elif el == 'semihard':
-			train_fn.append(semihard_triplets)
-		elif el == 'hard':
-			train_fn.append(hard_triplets)
-	validation_fn = []
-	for el in validation_sampling:
-		if el == 'easy':
-			validation_fn.append(easy_triplets)
-		elif el == 'semihard':
-			validation_fn.append(semihard_triplets)
-		elif el == 'hard':
-			validation_fn.append(hard_triplets)
+	# train sampling functions
+	samples = [[] for _ in range(2)]
+	sample_args = [train_sampling, validation_sampling]
+	for i in range(2):
+		for el in sample_args[i]:
+			if el == 'easy':
+				samples[i].append(easy_triplets)
+			elif el == 'semihard':
+				samples[i].append(semihard_triplets)
+			elif el == 'hard':
+				samples[i].append(hard_triplets)
+			elif el == 'custom_hard':
+				samples[i] = samples[i] + [triplet_factory([1,2,3]), triplet_factory([2,3,4])]
+	train_fn, validation_fn = samples
+
+	# for el in train_sampling:
+	# 	if el == 'easy':
+	# 		train_fn.append(easy_triplets)
+	# 	elif el == 'semihard':
+	# 		train_fn.append(semihard_triplets)
+	# 	elif el == 'hard':
+	# 		train_fn.append(hard_triplets)
+	# 	elif el == 'custom_hard':
+	# 		train_fn = train_fn + [triplet_factory([1,2,3]), triplet_factory([2,3,4])]
+	# # validation sampling functions
+	# validation_fn = []
+	# for el in validation_sampling:
+	# 	if el == 'easy':
+	# 		validation_fn.append(easy_triplets)
+	# 	elif el == 'semihard':
+	# 		validation_fn.append(semihard_triplets)
+	# 	elif el == 'hard':
+	# 		validation_fn.append(hard_triplets)
+	# 	elif el == 'custom_hard':
+	# 		validation_fn = validation_fn + [triplet_factory([1,2,3]), triplet_factory([2,3,4])]
 	# generators for train and test data
 	train_generator = input_generator(train_files, table_id_prefix="tuples",
 		selector_fn=train_fn, batch_size=train_batch_size

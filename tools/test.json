@@ -1,0 +1,19 @@
+{
+	"train_dir": "data/train_small",
+	"validation_dir": "data/validation_small",
+	"save_dir": "metric_learning/test_model",
+	"input_size": 773,
+	"embedding_size": 32,
+	"alpha": 0.2,
+	"triplet_weight_ratio": 10.0,
+	"hidden_layers": [128],
+	"train_batch_size": 16,
+	"validation_batch_size": 16,
+	"train_steps_per_epoch": 1000,
+	"validation_steps_per_epoch": 100,
+	"train_sampling": ["easy","semihard","hard","custom_hard"],
+	"validation_sampling": ["hard","custom_hard"],
+	"tf_callbacks": ["early_stopping","triplet_accuracy"],
+	"save_stats": true,
+	"hide_tf_warnings": true
+}
