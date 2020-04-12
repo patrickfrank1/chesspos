@@ -20,3 +20,11 @@ def inference_generator_from_bitboards(file, table_id_prefix, batch_size=128):
 					bitboards[2*batch_size:3*batch_size]
 				]
 				yield batch
+
+def infer_embeddings(model, sample_generator, batch_size=128):
+	pass
+
+if __name__ == "__main__":
+
+	encoder = tf.keras.models.load_model('metric_learning/test_model/model_encoder')
+	encoder.summary()

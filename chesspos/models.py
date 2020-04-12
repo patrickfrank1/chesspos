@@ -107,6 +107,9 @@ def triplet_network(input_size, embedding_size, hidden_layers=None, alpha=0.2):
 
 def triplet_autoencoder(input_size, embedding_size, hidden_layers=None,
 	triplet_weight_ratio=1.0, alpha=0.2):
+	# optimizer for all models
+	optimizer = keras.optimizers.Adam(lr=0.00006)
+
 	# Input layers
 	anchor_input = keras.layers.Input((input_size,), name="anchor_input", dtype=float)
 	positive_input = keras.layers.Input((input_size,), name="positive_input", dtype=float)
@@ -114,8 +117,9 @@ def triplet_autoencoder(input_size, embedding_size, hidden_layers=None,
 
 	# Generate the encodings (feature vectors) for the three positions
 	encoder = embedding_network(input_size, embedding_size,
-		hidden_layers=hidden_layers,name="encoder_network"
+		hidden_layers=hidden_layers, name="encoder_network"
 	)
+	encoder.compile(loss='mse', optimizer=optimizer)
 	encoder.summary()
 
 	# Embeddings for the three inputs
@@ -131,6 +135,7 @@ def triplet_autoencoder(input_size, embedding_size, hidden_layers=None,
 	decoder = embedding_network(embedding_size, input_size,
 		hidden_layers=hidden_layers[::-1], name="decoder_network"
 	)
+	decoder.compile(loss='mse', optimizer=optimizer)
 	decoder.summary()
 
 	# decode embeddings
@@ -158,11 +163,10 @@ def triplet_autoencoder(input_size, embedding_size, hidden_layers=None,
 	def mean_pred(y_true, y_pred): # pylint: disable=unused-argument,dangerous-default-value
 		return print("hello")
 
-	optimizer = keras.optimizers.Adam(lr=0.00006)
 	model_autoencoder_triplet.compile(
 		loss=None,
 		optimizer=optimizer,
 		metrics=[mean_pred] # call to any metric not working, why?
 	)
 
-	return model_autoencoder_triplet
+	return {'autoencoder': model_autoencoder_triplet, 'encoder': encoder, 'decoder': decoder}

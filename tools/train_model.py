@@ -113,13 +113,14 @@ def train_embedding(train_dir, validation_dir, save_dir, input_size=773,
 	'''
 	Initialize model
 	'''
-	model = triplet_autoencoder(
+	models = triplet_autoencoder(
 		input_size,
 		embedding_size,
 		alpha=alpha,
 		triplet_weight_ratio=triplet_weight_ratio,
 		hidden_layers=hidden_layers
 	)
+	model = models['autoencoder']
 	if save_stats:
 		keras.utils.plot_model(model, save_dir+'/triplet_network.png', show_shapes=True)
 
@@ -139,7 +140,8 @@ def train_embedding(train_dir, validation_dir, save_dir, input_size=773,
 	'''
 	Save the trained model
 	'''
-	model.save(f"{save_dir}/model", save_format='tf')
+	for key in models:
+		models[key].save(f"{save_dir}/model_{key}", save_format='tf')
 
 	'''
 	Visualise and save results
