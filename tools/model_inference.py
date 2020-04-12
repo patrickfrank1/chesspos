@@ -30,18 +30,10 @@ def save_embeddings(file, table, data_generator, data_shape, batch_size, float16
 
 		if float16:
 			print("Writing float16...")
-			data_sheet = hf.create_dataset(
-				table,
-				shape=data_shape,
-				dtype=np.float16, compression="gzip", compression_opts=9 # no compression
-			)
+			data_sheet = hf.create_dataset(table, shape=data_shape, dtype=np.float16)
 		else:
 			print("Writing float32...")
-			data_sheet = hf.create_dataset(
-				table,
-				shape=data_shape,
-				dtype=np.float32 #, compression="gzip", compression_opts=2 # no compression
-			)
+			data_sheet = hf.create_dataset(table, shape=data_shape, dtype=np.float32)
 
 		batch_nr = 0
 		for batch in data_generator:
