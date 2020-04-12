@@ -29,12 +29,14 @@ def save_embeddings(file, table, data_generator, data_shape, batch_size, float16
 			del hf[table]
 
 		if float16:
+			print("Writing float16...")
 			data_sheet = hf.create_dataset(
 				table,
 				shape=data_shape,
-				dtype=np.float16, compression="gzip", compression_opts=1 # no compression
+				dtype=np.float16, compression="gzip", compression_opts=9 # no compression
 			)
 		else:
+			print("Writing float32...")
 			data_sheet = hf.create_dataset(
 				table,
 				shape=data_shape,
