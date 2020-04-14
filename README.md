@@ -70,3 +70,27 @@ The demo enables you to search a small database of bitbaords for similar positio
 However, as you can find out by playing with the notebook the similarity search with bitboards is not optimal, this is why we explore metric learning later on.
 
 ## 3. Extract positions from your own database for search and metric learning
+
+The `tools` folder provides useful command line scripts to preprocess pgn files that contain chess positions.
+
+For example, to extract bitboards from all positions of all games in a pgn file open a terminal in the tools foder and run:
+```bash
+python3 pgn_extract.py ../data/raw/test.pgn --save_position ../data/bitboards/test-bb1.h5
+```
+
+This command takes as input the path to you pgn file and wirtes the bitboards to an h5 file at the path specified via `--save_position`. Note: you can drop the .pgn and .h5 file endings and the program will still parse the right files. To ease the file writing process and occupy less ram you can use the `--chunksize` flag, so that your data will be written in chunks, e.g `--chunksize 10000`.
+
+We can also utilize this script to extract tuples of positions for metric learning, to do so run:
+```bash
+python3 pgn_extract.py ../data/raw/test --save_position ../data/bitboards/test-bb1 --tuples True --save_tuples ../data/train_small/test2-tuples-strong
+```
+This will extract tuples from each game by virtue of the method `tuple_generator` in `chesspos.pgnextract`. Each generated tuple has the shape (15, 773) and contains a randomly sampled position of each game i *game[i][j]* and randomly sampled positions from the next game as
+```
+tuple = (game[i][j], game[i][j+1], game[i][j+2], game[i][j+3], game[i][j+4], game[i][(j+14) mod len(game[i])], game[i+1][rand1], ..., game[i+1][rand9])
+```
+
+Furthermore the command line script implements two simple filters to subsample  big pgn files. For example
+```bash
+python pgn_extract.py ../data/raw/test --save_position ../data/bitboards/test-bb2 --chunksize 10000 --tuples True --save_tuples ../data/train_small/test2-tuples-strong --filter elo_min=2400 --filter time_min=61
+```
+selects only games in which both players have an elo greater or equal to 2400 and where the time control is greater or equal to 61. The time control is calculated as *seconds + seconds per move*, which means a bullet game (60s+0s) is discarded whereas a bullet game with increment (60s+1s) is kept.
