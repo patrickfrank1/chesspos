@@ -23,16 +23,13 @@ class SkMetrics(tf.keras.callbacks.Callback):
 		return tf.reduce_sum(tf.cast(pos_dist < neg_dist, dtype=tf.int32), axis=0)
 
 	def on_train_begin(self, logs={}): # pylint: disable=unused-argument,dangerous-default-value
-		self.num_correct = [] # pylint: disable=attribute-defined-outside-init
 		self.frac_correct = [] # pylint: disable=attribute-defined-outside-init
-		self.diagnostics = [] # pylint: disable=attribute-defined-outside-init
 
 	def on_epoch_end(self, epoch, logs={}): # pylint: disable=unused-argument,dangerous-default-value
 		correct = tf.Variable(0)
 		for i in range(self.steps_per_callback):
 			predictions = self.model.predict_on_batch(next(self.valid_data))
 			correct.assign_add(self.predict_correct(predictions))
-		self.num_correct.append(correct)
 		frac = tf.cast(correct, dtype=tf.float16)/tf.Variable(self.batch_size*self.steps_per_callback, dtype=tf.float16)
 		self.frac_correct.append(frac.numpy())
 		print(f" triplet_acc: {self.frac_correct[-1]}")
