@@ -71,9 +71,11 @@ However, as you can find out by playing with the notebook the similarity search 
 
 ## 3. Extract positions from your own database for search and metric learning
 
-The `tools` folder provides useful command line scripts to preprocess pgn files that contain chess positions.
+The `tools` folder provides useful command line scripts to preprocess pgn files that contain chess positions. If you are stuck display the help with `python3 path/to/tool.py -h`.
 
-For example, to extract bitboards from all positions of all games in a pgn file open a terminal in the tools foder and run:
+#### 3.1 Extract positions
+
+To extract bitboards from all positions of all games in a pgn file open a terminal in the tools foder and run:
 ```bash
 python3 pgn_extract.py ../data/raw/test.pgn --save_position ../data/bitboards/test-bb1.h5
 ```
@@ -91,6 +93,17 @@ tuple = (game[i][j], game[i][j+1], game[i][j+2], game[i][j+3], game[i][j+4], gam
 
 Furthermore the command line script implements two simple filters to subsample  big pgn files. For example
 ```bash
-python pgn_extract.py ../data/raw/test --save_position ../data/bitboards/test-bb2 --chunksize 10000 --tuples True --save_tuples ../data/train_small/test2-tuples-strong --filter elo_min=2400 --filter time_min=61
+python3 pgn_extract.py ../data/raw/test --save_position ../data/bitboards/test-bb2 --chunksize 10000 --tuples True --save_tuples ../data/train_small/test2-tuples-strong --filter elo_min=2400 --filter time_min=61
 ```
 selects only games in which both players have an elo greater or equal to 2400 and where the time control is greater or equal to 61. The time control is calculated as *seconds + seconds per move*, which means a bullet game (60s+0s) is discarded whereas a bullet game with increment (60s+1s) is kept.
+
+#### 3.2 Build a faiss database for search
+
+Use the following script to create a binary index from positions encoded as bitboards.
+
+```bash
+python3 index_from_bitboards.py ../data/bitboards/testdir --table_key position_ --save_path ../data/test_index2
+```
+This command will take all h5 files from the `../data/bitboards/testdir` directory and extract bitboards from all datasets in all h5 files which contain `position_` in their dataset name. The recommended (and also default) value is *position* since bitboards created with the tool in section 3.1 use this name for bitboard datasets.
+
+4. Train and evaluate your own chess position embeddings
