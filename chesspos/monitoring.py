@@ -26,11 +26,11 @@ class SkMetrics(tf.keras.callbacks.Callback):
 		self.frac_correct = [] # pylint: disable=attribute-defined-outside-init
 
 	def on_epoch_end(self, epoch, logs={}): # pylint: disable=unused-argument,dangerous-default-value
-		correct = tf.Variable(0)
+		correct = tf.Variable(0, dtype=tf.int32)
 		for i in range(self.steps_per_callback):
 			predictions = self.model.predict_on_batch(next(self.valid_data))
 			correct.assign_add(self.predict_correct(predictions))
-		frac = tf.cast(correct, dtype=tf.float16)/tf.Variable(self.batch_size*self.steps_per_callback, dtype=tf.float16)
+		frac = tf.cast(correct, dtype=tf.float32)/tf.Variable(self.batch_size*self.steps_per_callback, dtype=tf.float32)
 		self.frac_correct.append(frac.numpy())
 		print(f" triplet_acc: {self.frac_correct[-1]}")
 
