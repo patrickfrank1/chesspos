@@ -50,7 +50,7 @@ def embedding_network(input_size, embedding_size, hidden_layers=[], name="embedd
 		embedding.add(
 			keras.layers.Dense(hidden_layers[0], activation='relu',input_shape=(input_size,))
 		)
-		for i in range(1, len(hidden_layers)-1):
+		for i in range(1, len(hidden_layers)):
 			if hidden_layers[i] > 0.0 and hidden_layers[i] < 1.0:
 				embedding.add(
 					keras.layers.Dropout(rate=hidden_layers[i])
