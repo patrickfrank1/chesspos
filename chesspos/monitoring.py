@@ -29,12 +29,9 @@ class SkMetrics(tf.keras.callbacks.Callback):
 
 	def on_epoch_end(self, epoch, logs={}): # pylint: disable=unused-argument,dangerous-default-value
 		correct = tf.Variable(0)
-		self.diagnostics.append("correct variable initialized")
 		for i in range(self.steps_per_callback):
 			predictions = self.model.predict_on_batch(next(self.valid_data))
-			self.diagnostics.append(f"prediction {i} successful")
 			correct.assign_add(self.predict_correct(predictions))
-			self.diagnostics.append("correct variable updated")
 		self.num_correct.append(correct)
 		frac = tf.cast(correct, dtype=tf.float16)/tf.Variable(self.batch_size*self.steps_per_callback, dtype=tf.float16)
 		self.frac_correct.append(frac.numpy())
