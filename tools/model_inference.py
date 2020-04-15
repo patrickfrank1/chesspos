@@ -58,7 +58,8 @@ def embed_bitboards_from_files(model_dir, bitboard_dir, table_prefix='position',
 	bitboard_dir = os.path.abspath(bitboard_dir)
 
 	file_arr = files_from_directory(bitboard_dir, file_type="h5")
-	model = tf.keras.models.load_model(model_dir)
+
+	model = tf.keras.models.load_model(model_dir, compile=False)
 	embedding_dim = model.get_output_shape_at(-1)[1]
 
 	for file in file_arr:

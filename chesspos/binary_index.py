@@ -138,6 +138,6 @@ def index_load(load_name, is_binary):
 	if is_binary:
 		faiss_index = faiss.read_index_binary(load)
 	else:
-		faiss_index = faiss.read_index_binary(load)
+		faiss_index = faiss.read_index(load)
 
 	return faiss_index
