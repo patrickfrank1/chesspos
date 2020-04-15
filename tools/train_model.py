@@ -141,8 +141,21 @@ def train_embedding(train_dir, validation_dir, save_dir, input_size=773,
 	Save the trained model
 	'''
 	for key in models:
-		# save to h5 seems more robust, i ran into problems transporting 'tf' format
-		models[key].save(f"{save_dir}/model_{key}", save_format='h5')
+		# save in 3 different ways to increase robustness
+		for fmt in ['tf','h5']:
+			try:
+				models[key].save(f"{save_dir}/model_{key}", save_format=fmt)
+			except Exception as e:
+				print(f"Error when saving {key} in format {fmt}:")
+				print(e)
+		try:
+			json_config = model.to_json()
+			with open(f"{save_dir}/model_{key}_config.json", 'w') as json_file:
+				json_file.write(json_config)
+			model.save_weights(f"{save_dir}/model_{key}_weights.h5")
+		except Exception as e:
+			print(f"Error when saving weights and architecture of {key}:")
+			print(e)
 
 	'''
 	Visualise and save results
