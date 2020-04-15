@@ -141,7 +141,8 @@ def train_embedding(train_dir, validation_dir, save_dir, input_size=773,
 	Save the trained model
 	'''
 	for key in models:
-		models[key].save(f"{save_dir}/model_{key}", save_format='tf')
+		# save to h5 seems more robust, i ran into problems transporting 'tf' format
+		models[key].save(f"{save_dir}/model_{key}", save_format='h5')
 
 	'''
 	Visualise and save results
