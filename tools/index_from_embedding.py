@@ -13,7 +13,7 @@ from chesspos.utils import correct_file_ending, files_from_directory
 def index_load_file(file, id_string, faiss_index, chunks=int(1e5), train=False):
 	fname = correct_file_ending(file, "h5")
 	chunks = int(chunks)
-	table_id = []
+	table_dict = {}
 
 	with h5py.File(fname, 'r') as hf:
 		print(f"File {fname} has keys {hf.keys()}")
@@ -31,16 +31,17 @@ def index_load_file(file, id_string, faiss_index, chunks=int(1e5), train=False):
 					faiss_index = index_train_embeddings(hf[key][i*chunks:(i+1)*chunks,:], faiss_index)
 				else:
 					faiss_index = index_add_embeddings(hf[key][i*chunks:(i+1)*chunks,:], faiss_index)
-				table_id.append(faiss_index.ntotal)
+				# add info for reconstruction
+				table_dict[faiss_index.ntotal] = [fname, key]
 
-	return faiss_index, table_id
+	return faiss_index, table_dict
 
 def index_load_file_array(file_list, id_string, faiss_index, chunks=int(1e5), train=False):
-	file_ids = []
+	table_dict = {}
 	for file in file_list:
 		faiss_index, t_id = index_load_file(file, id_string, faiss_index, chunks=chunks, train=train)
-		file_ids.append(t_id)
-	return faiss_index, file_ids
+		table_dict = {**table_dict, **t_id}
+	return faiss_index, table_dict
 
 def index_add_embeddings(embedding_array, faiss_index):
 	faiss_index.add(np.asarray(embedding_array, dtype=np.float32))
@@ -116,47 +117,43 @@ def index_query_positions(query_array, faiss_index, model_path, input_format='fe
 
 if __name__ == "__main__":
 
-	embedding_path = "/media/pafrank/Backup/other/Chess/lichess/embeddings/bitboards16"
+	embedding_path = "/media/pafrank/Backup/other/Chess/lichess/embeddings/add"
 	train_path = "/media/pafrank/Backup/other/Chess/lichess/embeddings/train"
-	model_path = "/home/pafrank/Documents/coding/chess-position-embedding/metric_learning/new_model7.h5"
-	save_path = "/media/pafrank/Backup/other/Chess/lichess/embeddings/quantized_index.faiss"
+	model_path = "/home/pafrank/Documents/coding/chess-position-embedding/metric_learning/model7/model_encoder.h5"
+	# save_path = "/media/pafrank/Backup/other/Chess/lichess/embeddings/OPQ4,PQ4x2.faiss"
 	table_id = "test_embedding"
 	queries = [
 		"rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
 		"8/1R6/4p1k1/1p6/p1b2K2/P1Br4/1P6/8 b - - 8 49"
 	]
 
-	# #embedding dimension -> 8
-	# with h5py.File(f"{train_path}/lichess_db_standard_rated_2013-01-bb.h5", 'r') as hf:
-	# 	print(f"Keys {hf.keys()}")
-	# 	sample = hf[list(hf.keys())[4]][0]
-	# 	print(sample.shape)
+	# create index
+	print("create index")
+	index = faiss.index_factory(8, "SQ4")
 
-	# # create index
-	# print("create index")
-	# index = faiss.index_factory(8, "SQ4")
+	# add table to faiss index
+	print("train index")
+	train_file_list = files_from_directory(train_path, file_type="h5")
+	index, ids = index_load_file_array(train_file_list, table_id, index, chunks=int(1e6), train=True)
+	print(ids)
 
-	# # add table to faiss index
-	# print("train index")
-	# train_file_list = files_from_directory(train_path, file_type="h5")
-	# index, ids = index_load_file_array(train_file_list, table_id, index, chunks=int(1e5), train=True)
-
-	# # add table to faiss index
-	# print("populate index")
-	# file_list = files_from_directory(embedding_path, file_type="h5")
-	# index, ids = index_load_file_array(file_list, table_id, index, chunks=int(1e5), train=False)
+	# add table to faiss index
+	print("populate index")
+	file_list = files_from_directory(embedding_path, file_type="h5")
+	index, ids = index_load_file_array(file_list, table_id, index, chunks=int(1e5), train=False)
+	print(ids)
 
 	# # save index
 	# faiss.write_index(index, save_path)
 	# del index
 	# #WORKS!
 
-	index = faiss.read_index(save_path)
-	# search index
-	print("search index")
-	dist, idx, embedding = index_query_positions(queries, index, model_path, input_format='fen',
-	output_format='fen', num_results=5)
-	print("RESULTS")
-	print(dist)
-	print(idx)
-	print(embedding)
+	# index = faiss.read_index(save_path)
+	# # search index
+	# print("search index")
+	# dist, idx, embedding = index_query_positions(queries, index, model_path, input_format='fen',
+	# output_format='fen', num_results=5)
+	# print("RESULTS")
+	# print(dist)
+	# print(idx)
+	# print(embedding)
