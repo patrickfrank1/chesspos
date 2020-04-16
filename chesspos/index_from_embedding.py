@@ -8,7 +8,7 @@ import chess
 import tensorflow as tf
 
 from chesspos.convert import bitboard_to_board
-from chesspos.binary_index import board_to_bitboard, uint8_to_bitboard
+from chesspos.binary_index import board_to_bitboard
 from chesspos.utils import correct_file_ending, files_from_directory
 
 def index_load_file(file, id_string, faiss_index, chunks=int(1e5), train=False):
@@ -29,9 +29,9 @@ def index_load_file(file, id_string, faiss_index, chunks=int(1e5), train=False):
 						faiss_index = index_add_embeddings(hf[key][i*chunks:(i+1)*chunks,:], faiss_index)
 
 				if train:
-					faiss_index = index_train_embeddings(hf[key][i*chunks:(i+1)*chunks,:], faiss_index)
+					faiss_index = index_train_embeddings(hf[key][math.floor(hf_len/chunks)*chunks:,:], faiss_index)
 				else:
-					faiss_index = index_add_embeddings(hf[key][i*chunks:(i+1)*chunks,:], faiss_index)
+					faiss_index = index_add_embeddings(hf[key][math.floor(hf_len/chunks)*chunks:,:], faiss_index)
 				# add info for reconstruction
 				table_dict[faiss_index.ntotal] = [fname, key]
 
@@ -39,8 +39,8 @@ def index_load_file(file, id_string, faiss_index, chunks=int(1e5), train=False):
 
 def index_load_file_array(file_list, id_string, faiss_index, chunks=int(1e5), train=False):
 	table_dict = {}
-	for file in file_list:
-		faiss_index, t_id = index_load_file(file, id_string, faiss_index, chunks=chunks, train=train)
+	for f in file_list:
+		faiss_index, t_id = index_load_file(f, id_string, faiss_index, chunks=chunks, train=train)
 		table_dict = {**table_dict, **t_id}
 	return faiss_index, table_dict
 
@@ -54,33 +54,30 @@ def index_train_embeddings(embedding_array, faiss_index):
 	print(f"faiss index trained? {faiss_index.is_trained}")
 	return faiss_index
 
-def index_search_and_retrieve(queries, faiss_index, num_results=10):
-	D, I = faiss_index.search(queries, k=num_results)
+def index_search_and_retrieve(query_arr, faiss_index, num_results=10):
+	D, I = faiss_index.search(query_arr, k=num_results)
 	results = []
-	for q_nr in range(len(queries)): # loop over queries
+	for q_nr in range(len(query_arr)): # loop over queries
 		q_res = []
 		for res_nr in range(num_results): # loop over results for that query
 			R = faiss_index.reconstruct(int(I[q_nr,res_nr]))
 			q_res.append(R)
 		results.append(q_res)
-	return D, I, results
+	return D, I, np.asarray(results)
 
 def encode_bitboard(query, model_path):
 	model = tf.keras.models.load_model(model_path)
-	print("MODEL LOADED")
-	print(query[0].shape, query[0].dtype)
 	embedding = model.predict_on_batch(query)
 	print(embedding[0].shape, embedding[0].dtype)
 	return np.asarray(embedding, dtype=np.float32)
 
-def index_query_positions(query_array, faiss_index, model_path, table_dict,
-	input_format='fen', output_format='fen', num_results=10):
+def index_query_positions(query_array, faiss_index, encoder_path, table_dict,
+	input_format='fen', num_results=10):
 	"""
 	Query the faiss index of stored bitboards and retrieve nearest neighbors for
 	each provided position.
 
 	:param input_format: format that the query is provided in valid choices 'fen' | 'bitboard'
-	:param output_format: format that the results are provided in valid choices 'fen' | 'bitboard' | 'board'
 	"""
 	#prepare input
 	query = []
@@ -91,16 +88,16 @@ def index_query_positions(query_array, faiss_index, model_path, table_dict,
 				tmp = board_to_bitboard(tmp) # chess.Board -> bitboard
 				query.append(tmp)
 		query = np.asarray(query)
-		query = encode_bitboard(query, model_path)
+		query = encode_bitboard(query, encoder_path)
 	else:
 		raise ValueError("Invalid input format provided.")
 
 	#reshape if only single query
 	if len(query.shape) == 1:
 		query = query.reshape((1,-1))
+
 	# search faiss index and retrieve closest bitboards
 	distance, idx, results = index_search_and_retrieve(query, faiss_index, num_results=num_results)
-
 	return distance, idx, results
 
 def sort_dict_keys(table_dict):
@@ -140,15 +137,14 @@ def manipulate_prefix(identifier, new_prefix):
 	def swap_prefix(table_name, new_prefix):
 		num = table_name.split('_')[-1]
 		return f"{new_prefix}_{num}"
-	
-	swap_all = np.vectorize(swap_prefix)
 
+	swap_all = np.vectorize(swap_prefix)
 	new_identifier = swap_all(identifier, new_prefix)
 	return new_identifier
 
 
 def retrieve_elements_from_file(files, tables, offsets):
-	
+
 	files = np.asarray(files)
 	tables = np.asarray(tables)
 	offsets = np.asarray(offsets)
@@ -212,7 +208,7 @@ if __name__ == "__main__":
 	# search index
 	print("search index")
 	D, I, E = index_query_positions(queries, index, model_path, table_dict,
-	input_format='fen', output_format='fen', num_results=num_results)
+	input_format='fen', num_results=num_results)
 
 	# get location from index
 	file, table, offset = location_from_index(I, table_dict)
@@ -238,6 +234,6 @@ if __name__ == "__main__":
 
 	print("query")
 	print(chess.Board(queries[1]))
-	for i in range(num_results):
-		print(f"Result {i+1}")
-		print(bitboard_to_board(bitboards[1][i]))
+	for r in range(num_results):
+		print(f"Result {r+1}")
+		print(bitboard_to_board(bitboards[1][r]))
