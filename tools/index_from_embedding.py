@@ -7,7 +7,8 @@ import numpy as np
 import chess
 import tensorflow as tf
 
-from chesspos.binary_index import board_to_bitboard
+from chesspos.convert import bitboard_to_board
+from chesspos.binary_index import board_to_bitboard, uint8_to_bitboard
 from chesspos.utils import correct_file_ending, files_from_directory
 
 def index_load_file(file, id_string, faiss_index, chunks=int(1e5), train=False):
@@ -73,8 +74,8 @@ def encode_bitboard(query, model_path):
 	print(embedding[0].shape, embedding[0].dtype)
 	return np.asarray(embedding, dtype=np.float32)
 
-def index_query_positions(query_array, faiss_index, model_path, input_format='fen',
-	output_format='fen', num_results=10):
+def index_query_positions(query_array, faiss_index, model_path, table_dict,
+	input_format='fen', output_format='fen', num_results=10):
 	"""
 	Query the faiss index of stored bitboards and retrieve nearest neighbors for
 	each provided position.
@@ -99,9 +100,9 @@ def index_query_positions(query_array, faiss_index, model_path, input_format='fe
 	if len(query.shape) == 1:
 		query = query.reshape((1,-1))
 	# search faiss index and retrieve closest bitboards
-	distance, index, results = index_search_and_retrieve(query, faiss_index, num_results=num_results)
+	distance, idx, results = index_search_and_retrieve(query, faiss_index, num_results=num_results)
 
-	# prepare output
+	# # prepare output
 	# if output_format in ['fen','bitboard','board']:
 	# 	for q_nr in range(len(results)): # loop over queries
 	# 		for res_nr in range(num_results): # loop over resluts per query
@@ -113,46 +114,123 @@ def index_query_positions(query_array, faiss_index, model_path, input_format='fe
 	# else:
 	# 	raise ValueError("Invalid input format provided.")
 
-	return distance, index, results
+	return distance, idx, results
+
+def sort_dict_keys(table_dict):
+	keys = np.asarray(list(table_dict.keys()), dtype=np.int32)
+	print(keys)
+	sorted_keys = np.sort(keys)
+	return sorted_keys
+
+def location_from_index(id_lists, table_dict):
+
+	sorted_keys = sort_dict_keys(table_dict)
+	num_lists = len(id_lists)
+	len_lists = len(id_lists[0])
+
+	key = np.zeros_like(id_lists, dtype=np.int64)
+	for i in range(num_lists):
+		for j in range(len_lists):
+			key_idx = np.min(np.argwhere(id_lists[i][j] < sorted_keys))
+			key[i][j] = sorted_keys[key_idx]
+	print(key)
+	offset_from_end = key - id_lists
+	print(offset_from_end)
+
+	name_file = [[None for _ in range(len_lists)] for _ in range(num_lists)]
+	name_table = [[None for _ in range(len_lists)] for _ in range(num_lists)]
+
+	for i in range(num_lists):
+		for j in range(len_lists):
+			name_file[i][j] = table_dict[str(key[i][j])][0]
+			name_table[i][j] = table_dict[str(key[i][j])][1]
+	
+	print(name_file)
+	print(name_table)
+
+	return name_file, name_table, offset_from_end
+
+
+def bitboard_from_id(id_lists, table_dict, bitboard_prefix="position",
+	embedding_prefix="test_embedding"):
+	print(table_dict)
+	# get keys
+	sorted_keys = sort_dict_keys(table_dict)
+	# determine right table
+	right_table_id = np.max(np.argwhere(index_id < sorted_keys))
+	# determine index offfset
+	offset_from_end = right_table_id - index_id
+	print(offset_from_end)
+	right_table = sorted_keys[right_table_id]
+	print(right_table)
+	# get info from table
+	src = table_dict[str(right_table)]
+	file = src[0]
+	bb_table = f"{bitboard_prefix}_{src[1].split('_')[-1]}"
+	embedding_table = f"{embedding_prefix}_{src[1].split('_')[-1]}"
+	print(file)
+	print(bb_table)
+	print(embedding_table)
+	# access
+	bb, emb = None, None
+	with h5py.File(file, 'r') as hf:
+		bb = hf[bb_table][-offset_from_end]
+		emb = hf[embedding_table][-offset_from_end]
+	return bb, emb
+
+
 
 if __name__ == "__main__":
 
 	embedding_path = "/media/pafrank/Backup/other/Chess/lichess/embeddings/add"
 	train_path = "/media/pafrank/Backup/other/Chess/lichess/embeddings/train"
 	model_path = "/home/pafrank/Documents/coding/chess-position-embedding/metric_learning/model7/model_encoder.h5"
-	# save_path = "/media/pafrank/Backup/other/Chess/lichess/embeddings/OPQ4,PQ4x2.faiss"
+	save_path = "/media/pafrank/Backup/other/Chess/lichess/embeddings"
 	table_id = "test_embedding"
 	queries = [
 		"rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
 		"8/1R6/4p1k1/1p6/p1b2K2/P1Br4/1P6/8 b - - 8 49"
 	]
 
-	# create index
-	print("create index")
-	index = faiss.index_factory(8, "SQ4")
+	# # create index
+	# print("create index")
+	# index = faiss.index_factory(8, "SQ4")
 
-	# add table to faiss index
-	print("train index")
-	train_file_list = files_from_directory(train_path, file_type="h5")
-	index, ids = index_load_file_array(train_file_list, table_id, index, chunks=int(1e6), train=True)
-	print(ids)
+	# # add table to faiss index
+	# print("train index")
+	# train_file_list = files_from_directory(train_path, file_type="h5")
+	# index, ids = index_load_file_array(train_file_list, table_id, index, chunks=int(1e6), train=True)
+	# print(ids)
 
-	# add table to faiss index
-	print("populate index")
-	file_list = files_from_directory(embedding_path, file_type="h5")
-	index, ids = index_load_file_array(file_list, table_id, index, chunks=int(1e5), train=False)
-	print(ids)
+	# # add table to faiss index
+	# print("populate index")
+	# file_list = files_from_directory(embedding_path, file_type="h5")
+	# index, ids = index_load_file_array(file_list, table_id, index, chunks=int(1e5), train=False)
+	# print(ids)
 
 	# # save index
-	# faiss.write_index(index, save_path)
+	# faiss.write_index(index, f"{save_path}/SQ4.faiss")
 	# del index
-	# #WORKS!
+	# import json
+	# json.dump( ids, open( f"{save_path}/table_dict.json", 'w' ) )
 
-	# index = faiss.read_index(save_path)
-	# # search index
-	# print("search index")
-	# dist, idx, embedding = index_query_positions(queries, index, model_path, input_format='fen',
-	# output_format='fen', num_results=5)
+	import json
+	# Read data from file:
+	table_dict = json.load( open( f"{save_path}/table_dict.json" ) )
+
+	index = faiss.read_index(f"{save_path}/SQ4.faiss")
+	# search index
+	print("search index")
+	D, I, E = index_query_positions(queries, index, model_path, table_dict,
+	input_format='fen', output_format='fen', num_results=5)
+
+	# get location from index
+	file, table, offset = location_from_index(I, table_dict)
+
+	print(file)
+	print(table)
+	print(offset)
+
 	# print("RESULTS")
 	# print(dist)
 	# print(idx)
