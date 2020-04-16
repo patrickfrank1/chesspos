@@ -68,7 +68,6 @@ def index_search_and_retrieve(queries, faiss_index, num_results=10):
 def encode_bitboard(query, model_path):
 	model = tf.keras.models.load_model(model_path)
 	print("MODEL LOADED")
-	model.summary()
 	print(query[0].shape, query[0].dtype)
 	embedding = model.predict_on_batch(query)
 	print(embedding[0].shape, embedding[0].dtype)
@@ -102,18 +101,6 @@ def index_query_positions(query_array, faiss_index, model_path, table_dict,
 	# search faiss index and retrieve closest bitboards
 	distance, idx, results = index_search_and_retrieve(query, faiss_index, num_results=num_results)
 
-	# # prepare output
-	# if output_format in ['fen','bitboard','board']:
-	# 	for q_nr in range(len(results)): # loop over queries
-	# 		for res_nr in range(num_results): # loop over resluts per query
-	# 			results[q_nr][res_nr] = uint8_to_bitboard(results[q_nr][res_nr], trim_last_bits=3)
-	# 			if output_format in ['fen','board']:
-	# 				results[q_nr][res_nr] = bitboard_to_board(results[q_nr][res_nr])
-	# 				if output_format == 'fen':
-	# 					results[q_nr][res_nr] = results[q_nr][res_nr].fen()
-	# else:
-	# 	raise ValueError("Invalid input format provided.")
-
 	return distance, idx, results
 
 def sort_dict_keys(table_dict):
@@ -133,9 +120,8 @@ def location_from_index(id_lists, table_dict):
 		for j in range(len_lists):
 			key_idx = np.min(np.argwhere(id_lists[i][j] < sorted_keys))
 			key[i][j] = sorted_keys[key_idx]
-	print(key)
+
 	offset_from_end = key - id_lists
-	print(offset_from_end)
 
 	name_file = [[None for _ in range(len_lists)] for _ in range(num_lists)]
 	name_table = [[None for _ in range(len_lists)] for _ in range(num_lists)]
@@ -144,53 +130,57 @@ def location_from_index(id_lists, table_dict):
 		for j in range(len_lists):
 			name_file[i][j] = table_dict[str(key[i][j])][0]
 			name_table[i][j] = table_dict[str(key[i][j])][1]
+
+	return np.asarray(name_file), np.asarray(name_table), np.asarray(offset_from_end)
+
+def manipulate_prefix(identifier, new_prefix):
+
+	identifier = np.asarray(identifier)
+
+	def swap_prefix(table_name, new_prefix):
+		num = table_name.split('_')[-1]
+		return f"{new_prefix}_{num}"
 	
-	print(name_file)
-	print(name_table)
+	swap_all = np.vectorize(swap_prefix)
 
-	return name_file, name_table, offset_from_end
-
-
-def bitboard_from_id(id_lists, table_dict, bitboard_prefix="position",
-	embedding_prefix="test_embedding"):
-	print(table_dict)
-	# get keys
-	sorted_keys = sort_dict_keys(table_dict)
-	# determine right table
-	right_table_id = np.max(np.argwhere(index_id < sorted_keys))
-	# determine index offfset
-	offset_from_end = right_table_id - index_id
-	print(offset_from_end)
-	right_table = sorted_keys[right_table_id]
-	print(right_table)
-	# get info from table
-	src = table_dict[str(right_table)]
-	file = src[0]
-	bb_table = f"{bitboard_prefix}_{src[1].split('_')[-1]}"
-	embedding_table = f"{embedding_prefix}_{src[1].split('_')[-1]}"
-	print(file)
-	print(bb_table)
-	print(embedding_table)
-	# access
-	bb, emb = None, None
-	with h5py.File(file, 'r') as hf:
-		bb = hf[bb_table][-offset_from_end]
-		emb = hf[embedding_table][-offset_from_end]
-	return bb, emb
+	new_identifier = swap_all(identifier, new_prefix)
+	return new_identifier
 
 
+def retrieve_elements_from_file(files, tables, offsets):
+	
+	files = np.asarray(files)
+	tables = np.asarray(tables)
+	offsets = np.asarray(offsets)
+
+	dt = None
+	d_len = None
+	with h5py.File(files[0][0], 'r') as hf:
+		dt = hf[tables[0][0]][0].dtype
+		d_len = len(hf[tables[0][0]][0])
+	def get_el(f, t, o):
+		with h5py.File(f, 'r') as hf:
+			d_len = len(hf[t])
+			return hf[t][d_len-o]
+
+	vf = np.vectorize(get_el, signature=f'(),(),()->({d_len})', otypes=[dt for _ in range(d_len)])
+	results = vf(files, tables, offsets)
+
+	return results
 
 if __name__ == "__main__":
 
 	embedding_path = "/media/pafrank/Backup/other/Chess/lichess/embeddings/add"
 	train_path = "/media/pafrank/Backup/other/Chess/lichess/embeddings/train"
 	model_path = "/home/pafrank/Documents/coding/chess-position-embedding/metric_learning/model7/model_encoder.h5"
+	decoder_path ="/home/pafrank/Documents/coding/chess-position-embedding/metric_learning/model7/model_decoder.h5"
 	save_path = "/media/pafrank/Backup/other/Chess/lichess/embeddings"
 	table_id = "test_embedding"
 	queries = [
 		"rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
 		"8/1R6/4p1k1/1p6/p1b2K2/P1Br4/1P6/8 b - - 8 49"
 	]
+	num_results = 10
 
 	# # create index
 	# print("create index")
@@ -222,16 +212,32 @@ if __name__ == "__main__":
 	# search index
 	print("search index")
 	D, I, E = index_query_positions(queries, index, model_path, table_dict,
-	input_format='fen', output_format='fen', num_results=5)
+	input_format='fen', output_format='fen', num_results=num_results)
 
 	# get location from index
 	file, table, offset = location_from_index(I, table_dict)
 
-	print(file)
 	print(table)
-	print(offset)
+	bb_table = manipulate_prefix(table, "position")
+	print(bb_table)
+	bitboards = retrieve_elements_from_file(file, bb_table, offset)
+	print(bitboards.shape, bitboards.dtype)
 
-	# print("RESULTS")
-	# print(dist)
-	# print(idx)
-	# print(embedding)
+	# # look at the decoders performance
+	# embeddings = retrieve_elements_from_file(file, table, offset)
+	# decoder = tf.keras.models.load_model(decoder_path)
+	# decoder.summary()
+
+	# decoded_pos = decoder(embeddings[1][1].reshape((1,-1)))
+	# print(decoded_pos.shape, decoded_pos.dtype)
+	# decoded_pos = decoded_pos[0]
+	# print("bitboard")
+	# print(bitboard_to_board(bitboards[1][1]))
+	# print("decoded")
+	# print(bitboard_to_board(decoded_pos))
+
+	print("query")
+	print(chess.Board(queries[1]))
+	for i in range(num_results):
+		print(f"Result {i+1}")
+		print(bitboard_to_board(bitboards[1][i]))
