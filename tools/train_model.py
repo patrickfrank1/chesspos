@@ -153,8 +153,8 @@ def train_embedding(train_dir, validation_dir, save_dir, input_size=773,
 			print(f"Error when saving {key} in format h5:")
 			print(e)
 		try:
-			config = model.get_config()
-			weights = model.get_weights()
+			config = model[key].get_config()
+			weights = model[key].get_weights()
 			pickle.dump(config, open(f"{save_dir}/model_{key}_config.pk", 'wb'))
 			pickle.dump(weights, open(f"{save_dir}/model_{key}_weights.pk", 'wb'))
 		except Exception as e:
