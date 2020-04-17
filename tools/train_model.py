@@ -2,6 +2,7 @@ import os
 import math
 import argparse
 import json
+import pickle
 
 import tensorflow as tf
 from tensorflow import keras
@@ -138,21 +139,24 @@ def train_embedding(train_dir, validation_dir, save_dir, input_size=773,
 	)
 
 	'''
-	Save the trained model
+	Save the trained model: save in 3 different ways to increase robustness
 	'''
 	for key in models:
-		# save in 3 different ways to increase robustness
-		for fmt in ['tf','h5']:
-			try:
-				models[key].save(f"{save_dir}/model_{key}", save_format=fmt)
-			except Exception as e:
-				print(f"Error when saving {key} in format {fmt}:")
-				print(e)
 		try:
-			json_config = model.to_json()
-			with open(f"{save_dir}/model_{key}_config.json", 'w') as json_file:
-				json_file.write(json_config)
-			model.save_weights(f"{save_dir}/model_{key}_weights.h5")
+			models[key].save(f"{save_dir}/model_{key}", save_format="tf")
+		except Exception as e:
+			print(f"Error when saving {key} in format tf:")
+			print(e)
+		try:
+			models[key].save(f"{save_dir}/model_{key}.h5")
+		except Exception as e:
+			print(f"Error when saving {key} in format h5:")
+			print(e)
+		try:
+			config = model.get_config()
+			weights = model.get_weights()
+			pickle.dump(config, open(f"{save_dir}/model_{key}_config.pk", 'wb'))
+			pickle.dump(weights, open(f"{save_dir}/model_{key}_weights.pk", 'wb'))
 		except Exception as e:
 			print(f"Error when saving weights and architecture of {key}:")
 			print(e)
