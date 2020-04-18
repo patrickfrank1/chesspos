@@ -15,6 +15,7 @@ from chesspos.utils import correct_file_ending, files_from_directory
 def index_load_file(file, id_string, faiss_index, chunks=int(1e5), train=False):
 	fname = correct_file_ending(file, "h5")
 	chunks = int(chunks)
+	train_frac = 1e-3
 	table_dict = {}
 
 	with h5py.File(fname, 'r') as hf:
@@ -22,19 +23,23 @@ def index_load_file(file, id_string, faiss_index, chunks=int(1e5), train=False):
 		for key in hf.keys():
 			if id_string in key:
 				hf_len = len(hf[key])
+				train_set = np.empty((0, len(hf[key][0])))
 
+				# rewrite to pass function to do stuff
 				for i in range(math.floor(hf_len/chunks)):
 					if train:
-						faiss_index = index_train_embeddings(hf[key][i*chunks:(i+1)*chunks,:], faiss_index)
+						train_set = np.concatenate((train_set,hf[key][i*chunks:i*chunks+int(chunks*train_frac),:]))
 					else:
 						faiss_index = index_add_embeddings(hf[key][i*chunks:(i+1)*chunks,:], faiss_index)
 
 				if train:
-					faiss_index = index_train_embeddings(hf[key][math.floor(hf_len/chunks)*chunks:,:], faiss_index)
+					train_set = np.concatenate((train_set,hf[key][math.floor(hf_len/chunks)*chunks:math.floor(hf_len/chunks)*chunks+int(chunks*train_frac),:]))
 				else:
 					faiss_index = index_add_embeddings(hf[key][math.floor(hf_len/chunks)*chunks:,:], faiss_index)
 				# add info for reconstruction
 				table_dict[faiss_index.ntotal] = [fname, key]
+		# train index
+		faiss_index = index_train_embeddings(train_set, faiss_index)
 
 	return faiss_index, table_dict
 
@@ -163,77 +168,3 @@ def retrieve_elements_from_file(files, tables, offsets):
 	results = vf(files, tables, offsets)
 
 	return results
-
-if __name__ == "__main__":
-
-	embedding_path = "/media/pafrank/Backup/other/Chess/lichess/embeddings/add"
-	train_path = "/media/pafrank/Backup/other/Chess/lichess/embeddings/train"
-	model_path = "/home/pafrank/Documents/coding/chess-position-embedding/metric_learning/model7/model_encoder.h5"
-	decoder_path ="/home/pafrank/Documents/coding/chess-position-embedding/metric_learning/model7/model_decoder.h5"
-	save_path = "/media/pafrank/Backup/other/Chess/lichess/embeddings"
-	table_id = "test_embedding"
-	queries = [
-		"rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
-		"8/1R6/4p1k1/1p6/p1b2K2/P1Br4/1P6/8 b - - 8 49"
-	]
-	num_results = 10
-
-	# # create index
-	# print("create index")
-	# index = faiss.index_factory(8, "SQ4")
-
-	# # add table to faiss index
-	# print("train index")
-	# train_file_list = files_from_directory(train_path, file_type="h5")
-	# index, ids = index_load_file_array(train_file_list, table_id, index, chunks=int(1e6), train=True)
-	# print(ids)
-
-	# # add table to faiss index
-	# print("populate index")
-	# file_list = files_from_directory(embedding_path, file_type="h5")
-	# index, ids = index_load_file_array(file_list, table_id, index, chunks=int(1e5), train=False)
-	# print(ids)
-
-	# # save index
-	# faiss.write_index(index, f"{save_path}/SQ4.faiss")
-	# del index
-	# import json
-	# json.dump( ids, open( f"{save_path}/table_dict.json", 'w' ) )
-
-	import json
-	# Read data from file:
-	table_dict = json.load( open( f"{save_path}/table_dict.json" ) )
-
-	index = faiss.read_index(f"{save_path}/SQ4.faiss")
-	# search index
-	print("search index")
-	D, I, E = index_query_positions(queries, index, model_path, table_dict,
-	input_format='fen', num_results=num_results)
-
-	# get location from index
-	file, table, offset = location_from_index(I, table_dict)
-
-	print(table)
-	bb_table = manipulate_prefix(table, "position")
-	print(bb_table)
-	bitboards = retrieve_elements_from_file(file, bb_table, offset)
-	print(bitboards.shape, bitboards.dtype)
-
-	# # look at the decoders performance
-	# embeddings = retrieve_elements_from_file(file, table, offset)
-	# decoder = tf.keras.models.load_model(decoder_path)
-	# decoder.summary()
-
-	# decoded_pos = decoder(embeddings[1][1].reshape((1,-1)))
-	# print(decoded_pos.shape, decoded_pos.dtype)
-	# decoded_pos = decoded_pos[0]
-	# print("bitboard")
-	# print(bitboard_to_board(bitboards[1][1]))
-	# print("decoded")
-	# print(bitboard_to_board(decoded_pos))
-
-	print("query")
-	print(chess.Board(queries[1]))
-	for r in range(num_results):
-		print(f"Result {r+1}")
-		print(bitboard_to_board(bitboards[1][r]))
