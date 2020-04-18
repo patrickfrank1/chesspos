@@ -1,5 +1,6 @@
 import os
 import math
+import json
 
 import h5py
 import faiss
@@ -68,7 +69,6 @@ def index_search_and_retrieve(query_arr, faiss_index, num_results=10):
 def encode_bitboard(query, model_path):
 	model = tf.keras.models.load_model(model_path)
 	embedding = model.predict_on_batch(query)
-	print(embedding[0].shape, embedding[0].dtype)
 	return np.asarray(embedding, dtype=np.float32)
 
 def index_query_positions(query_array, faiss_index, encoder_path, table_dict,
