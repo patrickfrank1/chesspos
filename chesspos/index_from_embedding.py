@@ -1,21 +1,16 @@
-import os
 import math
-import json
 
 import h5py
-import faiss
 import numpy as np
 import chess
 import tensorflow as tf
 
-from chesspos.convert import bitboard_to_board
 from chesspos.binary_index import board_to_bitboard
-from chesspos.utils import correct_file_ending, files_from_directory
+from chesspos.utils import correct_file_ending
 
-def index_load_file(file, id_string, faiss_index, chunks=int(1e5), train=False):
+def index_load_file(file, id_string, faiss_index, chunks=int(1e5)):
 	fname = correct_file_ending(file, "h5")
 	chunks = int(chunks)
-	train_frac = 1e-3
 	table_dict = {}
 
 	with h5py.File(fname, 'r') as hf:
@@ -23,30 +18,20 @@ def index_load_file(file, id_string, faiss_index, chunks=int(1e5), train=False):
 		for key in hf.keys():
 			if id_string in key:
 				hf_len = len(hf[key])
-				train_set = np.empty((0, len(hf[key][0])))
-
-				# rewrite to pass function to do stuff
+				# TODO: rewrite to pass function to do stuff
 				for i in range(math.floor(hf_len/chunks)):
-					if train:
-						train_set = np.concatenate((train_set,hf[key][i*chunks:i*chunks+int(chunks*train_frac),:]))
-					else:
-						faiss_index = index_add_embeddings(hf[key][i*chunks:(i+1)*chunks,:], faiss_index)
+					faiss_index = index_add_embeddings(hf[key][i*chunks:(i+1)*chunks,:], faiss_index)
 
-				if train:
-					train_set = np.concatenate((train_set,hf[key][math.floor(hf_len/chunks)*chunks:math.floor(hf_len/chunks)*chunks+int(chunks*train_frac),:]))
-				else:
-					faiss_index = index_add_embeddings(hf[key][math.floor(hf_len/chunks)*chunks:,:], faiss_index)
+				faiss_index = index_add_embeddings(hf[key][math.floor(hf_len/chunks)*chunks:,:], faiss_index)
 				# add info for reconstruction
 				table_dict[faiss_index.ntotal] = [fname, key]
-		# train index
-		faiss_index = index_train_embeddings(train_set, faiss_index)
 
 	return faiss_index, table_dict
 
-def index_load_file_array(file_list, id_string, faiss_index, chunks=int(1e5), train=False):
+def index_load_file_array(file_list, id_string, faiss_index, chunks=int(1e5)):
 	table_dict = {}
 	for f in file_list:
-		faiss_index, t_id = index_load_file(f, id_string, faiss_index, chunks=chunks, train=train)
+		faiss_index, t_id = index_load_file(f, id_string, faiss_index, chunks=chunks)
 		table_dict = {**table_dict, **t_id}
 	return faiss_index, table_dict
 
@@ -55,10 +40,39 @@ def index_add_embeddings(embedding_array, faiss_index):
 	print(f"{faiss_index.ntotal / 1.e6} million positions stored", end="\r")
 	return faiss_index
 
-def index_train_embeddings(embedding_array, faiss_index):
-	faiss_index.train(np.asarray(embedding_array, dtype=np.float32))
+def index_train_embeddings(file_list, id_string, faiss_index, train_frac=1e-3, chunks=int(1e4)):
+	chunks = int(chunks)
+	train_samples = int(chunks*train_frac)
+	if train_samples < 1:
+		raise ValueError("Not enought training samples. Increase train_frac.")
+
+	# get embedding dimension
+	fname = correct_file_ending(file_list[0], "h5")
+	dim = None
+	with h5py.File(fname, 'r') as hf:
+		for key in hf.keys():
+			if id_string in key:
+				dim = len(hf[key][0])
+				break
+	train_set = np.empty((0, dim))
+
+	for file in file_list:
+		fname = correct_file_ending(file, "h5")
+		# get training vectors train_frac controls how many
+		with h5py.File(fname, 'r') as hf:
+			print(f"File {fname} has keys {hf.keys()}")
+			for key in hf.keys():
+				if id_string in key:
+					hf_len = len(hf[key])
+					for i in range(math.floor(hf_len/chunks)):
+						train_set = np.concatenate((train_set,hf[key][i*chunks:i*chunks+train_samples,:]))
+					train_set = np.concatenate((train_set,hf[key][math.floor(hf_len/chunks)*chunks:math.floor(hf_len/chunks)*chunks+train_samples,:]))
+
+	print(f"Training on {len(train_set)} positions")
+	faiss_index.train(np.asarray(train_set, dtype=np.float32))
 	print(f"faiss index trained? {faiss_index.is_trained}")
 	return faiss_index
+
 
 def index_search_and_retrieve(query_arr, faiss_index, num_results=10):
 	D, I = faiss_index.search(query_arr, k=num_results)
@@ -76,7 +90,7 @@ def encode_bitboard(query, model_path):
 	embedding = model.predict_on_batch(query)
 	return np.asarray(embedding, dtype=np.float32)
 
-def index_query_positions(query_array, faiss_index, encoder_path, table_dict,
+def index_query_positions(query_array, faiss_index, encoder_path,
 	input_format='fen', num_results=10):
 	"""
 	Query the faiss index of stored bitboards and retrieve nearest neighbors for
