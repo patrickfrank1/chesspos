@@ -1,3 +1,4 @@
+from os.path import abspath
 import argparse
 import json
 
@@ -11,6 +12,8 @@ def index_from_embedding(index_factory_string, embedding_dir, table_prefix="test
 	save_path="", chunks=int(1e4), train_frac=1e-3):
 
 	# get list of embedding files
+	embedding_dir = abspath(embedding_dir)
+	save_path = abspath(save_path)
 	embedding_list = files_from_directory(embedding_dir, file_type="h5")
 
 	# infer embedding dimension from provided embeddings
@@ -39,7 +42,7 @@ def index_from_embedding(index_factory_string, embedding_dir, table_prefix="test
 	faiss.write_index(index, f"{save_path}/{index_factory_string}.faiss")
 	json.dump( table_dict, open( f"{save_path}/{index_factory_string}.json", 'w' ) )
 
-	return "Done."
+	return "\nDone."
 
 
 if __name__ == "__main__":
@@ -79,12 +82,12 @@ if __name__ == "__main__":
 	if args.save_path =="":
 		save = args.embedding_dir
 	else:
-		save = args.save_dir
+		save = args.save_path
 
 	out = index_from_embedding(
 		args.index_factory_string,
-		args.table_prefix,
 		args.embedding_dir,
+		args.table_prefix,
 		save_path=save,
 		chunks=args.chunks,
 		train_frac=args.train_frac
