@@ -8,7 +8,7 @@ This repository allows you to search a chess position against billions of chess 
 1. Install the package
 2. Demo: Search your positions in a provided database
 3. Extract positions from your own database for search and metric learning
-4. Train and evaluate your own chess position embeddings
+4. Train and evaluate chess position embeddings
 5. Contribute
 6. Cite this project
 
@@ -97,16 +97,17 @@ python3 pgn_extract.py ../data/raw/test --save_position ../data/bitboards/test-b
 ```
 selects only games in which both players have an elo greater or equal to 2400 and where the time control is greater or equal to 61. The time control is calculated as *seconds + seconds per move*, which means a bullet game (60s+0s) is discarded whereas a bullet game with increment (60s+1s) is kept.
 
-#### 3.2 Build a faiss database for search
+#### 3.2 Build a faiss database from bitboards for search
 
 Use the following script to create a binary index from positions encoded as bitboards.
-
 ```bash
 python3 index_from_bitboards.py ../data/bitboards/testdir --table_key position_ --save_path ../data/test_index2
 ```
 This command will take all h5 files from the `../data/bitboards/testdir` directory and extract bitboards from all datasets in all h5 files which contain `position_` in their dataset name. The recommended (and also default) value is *position* since bitboards created with the tool in section 3.1 use this name for bitboard datasets. The finished index is saved to `../data/test_index2` and can be used as in the [demo notebook](./demo/query_bitboard_db.ipynb).
 
-## 4. Train and evaluate your own chess position embeddings
+## 4. Train and evaluate chess position embeddings
+
+#### 4.1 Embedding model
 
 First I tried a simple triplet network architecture to learn a position embedding. This however quickly turned out to be a too simple approach. Instead, I propose a triplet autoencoder architecture, as presented in Figure 1, to learn chess position embeddings.
 
@@ -120,4 +121,41 @@ I provide two pretrained models:
 - with shallow encoder/decoder networks to 128 dimensions [here](https://drive.google.com/open?id=18c3uySUJ4c-aMow_irF2Fs90oGIEoIEw)
 - with deep encoder/decoder networks to 64 dimensions [here](https://drive.google.com/open?id=1MHBTMx7yCJTL_l-BD72Nr3EEcwLa1myq)
 
-as well as some [training triplets]() and [validation triplets]().
+as well as some [training triplets (1.4G)]() and [validation triplets ()](). You can genearte your own training data with the script in section **3.1**.
+
+For inference use the `model_inference.py` command line script from `tools`. This script takes a directory with bitboards stored in h5 files and appends the infereed embeddings to those h5 files. These files are then used to create an index as discussed in section **4.3**.
+
+
+#### 4.2 Train your own embeddings
+
+You can train your own embeddings using a similar architecture (but different encoder/decoder networks using the `train_model.py` command line script in `tools` 
+```bash
+python3 train_model.py path/to/config.json
+```
+where the config file has fields (and default values)
+```json
+{
+	"train_dir": "path/to/directory/with/train/samples",
+	"validation_dir": "path/to/directory/with/validation/samples",
+	"save_dir": "path/to/save/directory",
+	"input_size": 773,
+	"embedding_size": 32,
+	"alpha": 0.2,
+	"triplet_weight_ratio": 10.0,
+	"hidden_layers": [],
+	"train_batch_size": 16,
+	"validation_batch_size": 16,
+	"train_steps_per_epoch": 1000,
+	"validation_steps_per_epoch": 100,
+	"train_sampling": ["easy","semihard","hard"],
+	"validation_sampling": ["easy","semihard","hard"],
+	"tf_callbacks": ["early_stopping","triplet_accuracy", "checkpoints"],
+	"save_stats": true,
+	"hide_tf_warnings": true
+}
+```
+`àlpha` is the seaparation margin between positive and negative samples in the triplet loss, `triplet_weigth_ration` is a hyperparameter that combines triplet loss and autoencoder loss by weighting the triplet loss e.g. 10 times higher and `training_sampling` selects the way in which triplets are sampled from the provided tuples. To get a better understanding of what is going on cosider looking at `tools/train_model.py`, `chesspos/models.py`, `chesspos/preprocessing.py` and `chesspos/monitoring.py`.
+
+#### 4.3 Build a faiss database from embeddings
+
+
