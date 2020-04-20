@@ -49,7 +49,7 @@ Furthermore this repository contains folders for tests, demos, command line tool
 
 Now that you installed the package you can ckeck out the demo notebook at [./demo/query_bitboard_db.ipynb](./demo/query_bitboard_db.ipynb).
 
-![animation of demo notebook](https://github.com/patrickfrank1/chess-embedding/demo/gif/animation.gif)
+![animation of demo notebook](./demo/gif/animation.gif)
 
 The demo enables you to search a small database of bitbaords for similar positions. I provide some more precompiled databases. The following databases contain high quality games that are generated from [freely available lichess games](https://database.lichess.org/), where we only extracted games with both players above elo 2000 and a time control greater or equal 60+1 seconds.
 
@@ -107,3 +107,17 @@ python3 index_from_bitboards.py ../data/bitboards/testdir --table_key position_ 
 This command will take all h5 files from the `../data/bitboards/testdir` directory and extract bitboards from all datasets in all h5 files which contain `position_` in their dataset name. The recommended (and also default) value is *position* since bitboards created with the tool in section 3.1 use this name for bitboard datasets. The finished index is saved to `../data/test_index2` and can be used as in the [demo notebook](./demo/query_bitboard_db.ipynb).
 
 ## 4. Train and evaluate your own chess position embeddings
+
+First I tried a simple triplet network architecture to learn a position embedding. This however quickly turned out to be a too simple approach. Instead, I propose a triplet autoencoder architecture, as presented in Figure 1, to learn chess position embeddings.
+
+While desingning the network architecture I also  took inspiration from [Courty, Flamary, Ducoffe: Learning Wasserstein Embeddings](https://github.com/mducoffe/Learning-Wasserstein-Embeddings) and [CrimyTheBold/tripletloss](https://github.com/CrimyTheBold/tripletloss).
+
+![triplet autoencoder](./demo/img/triplet_network.png)
+
+The idea behind this architecture is inspired by word embeddings like word2vec in that subsequent positions in embedding space are similar and should therefore have similar embeddings. This is what the triplet network learns. However this implicit classification discards a lot of information that is encoded in the chess position and therefore I introduced the autoencoder to ensure tha the position's information is encoded in the embedding and to act as a regularizer.
+
+I provide two pretrained models:
+- with shallow encoder/decoder networks to 128 dimensions [here](https://drive.google.com/open?id=18c3uySUJ4c-aMow_irF2Fs90oGIEoIEw)
+- with deep encoder/decoder networks to 64 dimensions [here](https://drive.google.com/open?id=1MHBTMx7yCJTL_l-BD72Nr3EEcwLa1myq)
+
+as well as some [training triplets]() and [validation triplets]().
