@@ -8,7 +8,7 @@ This repository allows you to search a chess position against billions of chess 
 1. Install the package
 2. Demo: Search your positions in a provided database
 3. Extract positions from your own database for search and metric learning
-4. Train and evaluate your own chess position embeddings
+4. Train and evaluate chess position embeddings
 5. Contribute
 6. Cite this project
 
@@ -49,7 +49,7 @@ Furthermore this repository contains folders for tests, demos, command line tool
 
 Now that you installed the package you can ckeck out the demo notebook at [./demo/query_bitboard_db.ipynb](./demo/query_bitboard_db.ipynb).
 
-![animation of demo notebook](https://github.com/patrickfrank1/chess-embedding/demo/gif/animation.gif)
+![animation of demo notebook](./demo/gif/animation.gif)
 
 The demo enables you to search a small database of bitbaords for similar positions. I provide some more precompiled databases. The following databases contain high quality games that are generated from [freely available lichess games](https://database.lichess.org/), where we only extracted games with both players above elo 2000 and a time control greater or equal 60+1 seconds.
 
@@ -97,13 +97,122 @@ python3 pgn_extract.py ../data/raw/test --save_position ../data/bitboards/test-b
 ```
 selects only games in which both players have an elo greater or equal to 2400 and where the time control is greater or equal to 61. The time control is calculated as *seconds + seconds per move*, which means a bullet game (60s+0s) is discarded whereas a bullet game with increment (60s+1s) is kept.
 
-#### 3.2 Build a faiss database for search
+#### 3.2 Build a faiss database from bitboards for search
 
 Use the following script to create a binary index from positions encoded as bitboards.
-
 ```bash
 python3 index_from_bitboards.py ../data/bitboards/testdir --table_key position_ --save_path ../data/test_index2
 ```
 This command will take all h5 files from the `../data/bitboards/testdir` directory and extract bitboards from all datasets in all h5 files which contain `position_` in their dataset name. The recommended (and also default) value is *position* since bitboards created with the tool in section 3.1 use this name for bitboard datasets. The finished index is saved to `../data/test_index2` and can be used as in the [demo notebook](./demo/query_bitboard_db.ipynb).
 
-## 4. Train and evaluate your own chess position embeddings
+## 4. Train and evaluate chess position embeddings
+
+#### 4.1 Embedding model
+
+First I tried a simple triplet network architecture to learn a position embedding. This however quickly turned out to be a too simple approach. Instead, I propose a triplet autoencoder architecture, as presented in Figure 1, to learn chess position embeddings.
+
+While desingning the network architecture I also  took inspiration from [Courty, Flamary, Ducoffe: Learning Wasserstein Embeddings](https://github.com/mducoffe/Learning-Wasserstein-Embeddings) and [CrimyTheBold/tripletloss](https://github.com/CrimyTheBold/tripletloss).
+
+![triplet autoencoder](./demo/img/triplet_network.png)
+
+The idea behind this architecture is inspired by word embeddings like word2vec in that subsequent positions in embedding space are similar and should therefore have similar embeddings. This is what the triplet network learns. However this implicit classification discards a lot of information that is encoded in the chess position and therefore I introduced the autoencoder to ensure tha the position's information is encoded in the embedding and to act as a regularizer.
+
+I provide two models, which are trained on more than 50 milloin triplets:
+- with shallow encoder/decoder networks to 128 dimensions [here](https://drive.google.com/open?id=18c3uySUJ4c-aMow_irF2Fs90oGIEoIEw)
+- with deep encoder/decoder networks to 64 dimensions [here](https://drive.google.com/open?id=1MHBTMx7yCJTL_l-BD72Nr3EEcwLa1myq)
+
+as well as some [training triplets (11G)](https://drive.google.com/open?id=1-0-2C1ACbrHxaIHygvQJY4hvhA7kOKUj) and [validation triplets (1.4G)](https://drive.google.com/open?id=1-4y6Rl2enM5UdEglukH4So362z5ftrQw). You can genearte your own training data with the script in section **3.1**.
+
+For inference use the `model_inference.py` command line script from `tools`. This script takes a directory with bitboards stored in h5 files and appends the infereed embeddings to those h5 files. These files are then used to create an index as discussed in section **4.3**.
+
+
+#### 4.2 Train your own embeddings
+
+You can train your own embeddings using a similar architecture (but different encoder/decoder networks using the `train_model.py` command line script in `tools` 
+```bash
+python3 train_model.py path/to/config.json
+```
+where the config file has fields (and default values)
+```json
+{
+	"train_dir": "path/to/directory/with/train/samples",
+	"validation_dir": "path/to/directory/with/validation/samples",
+	"save_dir": "path/to/save/directory",
+	"input_size": 773,
+	"embedding_size": 32,
+	"alpha": 0.2,
+	"triplet_weight_ratio": 10.0,
+	"hidden_layers": [],
+	"train_batch_size": 16,
+	"validation_batch_size": 16,
+	"train_steps_per_epoch": 1000,
+	"validation_steps_per_epoch": 100,
+	"train_sampling": ["easy","semihard","hard"],
+	"validation_sampling": ["easy","semihard","hard"],
+	"tf_callbacks": ["early_stopping","triplet_accuracy", "checkpoints"],
+	"save_stats": true,
+	"hide_tf_warnings": true
+}
+```
+`àlpha` is the seaparation margin between positive and negative samples in the triplet loss, `triplet_weigth_ration` is a hyperparameter that combines triplet loss and autoencoder loss by weighting the triplet loss e.g. 10 times higher and `training_sampling` selects the way in which triplets are sampled from the provided tuples. To get a better understanding of what is going on cosider looking at `tools/train_model.py`, `chesspos/models.py`, `chesspos/preprocessing.py` and `chesspos/monitoring.py`.
+
+#### 4.3 Build a faiss database from embeddings
+
+Take your trained model (or alternatively one of the two provided above) and generate embeddings for a database of bitboards (stored in h5 files). I provide the `model_inference.py` script for embedding generation in the `tools` folder to be used like that:
+```bash
+python3 model_inference.py path/to/model path/to/bitboard/files
+```
+optionally you can save the inferred embeddings as float16 values (saves 50% memory on disk) with the `--float16 True` flag, you can specify a batch size with e.g. `--batch_size 4096`, specify the table prefix for the bitboard tables with `--table_prefix` (the default is *position*) and specify a prefix for the embedding tables `--embedding_table_prefix` (the default is *test_embedding*). **Warning: the h5 files with bitboards are updated in-place, an embedding table is added for each bitboard table.**
+
+Then you use the `index_from_embedding.py` script from the `tools` folder on those generated embeddings. This will create an index file that is drastically smaller than then stored embeddings such that the index can be searched in RAM!
+```bash
+python3 index_from_embedding.py PCA16,SQ4 path/to/embeddings
+```
+where `PCA16,SQ4` can be any valid [faiss index factory](https://github.com/facebookresearch/faiss/wiki/The-index-factory) string and the second argument is the path to the previously written embedding files. For additional info open he manual with `python3 index_from_embedding.py -h`.
+
+The index compresses the embeddings, in case of `PCA32,SQ4` to 16 bytes per position whhich is much smaller than 92 bytes per embedding for a bitboard. In that way the database can comprise many more positions. However, the nearest positions cannot be retrieved from the index itself but have to be retrieved from file instead. If you provide the files that were used to create the index, then you will be able to retrieve the bitboards of nearest positions as well as the embeddings themselfes. For a demonstration see [./demo/inspect_embeddings.ipynb](./demo/inspect_embeddings.ipynb).
+
+Since the embedding files require a large amount of disk space you can also delete the embeddding tables or provide the original h5 files that only store the bitboards. These files will be much smaller on disk, but you will unly be able to restore the bitboards and not the embeddings. For a demo check out [./demo/query_bitboard_db.ipynb](./demo/query_bitboard_db.ipynb) again.
+
+I also provide links to some precompiled indices below with bitboards and embeddings (use with demo scripts).
+
+| Embedding model  | Positions    | Indices         | Bitboards                                                      |
+|------------------|--------------|-----------------|----------------------------------------------------------------|
+| [shallow 128][6] | 1.7 million  | [2013_s128][7]  | [2013_bitboards][8]                                            |
+| [deep 64][9]     | 1.7 million  | [2013_d64][10]  | [2013_bitboards][8]                                            |
+| [shallow 128][6] | 11.5 million | [2014_s128][11] | [2014_bitboards][12]                                           |
+| [deep 64][9]     | 11.5 million | [2014_d64][13]  | [2014_bitboards][12]                                           |
+| [shallow 128][6] | ???          | [all_s128][14]  | [2013_bitboards][8]+[2014_bitboards][12]+[other_bitboards][15] |
+| [deep 64][9]     | ???          | [all_d64][16]   | [2013_bitboards][8]+[2014_bitboards][12]+[other_bitboards][15] |
+
+[6]:https://drive.google.com/open?id=18c3uySUJ4c-aMow_irF2Fs90oGIEoIEw
+[7]:https://drive.google.com/open?id=1hFl5RaDvtve8qstn92z8DVvf-R2O1Em8
+[8]:https://drive.google.com/open?id=1Yv0ubI0qdapLJ65l10UARURLFiHjD8Fo
+[9]:https://drive.google.com/open?id=1MHBTMx7yCJTL_l-BD72Nr3EEcwLa1myq
+[10]:https://drive.google.com/open?id=11e_KVhhbQjyoFwX5F8HILSzTG2Tgw-yB
+[11]:https://drive.google.com/open?id=1h7m9bsPo33mr9jkSyfVjlgapRwEqTr9q
+[12]:https://drive.google.com/open?id=1srRm-gbKLxMEWKs92JsGPdnNSo7mtGt0
+[13]:https://drive.google.com/open?id=1GzDzwLHMe97lPuld-Ujy0-Oa7yJkizkY
+[14]:https://drive.google.com/open?id=1zxbDwfGVsW0vOOEEl6kShhReTANrZ_qN
+[15]:https://drive.google.com/open?id=1-UqtJXXEpEul31xaFytYfPgEecXltCtc
+[16]:https://drive.google.com/open?id=1IUT353tsArIwZfpfr82hBurjzihClxLC
+
+## 5. Contribute
+
+
+
+## 6. Cite this project
+
+If you use this project in your work, please consider citing it.
+```
+@misc{frank2020chesspos,
+title={chesspos: embedding learning for chess positions},
+author={Frank, Patrick},
+url={https://github.com/patrickfrank1/chess-embedding},
+year={2020},
+month={04}
+}
+```
+ #### License
+ 
+ This project is released under the ... License.
