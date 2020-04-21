@@ -31,8 +31,8 @@ or follow alternative instructions like [here](https://gist.github.com/korakot/d
 
 Finally pip install this package from source.
 ```
-git clone https://github.com/patrickfrank1/chess-embedding.git
-cd chess-embedding
+git clone https://github.com/patrickfrank1/chesspos.git
+cd chesspos
 python -m pip install .
 # test if installation was successful, the following should run without error
 python -c "import chesspos"
