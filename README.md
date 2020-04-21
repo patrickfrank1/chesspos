@@ -9,7 +9,7 @@ This repository allows you to search a chess position against billions of chess 
 2. Demo: Search your positions in a provided database
 3. Extract positions from your own database for search and metric learning
 4. Train and evaluate chess position embeddings
-5. Contribute
+5. Experiment and Contribute
 6. Cite this project
 
 ## 1. Install the package
@@ -31,8 +31,8 @@ or follow alternative instructions like [here](https://gist.github.com/korakot/d
 
 Finally pip install this package from source.
 ```
-git clone https://github.com/patrickfrank1/chess-embedding.git
-cd chess-embedding
+git clone https://github.com/patrickfrank1/chesspos.git
+cd chesspos
 python -m pip install .
 # test if installation was successful, the following should run without error
 python -c "import chesspos"
@@ -201,7 +201,7 @@ I also provide links to some precompiled indices below with bitboards and embedd
 [15]:https://drive.google.com/open?id=1-AjW2_i2_9MnP2uLj7FftgzMLQyBMMir
 [16]:https://drive.google.com/open?id=1IUT353tsArIwZfpfr82hBurjzihClxLC
 
-## 5. Contribute
+## 5. Experiment and Contribute
 
 If you like this project and want to extend it then there are two main challenges to solve as outlined in the chapters above. You can focus on embedding learning or on embedding compression.
 
