@@ -38,10 +38,14 @@ python -m pip install .
 python -c "import chesspos"
 ```
 Congratulations you have successfully installed the package. It contains the following modules:
-- `chesspos.utils`: general purpose functions,
+- `chesspos.binary_index`: functions for loading and searching of bitboards in faiss,
 - `chesspos.convert`: convert between different chess position encodings like fen, bitboards and chess.Board(),
+- `chesspos.embedding_index`: functions for loading and searching embeddings in faiss,
+- `chesspos.models`: tensorflow models for embedding learning,
+- `chesspos.monitoring`: function to monitor metric learning progress, in particular callback to track triplet classification accuracy,
 - `chesspos.pgnextract`: functions to extract and save bitboards from pgn files,
-- `chesspos.binary_index`: functions for loading and searching of bitboards in faiss.
+- `chesspos.preprocessing`: prepare triplet generators for metric learning,
+- `chesspos.utils`: general purpose functions.
 
 Furthermore this repository contains folders for tests, demos, command line tools and data files.
 
@@ -199,7 +203,21 @@ I also provide links to some precompiled indices below with bitboards and embedd
 
 ## 5. Contribute
 
+If you like this project and want to extend it then there are two main challenges to solve as outlined in the chapters above. You can focus on embedding learning or on embedding compression.
 
+A few ideas to improve embedding learning:
+- sample triplets/tuples in a different way (e.g. from openings / endgames to improve search for that particular part of the game)
+- tune the triplet-autoencoder hyperparameters, encoder structure, ...
+- come up with a better neural network architecture for metric learning
+
+A few ideas for improving embedding compression:
+- test different faiss indices, find best compression/accuracy tradeoff
+- try inverted file indices
+
+Other things:
+- retrieve games that belong to the retrieved positions (information is all there)
+- calculate triplet accuracy as tf metric insted of tf callback
+- expose position search as api
 
 ## 6. Cite this project
 
@@ -215,4 +233,4 @@ month={04}
 ```
  #### License
  
- This project is released under the ... License.
+This project is licensed under the terms of the GNU GPLv3.0 license.
