@@ -1,4 +1,4 @@
-# chesspos
+# chesspos: embedding learning for chess positions
 Embedding based chess position search and embedding learning for chess positions
 
 This repository allows you to search a chess position against billions of chess positions in millions of games and retrieve similar positions. You can also build your own database with the provided tools. Additionally The projects experiments with embeddings learned from bitboards using the triplet neural network architecture. Feel free to try out your own embedding models to improve the embedding based search retrieval.
@@ -38,10 +38,14 @@ python -m pip install .
 python -c "import chesspos"
 ```
 Congratulations you have successfully installed the package. It contains the following modules:
-- `chesspos.utils`: general purpose functions,
+- `chesspos.binary_index`: functions for loading and searching of bitboards in faiss,
 - `chesspos.convert`: convert between different chess position encodings like fen, bitboards and chess.Board(),
+- `chesspos.embedding_index`: functions for loading and searching embeddings in faiss,
+- `chesspos.models`: tensorflow models for embedding learning,
+- `chesspos.monitoring`: function to monitor metric learning progress, in particular callback to track triplet classification accuracy,
 - `chesspos.pgnextract`: functions to extract and save bitboards from pgn files,
-- `chesspos.binary_index`: functions for loading and searching of bitboards in faiss.
+- `chesspos.preprocessing`: prepare triplet generators for metric learning,
+- `chesspos.utils`: general purpose functions.
 
 Furthermore this repository contains folders for tests, demos, command line tools and data files.
 
@@ -182,24 +186,38 @@ I also provide links to some precompiled indices below with bitboards and embedd
 | [deep 64][9]     | 1.7 million  | [2013_d64][10]  | [2013_bitboards][8]                                            |
 | [shallow 128][6] | 11.5 million | [2014_s128][11] | [2014_bitboards][12]                                           |
 | [deep 64][9]     | 11.5 million | [2014_d64][13]  | [2014_bitboards][12]                                           |
-| [shallow 128][6] | ???          | [all_s128][14]  | [2013_bitboards][8]+[2014_bitboards][12]+[other_bitboards][15] |
-| [deep 64][9]     | ???          | [all_d64][16]   | [2013_bitboards][8]+[2014_bitboards][12]+[other_bitboards][15] |
+| [shallow 128][6] | 907 million  | [all_s128][14]  | [2013_bitboards][8]+[2014_bitboards][12]+[other_bitboards][15] |
+| [deep 64][9]     | 907 million  | [all_d64][16]   | [2013_bitboards][8]+[2014_bitboards][12]+[other_bitboards][15] |
 
 [6]:https://drive.google.com/open?id=18c3uySUJ4c-aMow_irF2Fs90oGIEoIEw
 [7]:https://drive.google.com/open?id=1hFl5RaDvtve8qstn92z8DVvf-R2O1Em8
-[8]:https://drive.google.com/open?id=1Yv0ubI0qdapLJ65l10UARURLFiHjD8Fo
+[8]:https://drive.google.com/open?id=1i00hmYvjPn4LmNHj71fm_Kx9ETBv_cwa
 [9]:https://drive.google.com/open?id=1MHBTMx7yCJTL_l-BD72Nr3EEcwLa1myq
 [10]:https://drive.google.com/open?id=11e_KVhhbQjyoFwX5F8HILSzTG2Tgw-yB
 [11]:https://drive.google.com/open?id=1h7m9bsPo33mr9jkSyfVjlgapRwEqTr9q
-[12]:https://drive.google.com/open?id=1srRm-gbKLxMEWKs92JsGPdnNSo7mtGt0
+[12]:https://drive.google.com/open?id=1-7-DemzEtVq5ML1YNJ0vHRsJ_nyiIYcb
 [13]:https://drive.google.com/open?id=1GzDzwLHMe97lPuld-Ujy0-Oa7yJkizkY
 [14]:https://drive.google.com/open?id=1zxbDwfGVsW0vOOEEl6kShhReTANrZ_qN
-[15]:https://drive.google.com/open?id=1-UqtJXXEpEul31xaFytYfPgEecXltCtc
+[15]:https://drive.google.com/open?id=1-AjW2_i2_9MnP2uLj7FftgzMLQyBMMir
 [16]:https://drive.google.com/open?id=1IUT353tsArIwZfpfr82hBurjzihClxLC
 
 ## 5. Contribute
 
+If you like this project and want to extend it then there are two main challenges to solve as outlined in the chapters above. You can focus on embedding learning or on embedding compression.
 
+A few ideas to improve embedding learning:
+- sample triplets/tuples in a different way (e.g. from openings / endgames to improve search for that particular part of the game)
+- tune the triplet-autoencoder hyperparameters, encoder structure, ...
+- come up with a better neural network architecture for metric learning
+
+A few ideas for improving embedding compression:
+- test different faiss indices, find best compression/accuracy tradeoff
+- try inverted file indices
+
+Other things:
+- retrieve games that belong to the retrieved positions (information is all there)
+- calculate triplet accuracy as tf metric insted of tf callback
+- expose position search as api
 
 ## 6. Cite this project
 
@@ -215,4 +233,4 @@ month={04}
 ```
  #### License
  
- This project is released under the ... License.
+This project is licensed under the terms of the GNU GPLv3.0 license.
