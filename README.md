@@ -182,19 +182,19 @@ I also provide links to some precompiled indices below with bitboards and embedd
 | [deep 64][9]     | 1.7 million  | [2013_d64][10]  | [2013_bitboards][8]                                            |
 | [shallow 128][6] | 11.5 million | [2014_s128][11] | [2014_bitboards][12]                                           |
 | [deep 64][9]     | 11.5 million | [2014_d64][13]  | [2014_bitboards][12]                                           |
-| [shallow 128][6] | ???          | [all_s128][14]  | [2013_bitboards][8]+[2014_bitboards][12]+[other_bitboards][15] |
-| [deep 64][9]     | ???          | [all_d64][16]   | [2013_bitboards][8]+[2014_bitboards][12]+[other_bitboards][15] |
+| [shallow 128][6] | 907 million  | [all_s128][14]  | [2013_bitboards][8]+[2014_bitboards][12]+[other_bitboards][15] |
+| [deep 64][9]     | 907 million  | [all_d64][16]   | [2013_bitboards][8]+[2014_bitboards][12]+[other_bitboards][15] |
 
 [6]:https://drive.google.com/open?id=18c3uySUJ4c-aMow_irF2Fs90oGIEoIEw
 [7]:https://drive.google.com/open?id=1hFl5RaDvtve8qstn92z8DVvf-R2O1Em8
-[8]:https://drive.google.com/open?id=1Yv0ubI0qdapLJ65l10UARURLFiHjD8Fo
+[8]:https://drive.google.com/open?id=1i00hmYvjPn4LmNHj71fm_Kx9ETBv_cwa
 [9]:https://drive.google.com/open?id=1MHBTMx7yCJTL_l-BD72Nr3EEcwLa1myq
 [10]:https://drive.google.com/open?id=11e_KVhhbQjyoFwX5F8HILSzTG2Tgw-yB
 [11]:https://drive.google.com/open?id=1h7m9bsPo33mr9jkSyfVjlgapRwEqTr9q
-[12]:https://drive.google.com/open?id=1srRm-gbKLxMEWKs92JsGPdnNSo7mtGt0
+[12]:https://drive.google.com/open?id=1-7-DemzEtVq5ML1YNJ0vHRsJ_nyiIYcb
 [13]:https://drive.google.com/open?id=1GzDzwLHMe97lPuld-Ujy0-Oa7yJkizkY
 [14]:https://drive.google.com/open?id=1zxbDwfGVsW0vOOEEl6kShhReTANrZ_qN
-[15]:https://drive.google.com/open?id=1-UqtJXXEpEul31xaFytYfPgEecXltCtc
+[15]:https://drive.google.com/open?id=1-AjW2_i2_9MnP2uLj7FftgzMLQyBMMir
 [16]:https://drive.google.com/open?id=1IUT353tsArIwZfpfr82hBurjzihClxLC
 
 ## 5. Contribute
