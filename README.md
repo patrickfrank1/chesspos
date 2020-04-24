@@ -226,7 +226,7 @@ If you use this project in your work, please consider citing it.
 @misc{frank2020chesspos,
 title={chesspos: embedding learning for chess positions},
 author={Frank, Patrick},
-url={https://github.com/patrickfrank1/chess-embedding},
+url={https://github.com/patrickfrank1/chesspos},
 year={2020},
 month={04}
 }
