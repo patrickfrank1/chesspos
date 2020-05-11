@@ -51,7 +51,7 @@ Furthermore this repository contains folders for tests, demos, command line tool
 
 ## 2. Demo: Search your positions in a provided database
 
-Now that you installed the package you can ckeck out the demo notebook at [./demo/query_bitboard_db.ipynb](./demo/query_bitboard_db.ipynb).
+Now that you installed the package you can ckeck out the demo notebook at [./demo/query_bitboard_db.ipynb](./demo/query_bitboard_db.ipynb) or see some [examples live in your browser](https://mybinder.org/v2/gh/patrickfrank1/chesspos/6e9ec55ccab91ed9bd23c9f1a80e3b981c466c2a?filepath=demo%2Fquery_bitboard_example.ipynb).
 
 ![animation of demo notebook](./demo/gif/animation.gif)
 
