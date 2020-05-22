@@ -2,6 +2,7 @@
 	"train_dir": "data/train_small",
 	"validation_dir": "data/validation_small",
 	"save_dir": "metric_learning/test_model",
+	"model_type": "triplet_autoencoder",
 	"input_size": 773,
 	"embedding_size": 32,
 	"alpha": 0.2,

@@ -13,13 +13,14 @@ from chesspos.preprocessing import easy_triplets, semihard_triplets, hard_triple
 from chesspos.models import triplet_autoencoder
 from chesspos.monitoring import SkMetrics, save_metrics
 
-def train_embedding(train_dir, validation_dir, save_dir, input_size=773,
-	embedding_size=32, alpha=0.2, triplet_weight_ratio=10.0, hidden_layers=[],
-	train_batch_size=16, validation_batch_size=16, train_steps_per_epoch=1000,
-	validation_steps_per_epoch=100, train_sampling=['easy','semihard','hard'],
+def train_triplet_autoencoder(train_dir, validation_dir, save_dir,
+	input_size=773, embedding_size=32, alpha=0.2, triplet_weight_ratio=10.0, hidden_layers=[],
+	train_batch_size=16, validation_batch_size=16,
+	train_steps_per_epoch=1000, validation_steps_per_epoch=100,
+	train_sampling=['easy','semihard','hard'],
 	validation_sampling=['easy','semihard','hard'],
 	tf_callbacks=['early_stopping','triplet_accuracy', 'checkpoints'],
-	save_stats=True, hide_tf_warnings=True):
+	save_stats=True, hide_tf_warnings=True, **kwargs):
 
 	print(f"tf.__version__: {tf.__version__}") # pylint: disable=no-member
 	print(f"tf.keras.__version__: {tf.keras.__version__}")
@@ -122,8 +123,8 @@ def train_embedding(train_dir, validation_dir, save_dir, input_size=773,
 		hidden_layers=hidden_layers
 	)
 	model = models['autoencoder']
-	if save_stats:
-		keras.utils.plot_model(model, save_dir+'/triplet_network.png', show_shapes=True)
+	# if save_stats:
+	# 	keras.utils.plot_model(model, save_dir+'/triplet_network.png', show_shapes=True)
 
 
 	'''
@@ -195,4 +196,7 @@ if __name__ == "__main__":
 	print("The following settings are used for training:")
 	print(data)
 
-	train_embedding(**data)
+	if data['model_type'] == 'triplet_autoencoder':
+		train_triplet_autoencoder(**data)
+	else:
+		raise ValueError("Network not implemented.")
