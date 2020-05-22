@@ -175,3 +175,40 @@ def triplet_autoencoder(input_size, embedding_size, hidden_layers=None,
 	)
 
 	return {'autoencoder': model_autoencoder_triplet, 'encoder': encoder, 'decoder': decoder}
+
+def autoencoder(input_size, embedding_size, hidden_encoder=None, hidden_decoder=None):
+
+	optimizer = keras.optimizers.Adam(lr=0.00006)
+
+	# input layer
+	inp = keras.layers.Input((input_size,), name="input_layer", dtype=float)
+
+	# generate encoder model
+	encoder = embedding_network(input_size, embedding_size,
+		hidden_layers=hidden_encoder, name="encoder_network"
+	)
+	encoder.compile(loss='mse', optimizer=optimizer)
+	encoder.summary()
+
+	# instantiate encoder
+	encoded = encoder(inp)
+
+	# generate decoder model
+	decoder = embedding_network(embedding_size, input_size,
+		hidden_layers=hidden_decoder, name="decoder_network"
+	)
+	decoder.compile(loss='mse', optimizer=optimizer)
+	decoder.summary()
+
+	# instantiate decoder
+	decoded = decoder(encoded)
+
+	# generate autoencoder model
+	autoencoder = keras.models.Model(
+		inputs=inp,
+		outputs=decoded
+	)
+	autoencoder.compile(optimizer=optimizer, loss='binary_crossentropy')
+	autoencoder.summary()
+
+	return {'autoencoder':autoencoder, 'encoder':encoder, 'decoder':decoder}
