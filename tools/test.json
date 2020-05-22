@@ -8,6 +8,7 @@
 	"alpha": 0.2,
 	"triplet_weight_ratio": 10.0,
 	"hidden_layers": [],
+	"hidden_decoder": [],
 	"train_batch_size": 16,
 	"validation_batch_size": 16,
 	"train_steps_per_epoch": 1000,

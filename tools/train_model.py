@@ -180,6 +180,25 @@ def train_triplet_autoencoder(train_dir, validation_dir, save_dir,
 
 		return 0
 
+def train_autoencoder(train_dir, validation_dir, save_dir,
+	input_size=773, embedding_size=32, hidden_layers=[], hidden_decoder=[],
+	train_batch_size=16, validation_batch_size=16,
+	train_steps_per_epoch=1000, validation_steps_per_epoch=100,
+	train_sampling=['autoencoder'], validation_sampling=['autoencoder'],
+	tf_callbacks=['early_stopping','checkpoints'],
+	save_stats=True, hide_tf_warnings=True, **kwargs):
+
+
+
+
+
+
+
+
+
+	
+	return 0
+
 if __name__ == "__main__":
 
 	parser = argparse.ArgumentParser(description='Train a chess position embedding with tensorflow.')
@@ -198,5 +217,7 @@ if __name__ == "__main__":
 
 	if data['model_type'] == 'triplet_autoencoder':
 		train_triplet_autoencoder(**data)
+	elif data['model_type'] == 'autoencoder':
+		train_autoencoder(**data)
 	else:
 		raise ValueError("Network not implemented.")

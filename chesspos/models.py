@@ -194,7 +194,7 @@ def autoencoder(input_size, embedding_size, hidden_layers=None, hidden_decoder=N
 	encoded = encoder(inp)
 
 	# generate decoder model
-	if hidden_decoder == None:
+	if hidden_decoder == None or len(hidden_decoder) == 0:
 		hidden_decoder = hidden_layers[::-1]
 	decoder = embedding_network(embedding_size, input_size,
 		hidden_layers=hidden_decoder, name="decoder_network"
