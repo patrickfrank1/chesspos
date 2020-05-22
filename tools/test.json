@@ -1,8 +1,8 @@
 {
 	"train_dir": "data/train_small",
 	"validation_dir": "data/validation_small",
-	"save_dir": "metric_learning/test_model",
-	"model_type": "triplet_autoencoder",
+	"save_dir": "metric_learning/test_autoencoder",
+	"model_type": "autoencoder",
 	"input_size": 773,
 	"embedding_size": 32,
 	"alpha": 0.2,
@@ -13,9 +13,9 @@
 	"validation_batch_size": 16,
 	"train_steps_per_epoch": 1000,
 	"validation_steps_per_epoch": 100,
-	"train_sampling": ["easy","semihard","hard","custom_hard"],
-	"validation_sampling": ["hard","custom_hard"],
-	"tf_callbacks": ["early_stopping","triplet_accuracy"],
+	"train_sampling": [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14],
+	"validation_sampling": [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14],
+	"tf_callbacks": ["early_stopping","checkpoints"],
 	"save_stats": true,
 	"hide_tf_warnings": true
 }

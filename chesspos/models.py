@@ -210,7 +210,11 @@ def autoencoder(input_size, embedding_size, hidden_layers=None, hidden_decoder=N
 		inputs=inp,
 		outputs=decoded
 	)
-	autoencoder.compile(optimizer=optimizer, loss='binary_crossentropy')
+	autoencoder.compile(
+		optimizer=optimizer,
+		loss='binary_crossentropy',
+		metrics=['binary_crossentropy']
+	)
 	autoencoder.summary()
 
 	return {'autoencoder':autoencoder, 'encoder':encoder, 'decoder':decoder}
