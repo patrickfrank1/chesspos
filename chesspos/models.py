@@ -178,7 +178,9 @@ def triplet_autoencoder(input_size, embedding_size, hidden_layers=None,
 
 def autoencoder(input_size, embedding_size, hidden_layers=None, hidden_decoder=None):
 
-	optimizer = keras.optimizers.Adam(lr=0.00006)
+	optimizer = keras.optimizers.Adam(lr=0.0006)
+	loss = 'mse'
+	metrics = ['mse','binary_crossentropy']
 
 	# input layer
 	inp = keras.layers.Input((input_size,), name="input_layer", dtype=float)
@@ -212,8 +214,8 @@ def autoencoder(input_size, embedding_size, hidden_layers=None, hidden_decoder=N
 	)
 	autoencoder.compile(
 		optimizer=optimizer,
-		loss='binary_crossentropy',
-		metrics=['binary_crossentropy']
+		loss=loss,
+		metrics=metrics
 	)
 	autoencoder.summary()
 

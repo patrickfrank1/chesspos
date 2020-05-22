@@ -240,7 +240,7 @@ def train_autoencoder(train_dir, validation_dir, save_dir,
 	Initialise tensorflow callbacks
 	'''
 	early_stopping = keras.callbacks.EarlyStopping(monitor='val_loss',
-		min_delta=0.1, patience=10, verbose=0, mode='min', restore_best_weights=True
+		min_delta=0.005, patience=10, verbose=0, mode='min', restore_best_weights=True
 	)
 	cp = keras.callbacks.ModelCheckpoint(
 		filepath=save_dir+"/checkpoints/cp-{epoch:04d}.ckpt",
