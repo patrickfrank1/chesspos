@@ -62,14 +62,12 @@ The demo enables you to search a small database of bitbaords for similar positio
 | [index_2013.faiss.bz2][1]       |                 1.7 |         12 MB |     171 MB |
 | [index_2014.faiss.bz2][2]       |                11.5 |         80 MB |     1.2 GB |
 | [index_2015.faiss.bz2][3]       |                  47 |        324 MB |     4.6 GB |
-| [index_2016.faiss.bz2][4]       |                 337 |        2.4 GB |      31 GB |
 | [index_2020_01_02.faiss.bz2][5] |                 510 |        3.6 GB |      50 GB |
 
-[1]:https://drive.google.com/open?id=1MQKJ6KSmYRyPbIP1ldsNBo-0dGhi-CpQ
-[2]:https://drive.google.com/open?id=1eehvnDIbhP4HD6XEH-YeyVJMVX-vRkXc
-[3]:https://drive.google.com/open?id=1_abWaGWzkpGd02CYokhWwGlDEEBdCOZl
-[4]:https://drive.google.com/open?id=126NbR0EIVzoIU5xd_6eIYPIFz0XrcwEq
-[5]:https://drive.google.com/open?id=1u3R5t5jC3I5FFAxywZQ0K4_QZPQLL8cy
+[1]:https://chess-position-files.s3.amazonaws.com/index/index_2013.faiss.bz2
+[2]:https://chess-position-files.s3.amazonaws.com/index/index_2014.faiss.bz2
+[3]:https://chess-position-files.s3.amazonaws.com/index/index_2015.faiss.tar.bz2
+[5]:https://chess-position-files.s3.amazonaws.com/index/index_2020_01_02.faiss.bz2
 
 However, as you can find out by playing with the notebook the similarity search with bitboards is not optimal, this is why we explore metric learning later on.
 
@@ -121,11 +119,11 @@ While desingning the network architecture I also  took inspiration from [Courty,
 
 The idea behind this architecture is inspired by word embeddings like word2vec in that subsequent positions in embedding space are similar and should therefore have similar embeddings. This is what the triplet network learns. However this implicit classification discards a lot of information that is encoded in the chess position and therefore I introduced the autoencoder to ensure tha the position's information is encoded in the embedding and to act as a regularizer.
 
-I provide two models, which are trained on more than 50 milloin triplets:
-- with shallow encoder/decoder networks to 128 dimensions [here](https://drive.google.com/open?id=18c3uySUJ4c-aMow_irF2Fs90oGIEoIEw)
-- with deep encoder/decoder networks to 64 dimensions [here](https://drive.google.com/open?id=1MHBTMx7yCJTL_l-BD72Nr3EEcwLa1myq)
+I provide two models, which are trained on more than 50 million triplets:
+- with shallow encoder/decoder networks to 128 dimensions [here](https://chess-position-files.s3.amazonaws.com/model/shallow128.tar.bz2)
+- with deep encoder/decoder networks to 64 dimensions [here](https://chess-position-files.s3.amazonaws.com/model/deep64.tar.bz2)
 
-as well as some [training triplets (11G)](https://drive.google.com/open?id=1-0-2C1ACbrHxaIHygvQJY4hvhA7kOKUj) and [validation triplets (1.4G)](https://drive.google.com/open?id=1-4y6Rl2enM5UdEglukH4So362z5ftrQw). You can genearte your own training data with the script in section **3.1**.
+as well as some [training triplets (11G)](https://chess-position-files.s3.amazonaws.com/tuples/train.tar.bz2) and [validation triplets (1.4G)](https://chess-position-files.s3.amazonaws.com/tuples/validation.tar.bz2). You can genearte your own training data with the script in section **3.1**.
 
 For inference use the `model_inference.py` command line script from `tools`. This script takes a directory with bitboards stored in h5 files and appends the infereed embeddings to those h5 files. These files are then used to create an index as discussed in section **4.3**.
 
@@ -189,17 +187,17 @@ I also provide links to some precompiled indices below with bitboards and embedd
 | [shallow 128][6] | 907 million  | [all_s128][14]  | [2013_bitboards][8]+[2014_bitboards][12]+[other_bitboards][15] |
 | [deep 64][9]     | 907 million  | [all_d64][16]   | [2013_bitboards][8]+[2014_bitboards][12]+[other_bitboards][15] |
 
-[6]:https://drive.google.com/open?id=18c3uySUJ4c-aMow_irF2Fs90oGIEoIEw
-[7]:https://drive.google.com/open?id=1hFl5RaDvtve8qstn92z8DVvf-R2O1Em8
-[8]:https://drive.google.com/open?id=1i00hmYvjPn4LmNHj71fm_Kx9ETBv_cwa
-[9]:https://drive.google.com/open?id=1MHBTMx7yCJTL_l-BD72Nr3EEcwLa1myq
-[10]:https://drive.google.com/open?id=11e_KVhhbQjyoFwX5F8HILSzTG2Tgw-yB
-[11]:https://drive.google.com/open?id=1h7m9bsPo33mr9jkSyfVjlgapRwEqTr9q
-[12]:https://drive.google.com/open?id=1-7-DemzEtVq5ML1YNJ0vHRsJ_nyiIYcb
-[13]:https://drive.google.com/open?id=1GzDzwLHMe97lPuld-Ujy0-Oa7yJkizkY
-[14]:https://drive.google.com/open?id=1zxbDwfGVsW0vOOEEl6kShhReTANrZ_qN
-[15]:https://drive.google.com/open?id=1-AjW2_i2_9MnP2uLj7FftgzMLQyBMMir
-[16]:https://drive.google.com/open?id=1IUT353tsArIwZfpfr82hBurjzihClxLC
+[6]:https://chess-position-files.s3.amazonaws.com/model/shallow128.tar.bz2
+[7]:https://chess-position-files.s3.amazonaws.com/index/2013_s128.tar
+[8]:https://chess-position-files.s3.amazonaws.com/bitboards/2013_bitboards.tar.bz2
+[9]:https://chess-position-files.s3.amazonaws.com/model/deep64.tar.bz2
+[10]:https://chess-position-files.s3.amazonaws.com/index/2013_d64.tar
+[11]:https://chess-position-files.s3.amazonaws.com/index/2014_s128.tar
+[12]:https://chess-position-files.s3.amazonaws.com/bitboards/2014_bitboards.tar.bz2
+[13]:https://chess-position-files.s3.amazonaws.com/index/2013_d64.tar
+[14]:https://chess-position-files.s3.amazonaws.com/index/all_s128.tar
+[15]:https://chess-position-files.s3.amazonaws.com/bitboards/other_bitboards.tar.bz2
+[16]:https://chess-position-files.s3.amazonaws.com/index/all_d64.tar
 
 ## 5. Experiment and Contribute
 
