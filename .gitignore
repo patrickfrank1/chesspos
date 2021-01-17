@@ -4,10 +4,12 @@ todos.txt
 # ignore model training files for now
 metric_learning/*
 
-# ignore all the data files
+
+# ignore all the data files except for a training configuration
 data/*
-!data/README.md
 demo/gif/*.png
+!data/README.md
+!data/model_config_example.json
 
 # VS Code specific
 .vscode/
