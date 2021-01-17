@@ -13,6 +13,7 @@ from chesspos.preprocessing import easy_triplets, semihard_triplets, hard_triple
 from chesspos.models import triplet_autoencoder, autoencoder
 from chesspos.monitoring import SkMetrics, save_metrics
 
+# pylint: disable=dangerous-default-value
 def train_triplet_autoencoder(train_dir, validation_dir, save_dir,
 	input_size=773, embedding_size=32, alpha=0.2, triplet_weight_ratio=10.0, hidden_layers=[],
 	train_batch_size=16, validation_batch_size=16,
@@ -20,7 +21,7 @@ def train_triplet_autoencoder(train_dir, validation_dir, save_dir,
 	train_sampling=['easy','semihard','hard'],
 	validation_sampling=['easy','semihard','hard'],
 	tf_callbacks=['early_stopping','triplet_accuracy', 'checkpoints'],
-	save_stats=True, hide_tf_warnings=True, **kwargs):
+	save_stats=True, hide_tf_warnings=True):
 
 	'''
 	Inputs: as in function declaration, only paths are converted to absolute paths
@@ -47,14 +48,14 @@ def train_triplet_autoencoder(train_dir, validation_dir, save_dir,
 	samples = [[] for _ in range(2)]
 	sample_args = [train_sampling, validation_sampling]
 	for i in range(2):
-		for el in sample_args[i]:
-			if el == 'easy':
+		for element in sample_args[i]:
+			if element == 'easy':
 				samples[i].append(easy_triplets)
-			elif el == 'semihard':
+			elif element == 'semihard':
 				samples[i].append(semihard_triplets)
-			elif el == 'hard':
+			elif element == 'hard':
 				samples[i].append(hard_triplets)
-			elif el == 'custom_hard':
+			elif element == 'custom_hard':
 				samples[i] = samples[i] + [triplet_factory([1,2,3]), triplet_factory([2,3,4])]
 	train_fn, validation_fn = samples
 	# generators for train and test data
@@ -92,7 +93,7 @@ def train_triplet_autoencoder(train_dir, validation_dir, save_dir,
 	early_stopping = keras.callbacks.EarlyStopping(monitor='val_loss',
 		min_delta=0.05, patience=10, verbose=0, mode='min', restore_best_weights=True
 	)
-	cp = keras.callbacks.ModelCheckpoint(
+	checkpoint = keras.callbacks.ModelCheckpoint(
 		filepath=save_dir+"/checkpoints/cp-{epoch:04d}.ckpt",
 		save_weights_only=False,
 		save_best_only=True,
@@ -100,13 +101,13 @@ def train_triplet_autoencoder(train_dir, validation_dir, save_dir,
 		verbose=1
 	)
 	callbacks = []
-	for el in tf_callbacks:
-		if el == 'early_stopping':
+	for element in tf_callbacks:
+		if element == 'early_stopping':
 			callbacks.append(early_stopping)
-		elif el == 'triplet_accuracy':
+		elif element == 'triplet_accuracy':
 			callbacks.append(skmetrics)
-		elif el == 'checkpoints':
-			callbacks.append(cp)
+		elif element == 'checkpoints':
+			callbacks.append(checkpoint)
 
 
 	'''
@@ -142,22 +143,22 @@ def train_triplet_autoencoder(train_dir, validation_dir, save_dir,
 	for key in models:
 		try:
 			models[key].save(f"{save_dir}/model_{key}", save_format="tf")
-		except Exception as e:
+		except ImportError as err:
 			print(f"Error when saving {key} in format tf:")
-			print(e)
+			print(err)
 		try:
 			models[key].save(f"{save_dir}/model_{key}.h5")
-		except Exception as e:
+		except ImportError as err:
 			print(f"Error when saving {key} in format h5:")
-			print(e)
+			print(err)
 		try:
 			config = models[key].get_config()
 			weights = models[key].get_weights()
 			pickle.dump(config, open(f"{save_dir}/model_{key}_config.pk", 'wb'))
 			pickle.dump(weights, open(f"{save_dir}/model_{key}_weights.pk", 'wb'))
-		except Exception as e:
+		except ImportError as err:
 			print(f"Error when saving weights and architecture of {key}:")
-			print(e)
+			print(err)
 
 	'''
 	Visualise and save results
@@ -183,7 +184,7 @@ def train_autoencoder(train_dir, validation_dir, save_dir,
 	train_steps_per_epoch=1000, validation_steps_per_epoch=100,
 	train_sampling=[0], validation_sampling=[0],
 	tf_callbacks=['early_stopping','checkpoints'],
-	save_stats=True, hide_tf_warnings=True, **kwargs):
+	save_stats=True, hide_tf_warnings=True):
 
 	'''
 	Inputs: as in function declaration, only paths are converted to absolute paths
@@ -242,7 +243,7 @@ def train_autoencoder(train_dir, validation_dir, save_dir,
 	early_stopping = keras.callbacks.EarlyStopping(monitor='val_loss',
 		min_delta=0.005, patience=10, verbose=0, mode='min', restore_best_weights=True
 	)
-	cp = keras.callbacks.ModelCheckpoint(
+	checkpoint = keras.callbacks.ModelCheckpoint(
 		filepath=save_dir+"/checkpoints/cp-{epoch:04d}.ckpt",
 		save_weights_only=False,
 		save_best_only=True,
@@ -250,11 +251,11 @@ def train_autoencoder(train_dir, validation_dir, save_dir,
 		verbose=1
 	)
 	callbacks = []
-	for el in tf_callbacks:
-		if el == 'early_stopping':
+	for element in tf_callbacks:
+		if element == 'early_stopping':
 			callbacks.append(early_stopping)
-		elif el == 'checkpoints':
-			callbacks.append(cp)
+		elif element == 'checkpoints':
+			callbacks.append(checkpoint)
 
 
 	'''
@@ -289,22 +290,22 @@ def train_autoencoder(train_dir, validation_dir, save_dir,
 	for key in models:
 		try:
 			models[key].save(f"{save_dir}/model_{key}", save_format="tf")
-		except Exception as e:
+		except ImportError as err:
 			print(f"Error when saving {key} in format tf:")
-			print(e)
+			print(err)
 		try:
 			models[key].save(f"{save_dir}/model_{key}.h5")
-		except Exception as e:
+		except ImportError as err:
 			print(f"Error when saving {key} in format h5:")
-			print(e)
+			print(err)
 		try:
 			config = models[key].get_config()
 			weights = models[key].get_weights()
 			pickle.dump(config, open(f"{save_dir}/model_{key}_config.pk", 'wb'))
 			pickle.dump(weights, open(f"{save_dir}/model_{key}_weights.pk", 'wb'))
-		except Exception as e:
+		except ImportError as err:
 			print(f"Error when saving weights and architecture of {key}:")
-			print(e)
+			print(err)
 
 	'''
 	Visualise and save results
@@ -326,23 +327,23 @@ if __name__ == "__main__":
 	print(f"tf.__version__: {tf.__version__}") # pylint: disable=no-member
 	print(f"tf.keras.__version__: {tf.keras.__version__}")
 
-	parser = argparse.ArgumentParser(description='Train a chess position embedding with tensorflow.')
-	parser.add_argument('config', type=str, action="store",
+	PARSER = argparse.ArgumentParser(description='Train a chess position embedding with tensorflow.')
+	PARSER.add_argument('config', type=str, action="store",
 		help='json config file to read settings from'
 	)
-	args = parser.parse_args()
+	ARGS = PARSER.parse_args()
 
-	print(f"JSON config file at: {args.config}")
+	print(f"JSON config file at: {ARGS.config}")
 
-	with open(args.config) as json_data:
-		data = json.load(json_data)
+	with open(ARGS.config) as json_data:
+		DATA = json.load(json_data)
 
 	print("The following settings are used for training:")
-	print(data)
+	print(DATA)
 
-	if data['model_type'] == 'triplet_autoencoder':
-		train_triplet_autoencoder(**data)
-	elif data['model_type'] == 'autoencoder':
-		train_autoencoder(**data)
+	if DATA['model_type'] == 'triplet_autoencoder':
+		train_triplet_autoencoder(**DATA)
+	elif DATA['model_type'] == 'autoencoder':
+		train_autoencoder(**DATA)
 	else:
 		raise ValueError("Network not implemented.")
