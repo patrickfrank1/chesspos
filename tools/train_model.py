@@ -21,7 +21,7 @@ def train_triplet_autoencoder(train_dir, validation_dir, save_dir,
 	train_sampling=['easy','semihard','hard'],
 	validation_sampling=['easy','semihard','hard'],
 	tf_callbacks=['early_stopping','triplet_accuracy', 'checkpoints'],
-	save_stats=True, hide_tf_warnings=True):
+	save_stats=True, hide_tf_warnings=True, **kwargs):
 
 	'''
 	Inputs: as in function declaration, only paths are converted to absolute paths
@@ -184,7 +184,7 @@ def train_autoencoder(train_dir, validation_dir, save_dir,
 	train_steps_per_epoch=1000, validation_steps_per_epoch=100,
 	train_sampling=[0], validation_sampling=[0],
 	tf_callbacks=['early_stopping','checkpoints'],
-	save_stats=True, hide_tf_warnings=True):
+	save_stats=True, hide_tf_warnings=True, **kwargs):
 
 	'''
 	Inputs: as in function declaration, only paths are converted to absolute paths

@@ -1,6 +1,6 @@
 {
 	"train_dir": "/content/content/tuples/train_strong",
-	"validation_dir": "/content/content/tuples/validation_strong",
+	"validation_dir": "/content/content/tuples/validation",
 	"save_dir": "ae_shallow_32",
 	"model_type": "autoencoder",
 	"input_size": 773,
