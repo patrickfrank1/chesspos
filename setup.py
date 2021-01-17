@@ -7,7 +7,7 @@ setup(
 	url='https://github.com/patrickfrank1/chess-pos/',
 	author='Patrick Frank',
 	author_email='[email protected]',
-	license='',
+	license='GPLv3',
 	packages=['chesspos'],
 	zip_safe=False
 )
