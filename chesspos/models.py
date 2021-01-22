@@ -69,6 +69,31 @@ def embedding_network(input_size, embedding_size, hidden_layers=[], name="embedd
 		)
 	return embedding
 
+def encoder_cnn(input_layer, name='cnn_encoder'):
+	# prepare slicing layers
+	slice_board_layer = keras.layers.Layer(lambda x: x[:,:-5])
+	slice_metadata_layer = keras.layers.Layer(lambda x: x[:-5,:])
+
+	# slice input
+	embedding_board = slice_board_layer(input_layer)
+	embedding_metadata = slice_metadata_layer(input_layer)
+
+	# reshape board layer
+	embedding_board = keras.layers.Reshape((None,8,8,12))(embedding_board)
+	# convolution and pooling layers
+	embedding_board = keras.layers.Conv2D(filters = 16, kernel_size = (3, 3), activation='relu', padding='valid')(embedding_board)
+	embedding_board = keras.layers.MaxPooling2D(pool_size = (2, 2), padding='valid')(embedding_board)
+	embedding_board = keras.layers.Conv2D(filters = 16, kernel_size = (3, 3), activation='relu', padding='valid')(embedding_board)
+	embedding_board = keras.layers.MaxPooling2D(pool_size = (2, 2), padding='valid')(embedding_board)
+	embedding_board = keras.layers.Flatten()(embedding_board)
+	embedding = keras.layers.Concatenate(axis=1)([embedding_board, embedding_metadata])
+
+	return embedding
+
+
+
+
+
 def triplet_network(input_size, embedding_size, hidden_layers=None, alpha=0.2):
 	# Input layers
 	anchor_input = keras.layers.Input((input_size,), name="anchor_input", dtype=float)
