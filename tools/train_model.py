@@ -1,17 +1,19 @@
-import os
-import math
 import argparse
 import json
+import math
+import os
 import pickle
 
 import tensorflow as tf
 from tensorflow import keras
 
-from chesspos.utils import files_from_directory
-from chesspos.preprocessing import input_generator, input_length, triplet_factory
-from chesspos.preprocessing import easy_triplets, semihard_triplets, hard_triplets, singlet_factory
-from chesspos.models import triplet_autoencoder, autoencoder
+from chesspos.models.models import autoencoder, triplet_autoencoder
 from chesspos.monitoring import SkMetrics, save_metrics
+from chesspos.preprocessing import (easy_triplets, hard_triplets,
+                                    input_generator, input_length,
+                                    semihard_triplets, singlet_factory,
+                                    triplet_factory)
+from chesspos.utils import files_from_directory
 
 # pylint: disable=dangerous-default-value
 def train_triplet_autoencoder(train_dir, validation_dir, save_dir,

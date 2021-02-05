@@ -1,12 +1,12 @@
-import os
-import math
 import argparse
+import math
+import os
 
 import h5py
 import numpy as np
 import tensorflow as tf
-
 from chesspos.utils import correct_file_ending, files_from_directory
+
 
 def bitboard_from_table_generator(file, table, batch_size):
 	fname = correct_file_ending(file, 'h5')
