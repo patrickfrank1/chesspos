@@ -2,6 +2,8 @@ import tensorflow as tf
 from tensorflow import keras
 from tensorflow.keras import layers
 
+from chesspos.ml.models.trainable_model import TrainableModel
+
 class DenseNetwork():
 	def __init__(
 		self,

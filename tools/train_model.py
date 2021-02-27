@@ -7,7 +7,7 @@ import pickle
 import tensorflow as tf
 from tensorflow import keras
 
-from chesspos.models.models import autoencoder, triplet_autoencoder
+from chesspos.ml.models.models import autoencoder, triplet_autoencoder
 from chesspos.monitoring import SkMetrics, save_metrics
 from chesspos.preprocessing import (easy_triplets, hard_triplets,
                                     input_generator, input_length,
