@@ -40,5 +40,6 @@ simple_autoencoder = DenseAutoencoder(
 simple_autoencoder.build_model()
 simple_autoencoder.compile()
 history = simple_autoencoder.train()
+simple_autoencoder.save()
 
 print(history.history)

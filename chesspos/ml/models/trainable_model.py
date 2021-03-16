@@ -1,3 +1,4 @@
+from chesspos.ml.models.saveable_model import SaveableModel
 import os
 import math
 
@@ -5,7 +6,7 @@ import tensorflow as tf
 from tensorflow import keras
 from tensorflow.keras import callbacks
 
-class TrainableModel():
+class TrainableModel(SaveableModel):
 	def __init__(
 		self,
 		save_dir,
@@ -19,7 +20,8 @@ class TrainableModel():
 		hide_tf_warnings = False,
 		tf_callbacks = None
 	):
-		self.model = None
+		super().__init__(save_dir)
+
 		self.EXCESS_VALIDATION_EPOCHS = 10
 
 		self.optimizer = optimizer
@@ -66,14 +68,18 @@ class TrainableModel():
 
 		return callbacks
 
+
 	def _train_samples(self):
 		return  1.0 * self.train_generator.number_samples() * len(self.train_generator.subsampling_functions)
+
 
 	def _test_samples(self):
 		return 1.0 * self.test_generator.number_samples() * len(self.test_generator.subsampling_functions)
 
+
 	def _train_epochs(self):
 		return self._train_samples() / self.train_generator.batch_size / self.train_steps_per_epoch
+
 
 	def _test_epochs(self):
 		return self._test_samples() / self.test_generator.batch_size / self.test_steps_per_epoch
