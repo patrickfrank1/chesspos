@@ -29,8 +29,8 @@ simple_autoencoder = DenseAutoencoder(
     train_generator = train_generator,
     test_generator = test_generator,
 	safe_dir = "/home/pafrank/Documents/coding/chess-position-embedding/metric_learning/new_autoencoder_test/",
-    train_steps_per_epoch = 1000,
-    test_steps_per_epoch = 10,
+    train_steps_per_epoch = 100,
+    test_steps_per_epoch = 20,
     tf_callbacks = [
         'checkpoints',
         keras.callbacks.EarlyStopping(monitor='val_loss', min_delta=0.05, patience=10, verbose=0, mode='min', restore_best_weights=True)
@@ -41,4 +41,4 @@ simple_autoencoder.build_model()
 simple_autoencoder.compile()
 history = simple_autoencoder.train()
 
-print(history.)
+print(history.history)

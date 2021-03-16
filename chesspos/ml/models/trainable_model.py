@@ -94,7 +94,7 @@ class TrainableModel():
 		)
 
 
-	def check_train_test_ratio(self):
+	def _check_train_test_ratio(self):
 		train_epochs = self._train_epochs()
 		test_epochs = self._test_epochs()
 		print(f'You have enough training samples for {train_epochs} epochs and enought validation samples for {test_epochs} epochs.')
@@ -114,15 +114,14 @@ class TrainableModel():
 
 		train_generator = self.train_generator.get_generator()
 		test_generator = self.test_generator.get_generator()
-		metric_generator = self.test_generator.get_generator()
 
-		self.check_train_test_ratio()
+		self._check_train_test_ratio()
 
 		history = self.model.fit(
-			self.train_generator.get_generator(),
+			train_generator,
 			steps_per_epoch = self.train_steps_per_epoch,
 			epochs = math.floor(self._train_epochs()),
-			validation_data = self.test_generator.get_generator(),
+			validation_data = test_generator,
 			validation_steps = self.test_steps_per_epoch,
 			callbacks = self.tf_callbacks
 		)
