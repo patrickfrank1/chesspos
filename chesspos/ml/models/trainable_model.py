@@ -134,5 +134,6 @@ class TrainableModel(SaveableModel):
 
 		return history
 
-
+	def predict(self, samples):
+		return self.model.predict(samples)
 
