@@ -1,3 +1,4 @@
+from chesspos.ml.models.chessposition_inspectable_autoencoder import ChesspositionInspectableAutoencoderMixin
 import tensorflow as tf
 from tensorflow import keras
 from tensorflow.keras import layers
@@ -5,7 +6,7 @@ from tensorflow.keras import layers
 from chesspos.ml.models.trainable_model import TrainableModel
 from chesspos.ml.models.dense import DenseNetwork
 
-class DenseAutoencoder(TrainableModel):
+class DenseAutoencoder(TrainableModel, ChesspositionInspectableAutoencoderMixin):
 	def __init__(
 		self,
 		input_size,
@@ -21,9 +22,11 @@ class DenseAutoencoder(TrainableModel):
 		metrics=None,
 		tf_callbacks = None
 	):
-		super(DenseAutoencoder, self).__init__(safe_dir, train_generator,
-		test_generator, train_steps_per_epoch, test_steps_per_epoch,
-		optimizer, loss, metrics, tf_callbacks)
+		super().__init__(
+			safe_dir, train_generator, test_generator, train_steps_per_epoch,
+			test_steps_per_epoch, optimizer, loss, metrics, tf_callbacks
+		)
+
 		self.input_size = input_size
 		self.embedding_size = embedding_size
 		self.hidden_layers = hidden_layers
@@ -32,6 +35,7 @@ class DenseAutoencoder(TrainableModel):
 		self.decoder = None
 
 		self.build_model()
+
 
 	def build_model(self):
 		encoder = DenseNetwork(self.input_size, self.embedding_size, self.hidden_layers, name='encoder').get_model()
@@ -49,6 +53,7 @@ class DenseAutoencoder(TrainableModel):
 		model.summary()
 		self.model = model
 
+
 	def compile(self):
 		super().compile()
 		self.encoder.compile(optimizer='rmsprop', loss=None, metrics=None)
@@ -60,6 +65,7 @@ class DenseAutoencoder(TrainableModel):
 			raise Exception("No encoder model defined.")
 		else:
 			return self.encoder
+
 
 	def get_decoder(self):
 		if self.decoder is None:
