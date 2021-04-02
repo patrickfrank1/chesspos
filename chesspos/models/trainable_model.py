@@ -3,7 +3,7 @@ import math
 
 import tensorflow as tf
 from tensorflow import keras
-from tensorflow.keras import callbacks
+from tensorflow.python.keras.callbacks import TensorBoard
 
 from chesspos.models.saveable_model import SaveableModel
 
@@ -47,7 +47,8 @@ class TrainableModel(SaveableModel):
 				if isinstance(callback, (
 					keras.callbacks.EarlyStopping,
 					keras.callbacks.ModelCheckpoint,
-					tf.keras.callbacks.Callback)
+					keras.callbacks.TensorBoard,
+					keras.callbacks.Callback)
 				):
 					callbacks.append(callback)
 				elif isinstance(callback, str):

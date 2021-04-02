@@ -33,7 +33,8 @@ autoencoder = CnnAutoencoder(
     test_steps_per_epoch = 20,
     tf_callbacks = [
         'checkpoints',
-        keras.callbacks.EarlyStopping(monitor='val_loss', min_delta=0.05, patience=10, verbose=0, mode='min', restore_best_weights=True)
+        keras.callbacks.EarlyStopping(monitor='val_loss', min_delta=0.05, patience=10, verbose=0, mode='min', restore_best_weights=True),
+        keras.callbacks.TensorBoard(log_dir="/home/pafrank/Documents/coding/chess-position-embedding/data/models/new_autoencoder_test/", histogram_freq=1, write_images=True, embeddings_freq=1)
     ]
 )
 

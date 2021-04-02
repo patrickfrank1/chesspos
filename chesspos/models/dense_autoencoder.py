@@ -24,7 +24,7 @@ class DenseAutoencoder(TrainableModel, ChesspositionInspectableAutoencoderMixin)
 	):
 		super().__init__(
 			safe_dir, train_generator, test_generator, train_steps_per_epoch,
-			test_steps_per_epoch, optimizer, loss, metrics, tf_callbacks
+			test_steps_per_epoch, optimizer, loss, metrics, tf_callbacks=tf_callbacks
 		)
 
 		self.input_size = input_size
