@@ -1,25 +1,20 @@
 import numpy as np
-import matplotlib.pyplot as plt
 import tensorflow as tf
 from tensorflow import keras
-from keras import layers
 
-from chesspos.preprocessing import singlets
-from chesspos.convert import board_to_bitboard,bitboard_to_board
-
-from chesspos.ml.preprocessing.sample_generator import SampleGenerator
-from chesspos.ml.models.dense_autoencoder import DenseAutoencoder
-from chesspos.ml.models.cnn_autoencoder import CnnAutoencoder
+from chesspos.utils import bitboard_to_board
+from chesspos.preprocessing import SampleGenerator
+from chesspos.models import DenseAutoencoder, CnnAutoencoder
 
 train_generator = SampleGenerator(
-    sample_dir = "/home/pafrank/Documents/coding/chess-position-embedding/data/train_medium/",
+    sample_dir = "/home/pafrank/Documents/coding/chess-position-embedding/data/bitboards/train_small/",
     batch_size = 32
 )
 train_generator.set_subsampling_functions(['singlets'])
 train_generator.construct_generator()
 
 test_generator = SampleGenerator(
-    sample_dir = "/home/pafrank/Documents/coding/chess-position-embedding/data/validation_medium/",
+    sample_dir = "/home/pafrank/Documents/coding/chess-position-embedding/data/bitboards/validation_small/",
     batch_size = 32
 )
 test_generator.set_subsampling_functions(['singlets'])
@@ -27,13 +22,13 @@ test_generator.construct_generator()
 
 autoencoder = CnnAutoencoder(
     input_size = 773,
-    embedding_size = 64,
+    embedding_size = 32,
     # hidden_layers = [1025, 0.3, 1024, 0.3, 512, 0.3, 512, 0.3, 256, 0.3, 256, 0.3, 256, 0.3, 128, 0.3, 128, 0.3, 128, 0.3, 128, 0.3],
     hidden_layers = [512, 0.3, 256, 0.3, 128, 0.3],
     loss = 'binary_crossentropy',
     train_generator = train_generator,
     test_generator = test_generator,
-	safe_dir = "/home/pafrank/Documents/coding/chess-position-embedding/metric_learning/new_autoencoder_test/",
+	safe_dir = "/home/pafrank/Documents/coding/chess-position-embedding/data/models/new_autoencoder_test/",
     train_steps_per_epoch = 100,
     test_steps_per_epoch = 20,
     tf_callbacks = [

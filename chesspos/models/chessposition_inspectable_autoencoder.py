@@ -1,12 +1,15 @@
 from functools import cmp_to_key
 from colorama import Fore, Style
-from chesspos.convert import bitboard_to_board, board_to_bitboard
 import chess
+
 import numpy as np
-from chesspos.ml.models.trainable_model import TrainableModel
+
 import tensorflow as tf
 from tensorflow import keras
 from tensorflow.keras import callbacks
+
+from chesspos.utils import bitboard_to_board, board_to_bitboard
+from chesspos.models.trainable_model import TrainableModel
 
 class ChesspositionInspectableAutoencoderMixin():
 	"""

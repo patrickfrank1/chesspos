@@ -4,8 +4,9 @@ import h5py
 import chess
 import chess.pgn
 
-from chesspos.utils import correct_file_ending
-from chesspos.convert import board_to_bitboard
+from chesspos.utils.utils import correct_file_ending
+from chesspos.utils.board_bitboard_converter import board_to_bitboard
+
 
 def pgn_to_bitboard(pgn_file, generate_tuples=False, save_file=None,
 	tuple_file=None, chunksize=100000, game_filter=None):

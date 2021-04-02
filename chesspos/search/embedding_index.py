@@ -5,8 +5,8 @@ import numpy as np
 import chess
 import tensorflow as tf
 
-from chesspos.binary_index import board_to_bitboard
-from chesspos.utils import correct_file_ending
+from chesspos.utils.utils import correct_file_ending
+from chesspos.utils.board_bitboard_converter import board_to_bitboard
 
 def index_load_file(file, id_string, faiss_index, chunks=int(1e5)):
 	fname = correct_file_ending(file, "h5")

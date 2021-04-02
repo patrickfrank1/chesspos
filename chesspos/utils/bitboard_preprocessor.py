@@ -2,7 +2,7 @@ import h5py
 import numpy as np
 from sklearn.model_selection import train_test_split
 
-from chesspos.utils import correct_file_ending
+from chesspos.utils.utils import correct_file_ending
 
 
 def tuples_from_file(file, table_id_prefix, tuple_indices=[0,1,6]):

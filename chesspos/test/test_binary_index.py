@@ -1,8 +1,8 @@
 import numpy as np
 import chess
 
-from chesspos.convert import board_to_bitboard, bitboard_to_board
-import chesspos.binary_index as searchpos
+from chesspos.utils.board_bitboard_converter import bitboard_to_board, board_to_bitboard
+import chesspos.search.binary_index as searchpos
 
 def test_bitboard_to_uint8():
 	BITBOARD = np.round(np.random.random_sample((773,))).astype(bool)

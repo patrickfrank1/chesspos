@@ -5,8 +5,8 @@ import numpy as np
 import h5py
 import chess
 
-from chesspos.utils import correct_file_ending
-from chesspos.convert import bitboard_to_board, board_to_bitboard
+from chesspos.utils.utils import correct_file_ending
+from chesspos.utils.board_bitboard_converter import bitboard_to_board, board_to_bitboard
 
 def init_binary_index(dim, threads=4):
 	# set threads

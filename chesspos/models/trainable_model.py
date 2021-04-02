@@ -1,10 +1,11 @@
-from chesspos.ml.models.saveable_model import SaveableModel
 import os
 import math
 
 import tensorflow as tf
 from tensorflow import keras
 from tensorflow.keras import callbacks
+
+from chesspos.models.saveable_model import SaveableModel
 
 class TrainableModel(SaveableModel):
 	def __init__(

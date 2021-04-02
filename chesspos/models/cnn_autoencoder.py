@@ -1,9 +1,9 @@
-from chesspos.ml.models.chessposition_inspectable_autoencoder import ChesspositionInspectableAutoencoderMixin
 import tensorflow as tf
 from tensorflow import keras
 from tensorflow.keras import layers
 
-from chesspos.ml.models.trainable_model import TrainableModel
+from chesspos.models.trainable_model import TrainableModel
+from chesspos.models.chessposition_inspectable_autoencoder import ChesspositionInspectableAutoencoderMixin
 
 class CnnAutoencoder(TrainableModel, ChesspositionInspectableAutoencoderMixin):
 	def __init__(

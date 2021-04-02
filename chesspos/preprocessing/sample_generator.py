@@ -1,8 +1,10 @@
 import os
-import h5py
 import numpy as np
-from chesspos.preprocessing import easy_triplets, semihard_triplets, hard_triplets, singlets
-from chesspos.utils import correct_file_ending, files_from_directory
+import h5py
+
+from chesspos.utils.utils import correct_file_ending, files_from_directory
+from chesspos.utils.bitboard_preprocessor import easy_triplets, semihard_triplets, hard_triplets, singlets
+
 
 
 class SampleGenerator():
