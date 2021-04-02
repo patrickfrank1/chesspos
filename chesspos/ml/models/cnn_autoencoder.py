@@ -44,10 +44,13 @@ class CnnAutoencoder(TrainableModel, ChesspositionInspectableAutoencoderMixin):
 		metadata_layer = layers.Lambda(lambda x: x[:,768:], output_shape=(5,))(input_layer)
 
 		
-		encoder = layers.Conv2D(32, (4, 4), activation="relu", padding="same")(board_layer)
+		encoder = layers.Conv2D(64, (4, 4), activation="relu", padding="same")(board_layer)
+		encoder = layers.BatchNormalization()(encoder)
 		encoder = layers.MaxPooling2D((2, 2), padding="same")(encoder)
-		encoder = layers.Conv2D(64, (2, 2), activation="relu", padding="same")(encoder)
+		encoder = layers.Conv2D(128, (2, 2), activation="relu", padding="same")(encoder)
+		encoder = layers.BatchNormalization()(encoder)
 		encoder = layers.MaxPooling2D((2, 2), padding="same")(encoder)
+		print(encoder)
 		encoder = layers.Flatten()(encoder)
 		encoder = layers.Dense(128, activation="relu")(encoder)
 		encoder = layers.Dense(64, activation="relu")(encoder)
@@ -58,9 +61,10 @@ class CnnAutoencoder(TrainableModel, ChesspositionInspectableAutoencoderMixin):
 
 		decoder_input = layers.Input(shape=64)
 		decoder = layers.Dense(128, activation="relu")(decoder_input)
-		decoder = layers.Dense(256, activation="relu")(decoder)
-		decoder = layers.Reshape((2,2,64))(decoder)
-		decoder = layers.Conv2DTranspose(32, (2, 2), strides=2, activation="relu", padding="same")(decoder)
+		decoder = layers.Dense(512, activation="relu")(decoder)
+		decoder = layers.Reshape((2,2,128))(decoder)
+		decoder = layers.Conv2DTranspose(64, (2, 2), strides=2, activation="relu", padding="same")(decoder)
+		decoder = layers.BatchNormalization()(decoder)
 		decoder = layers.Conv2DTranspose(12, (4, 4), strides=2, activation="relu", padding="same")(decoder)
 		decoder = layers.Reshape((768,))(decoder)
 
