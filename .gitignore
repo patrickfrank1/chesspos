@@ -1,15 +1,12 @@
 # todos, notes, etc.
 todos.txt
-
-# ignore model training files for now
-metric_learning/*
-
+chess-embeddings-*.json
 
 # ignore all the data files except for a training configuration
 data/*
 demo/gif/*.png
 !data/README.md
-!data/model_config_example.json
+!data/models/configs/model_config_example.json
 
 # VS Code specific
 .vscode/
