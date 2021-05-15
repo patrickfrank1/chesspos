@@ -1,0 +1,5 @@
+outs:
+- md5: 824c5e157eba9c56f85487b41d8699ee.dir
+  size: 119900360
+  nfiles: 2
+  path: validation_medium
