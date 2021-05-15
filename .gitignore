@@ -3,7 +3,6 @@ todos.txt
 chess-embeddings-*.json
 
 # ignore all the data files except for a training configuration
-data/bitboards
 data/labelled_positions
 data/models
 data/pgn
