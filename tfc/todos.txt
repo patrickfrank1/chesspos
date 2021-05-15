@@ -1,0 +1,17 @@
+RUN CNN AUTOENCODER TRAINING IN TENSORFLOW CLOUD:
+
+[ ] 1. create directory (gitignore) for tfc experiment containing: 
+  - train/test data
+  - requirements.txt
+  - tfc runner
+  - tfc entry point
+[ ] 2. change training script
+  - should adapt parameters (e.g. train data path), dependent on environment (cloud/local)
+[ ] 3. push code changes to pypi
+[ ] 4. create google cloud project
+  - add service accounts
+  - paste crecedentials here
+  - log into gcp console session
+  - tfc run / docker build
+[ ] 5. version control data from tfc directory usiing dvc
+[ ] 6. add tfc directory to version control (remove from gitignore)
