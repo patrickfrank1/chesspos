@@ -3,9 +3,11 @@ todos.txt
 chess-embeddings-*.json
 
 # ignore all the data files except for a training configuration
-data/*
+data/bitboards
+data/labelled_positions
+data/models
+data/pgn
 demo/gif/*.png
-!data/README.md
 !data/models/configs/model_config_example.json
 
 # VS Code specific
