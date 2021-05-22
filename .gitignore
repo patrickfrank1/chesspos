@@ -6,7 +6,7 @@ chess-embeddings-*.json
 data/labelled_positions
 data/models
 data/pgn
-demo/gif/*.png
+demo/embedding_search/gif/*.png
 !data/models/configs/model_config_example.json
 
 # VS Code specific
