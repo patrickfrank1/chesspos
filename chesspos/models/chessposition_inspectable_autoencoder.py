@@ -94,8 +94,8 @@ class ChesspositionInspectableAutoencoderMixin():
 		for i in range(len(output_board)):
 			output_board[i] = ''.join([f'{Fore.RED}{output_board[i][j]}{Style.RESET_ALL}' if input_board[i][j] != output_board[i][j] else output_board[i][j] for j in range(len(output_board[i]))])
 
-		output_str = [f"{input_board[i]}    {output_board[i]}\n" for i in range(len(input_board))]
-		print("Original:          Reconstructed:")
-		print(''.join(output_str))
+		output_str = "Original:          Reconstructed:\n"
+		output_str += ''.join([f"{input_board[i]}    {output_board[i]}\n" for i in range(len(input_board))]) +'\n'
+		return output_str
 
 

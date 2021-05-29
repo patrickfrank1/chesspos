@@ -14,7 +14,7 @@ class CnnAutoencoder(TrainableModel, ChesspositionInspectableAutoencoderMixin):
 		test_generator,
 		train_steps_per_epoch,
 		test_steps_per_epoch,
-		safe_dir,
+		save_dir,
 		hidden_layers=[],
 		optimizer='rmsprop',
 		loss=None,
@@ -22,7 +22,7 @@ class CnnAutoencoder(TrainableModel, ChesspositionInspectableAutoencoderMixin):
 		tf_callbacks = None
 	):
 		super().__init__(
-			safe_dir, train_generator, test_generator, train_steps_per_epoch,
+			save_dir, train_generator, test_generator, train_steps_per_epoch,
 			test_steps_per_epoch, optimizer, loss, metrics, tf_callbacks = tf_callbacks
 		)
 

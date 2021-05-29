@@ -1,9 +1,9 @@
 import os
 import math
+import pickle
 
 import tensorflow as tf
 from tensorflow import keras
-from tensorflow.python.keras.callbacks import TensorBoard
 
 from chesspos.models.saveable_model import SaveableModel
 
@@ -36,6 +36,7 @@ class TrainableModel(SaveableModel):
 		self.test_steps_per_epoch = test_steps_per_epoch
 		self.hide_tf_warnings = hide_tf_warnings,
 		self.tf_callbacks = self._set_tf_callbacks(tf_callbacks)
+		self.train_history = None
 
 
 	def _set_tf_callbacks(self, callback_array):
@@ -133,9 +134,23 @@ class TrainableModel(SaveableModel):
 			validation_steps = self.test_steps_per_epoch,
 			callbacks = self.tf_callbacks
 		)
+		self.train_history = history.history
 
-		return history
+		return self.train_history
 
 	def predict(self, samples):
 		return self.model.predict(samples)
 
+
+	def save(self):
+		super().save()
+
+		with open(f"{self.save_dir}/train_history.pkl", "wb") as file:
+			pickle.dump(self.train_history, file)
+
+
+	def load(self):
+		super().load()
+
+		with open(f"{self.save_dir}/train_history.pkl", "rb") as file:
+			self.train_history = pickle.load(file)

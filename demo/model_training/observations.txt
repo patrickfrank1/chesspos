@@ -1,0 +1,36 @@
+## data
+- training on 112 million triplets
+- validating on 12 million triplets
+- all from high quality games
+
+## deep1
+- triplet accuracy plateaus at 0.82 -> too low
+- encoder dropout too high -> test with 0.33
+- triplet weight ratio too low -> test with 20.0
+  
+## deep2
+- significant increase in triplet accuracy to 0.95
+- can we make model flatter? -> remove hidden layer
+- can we decrease embedding dimension? -> 16->12
+- unfortunately killed
+
+## model3
+ - very good triplet accuracy >0.97
+ - try to improve autoencoder loss
+
+ ## model4
+ - deep models are unsuccessful!
+
+## model5
+- shallow model, only one hidden unit
+- very good triplet accuracy > 0.99
+- seems also very good, try to reduce embedding dimensions 16->12->8
+- try to improve autoencoder loss
+
+## model6
+- similar to model 5 in architecture
+- reduce embedding size and triplet weight ratio
+- reducing embedding size does not decrease triplet accuracy
+
+## model7
+- dropout at begin and end not working good
