@@ -1,0 +1,37 @@
+stages:
+  train:
+    cmd: python train_model.py
+    deps:
+    - train_model.py
+    - ../../data/tuples
+    params:
+    - train.data.test_batch_size
+    - train.data.train_batch_size
+    - train.model.embedding_size
+    - train.model.hidden_layers
+    - train.model.input_size
+    - train.model.loss
+    - train.model.test_steps_per_epoch
+    - train.model.train_steps_per_epoch
+    outs:
+    - ../../data/model
+  evaluate:
+    cmd: python evaluate_model.py
+    deps:
+    - evaluate_model.py
+    - ../../data/model
+    params:
+    - evaluate.data.model_dir
+    - evaluate.data.test_batch_size
+    - evaluate.data.test_dir
+    - evaluate.eval.number_examples
+    metrics:
+    - scores.json:
+        cache: false
+    - examples.out:
+        cache: false
+    plots:
+    - test_loss.json:
+        cache: false
+        x: epoch
+        y: val_loss
