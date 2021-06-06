@@ -1,0 +1,56 @@
+schema: '2.0'
+stages:
+  train:
+    cmd: python train_model.py
+    deps:
+    - path: ../../data/tuples
+      md5: acbd5ea31f72286ff398108fb6cd77b4.dir
+      size: 800685083
+      nfiles: 15
+    - path: train_model.py
+      md5: 196845b30ab044b2d54a118f4e890e79
+      size: 1736
+    params:
+      params.yaml:
+        train.data.test_batch_size: 64
+        train.data.train_batch_size: 64
+        train.model.embedding_size: 32
+        train.model.hidden_layers:
+        - 1024
+        - 256
+        - 64
+        train.model.input_size: 773
+        train.model.loss: binary_crossentropy
+        train.model.test_steps_per_epoch: 20
+        train.model.train_steps_per_epoch: 100
+    outs:
+    - path: ../../data/model
+      md5: 1eee960d7c837a224c2853ee3882a086.dir
+      size: 84538066
+      nfiles: 102
+  evaluate:
+    cmd: python evaluate_model.py
+    deps:
+    - path: ../../data/model
+      md5: 1eee960d7c837a224c2853ee3882a086.dir
+      size: 84538066
+      nfiles: 102
+    - path: evaluate_model.py
+      md5: 2a2ea4eba827451d4dc66d70fb6b0caf
+      size: 2592
+    params:
+      params.yaml:
+        evaluate.data.model_dir: /home/pafrank/Documents/coding/chess-position-embedding/data/model
+        evaluate.data.test_batch_size: 64
+        evaluate.data.test_dir: /home/pafrank/Documents/coding/chess-position-embedding/data/tuples/validation_small
+        evaluate.eval.number_examples: 10
+    outs:
+    - path: examples.out
+      md5: 0871bc28e5ea654577eb5b40255e5d89
+      size: 9390
+    - path: scores.json
+      md5: d79721948f5238510427c5e45aee7521
+      size: 75
+    - path: test_loss.json
+      md5: 93620e8e2ccd3c122c16ca2cd7972f33
+      size: 2444

@@ -1,0 +1,25 @@
+train:
+  data:
+    train_dir: /home/pafrank/Documents/coding/chess-position-embedding/data/tuples/train_small
+    train_batch_size: 64
+    test_dir: /home/pafrank/Documents/coding/chess-position-embedding/data/tuples/validation_small
+    test_batch_size: 64
+  model:
+    input_size: 773
+    embedding_size: 32
+    hidden_layers:
+    - 1024
+    - 256
+    - 64
+    loss: binary_crossentropy
+    train_steps_per_epoch: 100
+    test_steps_per_epoch: 20
+    tf_callbacks: [checkpoints]
+    save_dir: /home/pafrank/Documents/coding/chess-position-embedding/data/model
+evaluate:
+  data:
+    test_dir: /home/pafrank/Documents/coding/chess-position-embedding/data/tuples/validation_small
+    test_batch_size: 64
+    model_dir: /home/pafrank/Documents/coding/chess-position-embedding/data/model
+  eval:
+    number_examples: 10

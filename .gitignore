@@ -5,7 +5,6 @@ chess-embeddings-*.json
 # ignore all the data files except for a training configuration
 data/bitboards
 data/labelled_positions
-data/models
 data/pgn
 demo/embedding_search/gif/*.png
 !data/models/configs/model_config_example.json
