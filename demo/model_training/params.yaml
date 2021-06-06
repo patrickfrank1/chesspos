@@ -1,9 +1,9 @@
 train:
   data:
-    train_dir: /home/pafrank/Documents/coding/chess-position-embedding/data/tuples/train_small
-    train_batch_size: 64
-    test_dir: /home/pafrank/Documents/coding/chess-position-embedding/data/tuples/validation_small
-    test_batch_size: 64
+    train_dir: /home/pafrank/Documents/coding/chess-position-embedding/data/tuples/train_medium
+    train_batch_size: 512
+    test_dir: /home/pafrank/Documents/coding/chess-position-embedding/data/tuples/validation_medium
+    test_batch_size: 512
   model:
     input_size: 773
     embedding_size: 32

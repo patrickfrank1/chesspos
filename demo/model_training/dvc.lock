@@ -4,16 +4,16 @@ stages:
     cmd: python train_model.py
     deps:
     - path: ../../data/tuples
-      md5: acbd5ea31f72286ff398108fb6cd77b4.dir
-      size: 800685083
-      nfiles: 15
+      md5: 5745f3ad689c1281d527ff9d5b1a47cf.dir
+      size: 2817950478
+      nfiles: 23
     - path: train_model.py
       md5: 196845b30ab044b2d54a118f4e890e79
       size: 1736
     params:
       params.yaml:
-        train.data.test_batch_size: 64
-        train.data.train_batch_size: 64
+        train.data.test_batch_size: 512
+        train.data.train_batch_size: 512
         train.model.embedding_size: 32
         train.model.hidden_layers:
         - 1024
@@ -25,16 +25,16 @@ stages:
         train.model.train_steps_per_epoch: 100
     outs:
     - path: ../../data/model
-      md5: 1eee960d7c837a224c2853ee3882a086.dir
-      size: 84538066
-      nfiles: 102
+      md5: 148fa5bf4c10bb0710367a61832907bc.dir
+      size: 62217427
+      nfiles: 79
   evaluate:
     cmd: python evaluate_model.py
     deps:
     - path: ../../data/model
-      md5: 1eee960d7c837a224c2853ee3882a086.dir
-      size: 84538066
-      nfiles: 102
+      md5: 148fa5bf4c10bb0710367a61832907bc.dir
+      size: 62217427
+      nfiles: 79
     - path: evaluate_model.py
       md5: 2a2ea4eba827451d4dc66d70fb6b0caf
       size: 2592
@@ -46,11 +46,11 @@ stages:
         evaluate.eval.number_examples: 10
     outs:
     - path: examples.out
-      md5: 0871bc28e5ea654577eb5b40255e5d89
-      size: 9390
+      md5: b8736027d05cbc2926e4174661b63a02
+      size: 9613
     - path: scores.json
-      md5: d79721948f5238510427c5e45aee7521
-      size: 75
+      md5: bfaeac715d8979ecc72a9a2a365e1cfa
+      size: 74
     - path: test_loss.json
-      md5: 93620e8e2ccd3c122c16ca2cd7972f33
-      size: 2444
+      md5: b78ab5939d8f734c1fd8ae505c943b4d
+      size: 1672
