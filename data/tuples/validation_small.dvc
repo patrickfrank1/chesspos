@@ -1,0 +1,5 @@
+outs:
+- md5: e8e0fe098387b79cf533f8543d32f594.dir
+  size: 94764175
+  nfiles: 1
+  path: validation_small
