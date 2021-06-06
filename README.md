@@ -1,4 +1,4 @@
-# Waring: The codebase is undergoing a mayor refactoring
+# Warning: The codebase is undergoing a major refactoring
 
 I am currently intgrating [DVC](https://dvc.org/) into the project. This requires
 a complete refactoring of the code base. Also the embedding search will be moved
