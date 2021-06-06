@@ -1,3 +1,16 @@
+# Waring: The codebase is undergoing a mayor refactoring
+
+I am currently intgrating [DVC](https://dvc.org/) into the project. This requires
+a complete refactoring of the code base. Also the embedding search will be moved
+into its own repository, since it is strictly speaking a downstream application. 
+
+Expect:
+- unstable master branch
+- outdated readme
+- broken code
+
+Please check back in a bit, to see the new much better version of this project!
+
 # chesspos: embedding learning for chess positions
 Embedding based chess position search and embedding learning for chess positions
 
