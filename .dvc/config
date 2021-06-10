@@ -1,4 +1,6 @@
 [core]
-    remote = localremote
+    remote = awsremote
 ['remote "localremote"']
     url = /tmp/dvcstore
+['remote "awsremote"']
+    url = s3://chess-position-files/chesspos/
