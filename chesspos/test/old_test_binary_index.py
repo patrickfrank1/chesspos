@@ -1,7 +1,7 @@
 import numpy as np
 import chess
 
-from chesspos.utils.board_bitboard_converter import bitboard_to_board, board_to_bitboard
+from chesspos.preprocessing.position_processors import bitboard_to_board, board_to_bitboard
 import chesspos.search.binary_index as searchpos
 
 def test_bitboard_to_uint8():

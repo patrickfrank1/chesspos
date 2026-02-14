@@ -1,81 +1,85 @@
 import os
-import numpy as np
 import h5py
+from typing import Callable, List, Tuple
+import numpy as np
+import tensorflow as tf
 
-from chesspos.utils.utils import correct_file_ending, files_from_directory
-from chesspos.utils.bitboard_preprocessor import easy_triplets, semihard_triplets, hard_triplets, singlets
-
+from chesspos.utils.file_utils import correct_file_ending, files_from_directory
+from chesspos.preprocessing.utils import sample_generator_from_file_array
 
 
 class SampleGenerator():
 	def __init__(
 		self,
 		sample_dir,
-		batch_size=16
+		sample_preprocessor: Callable[[np.ndarray], np.ndarray],
+		batch_size=16,
+		sample_type=np.float32,
 	):
-		self.H5_COL_KEY = 'tuples'
+		self.H5_COL_KEY = 'encoding'
 		self.sample_dir = sample_dir
+		self.sample_preprocessor = sample_preprocessor
 		self.batch_size = batch_size
-
-		self.subsampling_functions = None
-		self.generator = None
-
-
-	def set_subsampling_functions(self, sampling_functions):
-		self.subsampling_functions = []
-		for element in sampling_functions:
-			if element == 'easy_triplets':
-				self.subsampling_functions.append(easy_triplets)
-			elif element == 'semihard_triplets':
-				self.subsampling_functions.append(semihard_triplets)
-			elif element == 'hard_triplets':
-				self.subsampling_functions.append(hard_triplets)
-			elif element == 'singlets':
-				self.subsampling_functions.append(singlets)
-			else:
-				if callable(element):
-					self.subsampling_functions.append(element)
-				else:
-					raise ValueError(f'{element} is not callable.')
+		self.sample_type = sample_type
+		self.number_samples, self.sample_shape = self._get_sample_dimensions()
+		self.generator_function = self._construct_generator_function()
 
 
-	def construct_generator(self):
-		def generator():
+	def _construct_generator_function(self):
+		def generator_function():
+			assert(self.sample_shape is not None, "SampleGenerator has not been initialized with a sample shape.")
 			sample_files = files_from_directory(os.path.abspath(self.sample_dir), file_type="h5")
-			tuples = np.empty(shape=(0, 15, 773), dtype=bool)
+			for samples in sample_generator_from_file_array(sample_files, self.H5_COL_KEY, self.sample_type):
+				tmp_samples = samples
+				i = 0
+				while len(tmp_samples) >= self.batch_size:
+					yield self.sample_preprocessor(samples[:self.batch_size, ...])
+					samples = samples[self.batch_size:, ...]
+		return generator_function
 
-			for file in sample_files:
-				fname = correct_file_ending(file, 'h5')
 
-				with h5py.File(fname, 'r') as hf:
+	def _get_generator_signature(self):
+		sample = next(self.generator_function())
+		out_shape = None
+		if isinstance(sample, np.ndarray):
+			out_shape = sample.shape
+		elif isinstance(sample, (Tuple, List)):
+			out_shape = []
+			for s in sample:
+				out_shape.append(s.shape)
+		return out_shape
 
-					for key in hf.keys():
-						if self.H5_COL_KEY in key:
-							new_tuples = np.asarray(hf[key][:], dtype=bool)
-							tuples = np.concatenate((tuples, new_tuples))
+	def get_tf_dataset(self):
+		out_shape = self._get_generator_signature()
+		output_signature = []
+		for s in out_shape:
+			output_signature.append(tf.TensorSpec(s, self.sample_type))
 
-							while len(tuples) >= self.batch_size:
-								if isinstance(self.subsampling_functions, (list, tuple, np.ndarray)):
-									for fn in self.subsampling_functions:
-										triplets = fn(tuples[:self.batch_size])
-										yield triplets
-								else:
-									triplets = self.subsampling_functions(tuples[:self.batch_size])
-									yield triplets
-								tuples = tuples[self.batch_size:]
-		self.generator = generator
+		return tf.data.Dataset.from_generator(
+			self.generator_function,
+			output_signature=tuple(output_signature)
+		)
+
 
 	def get_generator(self):
-		return self.generator()
+		return self.generator_function()
 
-		
-	def number_samples(self):
+
+	def _get_sample_dimensions(self):
+		"""
+		Return the number of samples (first dimension) and the shape of the samples (other dimensions).
+		"""
 		samples = 0
+		shape = None
 		sample_files = files_from_directory(os.path.abspath(self.sample_dir), file_type="h5")
-		for file in sample_files:
+		for i, file in enumerate(sample_files):
 			fname = correct_file_ending(file, 'h5')
 			with h5py.File(fname, 'r') as hf:
 				for key in hf.keys():
 					if self.H5_COL_KEY in key:
-						samples += len(hf[key])
-		return samples
+						samples += hf[key].shape[0]
+						if i == 0:
+							shape = hf[key].shape[1:]
+						else:
+							assert(shape == hf[key].shape[1:], "Shape of samples in file {} does not match shape of samples in file {}".format(i, i-1))
+		return samples, shape

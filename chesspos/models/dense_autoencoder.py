@@ -1,74 +1,39 @@
+from functools import wraps
+import numpy as np
 import tensorflow as tf
 from tensorflow import keras
-from tensorflow.keras import layers
+from tensorflow.keras import layers, Model
 
-from chesspos.models.trainable_model import TrainableModel
-from chesspos.models.dense import DenseNetwork
-from chesspos.models.chessposition_inspectable_autoencoder import ChesspositionInspectableAutoencoderMixin
+from chesspos.models.autoencoder import AutoencoderModel
 
-class DenseAutoencoder(TrainableModel, ChesspositionInspectableAutoencoderMixin):
-	def __init__(
-		self,
-		input_size,
-		embedding_size,
-		train_generator,
-		test_generator,
-		train_steps_per_epoch,
-		test_steps_per_epoch,
-		safe_dir,
-		hidden_layers=[],
-		optimizer='rmsprop',
-		loss=None,
-		metrics=None,
-		tf_callbacks = None
-	):
-		super().__init__(
-			safe_dir, train_generator, test_generator, train_steps_per_epoch,
-			test_steps_per_epoch, optimizer, loss, metrics, tf_callbacks=tf_callbacks
-		)
+class DenseAutoencoder(AutoencoderModel):
+	@wraps(AutoencoderModel.__init__)
+	def __init__(self, **kwargs):
+		self.embedding_size = 256
+		super().__init__(**kwargs)
 
-		self.input_size = input_size
-		self.embedding_size = embedding_size
-		self.hidden_layers = hidden_layers
+	def _model_helper(self) -> dict:
+		encoder_input = layers.Input(shape=(8,8,15,1), dtype=tf.float16)
+		encoder = layers.Reshape((8*8*15,))(encoder_input)
+		encoder = layers.Dense(2*self.embedding_size, activation='relu')(encoder)
+		encoder = layers.Dense(self.embedding_size, activation='relu')(encoder)
 
-		self.encoder = None
-		self.decoder = None
+		decoder_input = layers.Input(shape=(self.embedding_size,))
+		decoder = layers.Dense(2*self.embedding_size, activation='relu')(decoder_input)
+		decoder = layers.Dense(8*8*15, activation='relu')(decoder_input)
+		decoder = layers.Reshape((8,8,15,1))(decoder)
 
-		self.build_model()
+		encoder = keras.Model(inputs=encoder_input, outputs=encoder, name='encoder')
+		decoder = keras.Model(inputs=decoder_input, outputs=decoder, name='decoder')
+		autoencoder = keras.Model(inputs=encoder_input, outputs=decoder(encoder(encoder_input)), name='autoencoder')
 
+		return {'encoder': encoder, 'decoder': decoder, 'autoencoder': autoencoder}
 
-	def build_model(self):
-		encoder = DenseNetwork(self.input_size, self.embedding_size, self.hidden_layers, name='encoder').get_model()
-		encoder.summary()
-		self.encoder = encoder
+	def _define_encoder(self) -> Model:
+		return self._model_helper()['encoder']
 
-		decoder = DenseNetwork(self.embedding_size, self.input_size, self.hidden_layers[::-1], name='decoder').get_model()
-		decoder.summary()
-		self.decoder = decoder
+	def _define_decoder(self):
+		return self._model_helper()['decoder']
 
-		encoder_input = layers.Input(shape=self.input_size, dtype=tf.float32, name='autoencoder')
-		decoder_input = encoder(encoder_input)
-		decoder_output = decoder(decoder_input)
-		model = keras.Model(inputs=encoder_input, outputs=decoder_output, name='autoencoder')
-		model.summary()
-		self.model = model
-
-
-	def compile(self):
-		super().compile()
-		self.encoder.compile(optimizer='rmsprop', loss=None, metrics=None)
-		self.decoder.compile(optimizer='rmsprop', loss=None, metrics=None)
-
-
-	def get_encoder(self):
-		if self.encoder is None:
-			raise Exception("No encoder model defined.")
-		else:
-			return self.encoder
-
-
-	def get_decoder(self):
-		if self.decoder is None:
-			raise Exception("No decoder model defined.")
-		else:
-			return self.decoder
+	def _define_model(self) -> Model:
+		return self._model_helper()['autoencoder']

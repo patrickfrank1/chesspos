@@ -1,8 +1,6 @@
 from os import listdir
 from os.path import isfile, join, abspath
 
-import pickle
-
 def files_from_directory(directory, file_type=None):
 	absdir = abspath(directory)
 	file_arr = None

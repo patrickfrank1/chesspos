@@ -1,100 +1,44 @@
+from functools import wraps
+import numpy as np
 import tensorflow as tf
 from tensorflow import keras
-from tensorflow.keras import layers
+from tensorflow.keras import layers, Model
 
-from chesspos.models.trainable_model import TrainableModel
-from chesspos.models.chessposition_inspectable_autoencoder import ChesspositionInspectableAutoencoderMixin
+from chesspos.models.autoencoder import AutoencoderModel
 
-class CnnAutoencoder(TrainableModel, ChesspositionInspectableAutoencoderMixin):
-	def __init__(
-		self,
-		input_size,
-		embedding_size,
-		train_generator,
-		test_generator,
-		train_steps_per_epoch,
-		test_steps_per_epoch,
-		save_dir,
-		hidden_layers=[],
-		optimizer='rmsprop',
-		loss=None,
-		metrics=None,
-		tf_callbacks = None
-	):
-		super().__init__(
-			save_dir, train_generator, test_generator, train_steps_per_epoch,
-			test_steps_per_epoch, optimizer, loss, metrics, tf_callbacks = tf_callbacks
-		)
+class CnnAutoencoder(AutoencoderModel):
+	@wraps(AutoencoderModel.__init__)
+	def __init__(self, **kwargs):
+		self._final_conv_shape = None
+		self.embedding_size = 256
+		super().__init__(**kwargs)
 
-		self.input_size = input_size
-		self.embedding_size = embedding_size
-		self.hidden_layers = hidden_layers
+	def _model_helper(self) -> dict:
+		encoder_input = layers.Input(shape=(8,8,15,1), dtype=tf.float16)
 
-		self.encoder = None
-		self.decoder = None
+		# Encoder
+		x = layers.Conv3D(32, (3, 3, 15), activation="relu", padding="same")(encoder_input)
+		x = layers.MaxPooling3D((2, 2, 1), padding="same")(x)
+		x = layers.Conv3D(32, (3, 3, 15), activation="relu", padding="same")(x)
+		x = layers.MaxPooling3D((2, 2, 1), padding="same")(x)
 
-		self.build_model()
+		# Decoder
+		decoder_input = layers.Input(shape=(2,2,15,32), dtype=tf.float16)
+		y = layers.Conv3DTranspose(32, (3, 3, 15), strides=(2,2,1), activation="relu", padding="same")(decoder_input)
+		y = layers.Conv3DTranspose(32, (3, 3, 15), strides=(2,2,1), activation="relu", padding="same")(y)
+		y = layers.Conv3D(1, (8, 8, 15), activation="sigmoid", padding="same")(y)
 
-	def build_model(self):
-		input_layer = layers.Input(shape=773, dtype=tf.float32)
+		encoder = keras.Model(inputs=encoder_input, outputs=x, name='encoder')
+		decoder = keras.Model(inputs=decoder_input, outputs=y, name='decoder')
+		autoencoder = keras.Model(inputs=encoder_input, outputs=decoder(encoder(encoder_input)), name='autoencoder')
 
-		board_layer = layers.Lambda(lambda x: x[:,:768], output_shape=(768,))(input_layer)
-		board_layer = layers.Reshape((8,8,12))(board_layer)
+		return {'encoder': encoder, 'decoder': decoder, 'autoencoder': autoencoder}
 
-		metadata_layer = layers.Lambda(lambda x: x[:,768:], output_shape=(5,))(input_layer)
+	def _define_encoder(self) -> Model:
+		return self._model_helper()['encoder']
 
-		
-		encoder = layers.Conv2D(64, (4, 4), activation="relu", padding="same")(board_layer)
-		encoder = layers.BatchNormalization()(encoder)
-		encoder = layers.MaxPooling2D((2, 2), padding="same")(encoder)
-		encoder = layers.Conv2D(128, (2, 2), activation="relu", padding="same")(encoder)
-		encoder = layers.BatchNormalization()(encoder)
-		encoder = layers.MaxPooling2D((2, 2), padding="same")(encoder)
-		print(encoder)
-		encoder = layers.Flatten()(encoder)
-		encoder = layers.Dense(128, activation="relu")(encoder)
-		encoder = layers.Dense(64, activation="relu")(encoder)
-		
-		encoder_model = keras.Model(inputs=input_layer, outputs=encoder, name='encoder')
-		encoder_model.summary()
-		self.encoder = encoder_model
+	def _define_decoder(self):
+		return self._model_helper()['decoder']
 
-		decoder_input = layers.Input(shape=64)
-		decoder = layers.Dense(128, activation="relu")(decoder_input)
-		decoder = layers.Dense(512, activation="relu")(decoder)
-		decoder = layers.Reshape((2,2,128))(decoder)
-		decoder = layers.Conv2DTranspose(64, (2, 2), strides=2, activation="relu", padding="same")(decoder)
-		decoder = layers.BatchNormalization()(decoder)
-		decoder = layers.Conv2DTranspose(12, (4, 4), strides=2, activation="relu", padding="same")(decoder)
-		decoder = layers.Reshape((768,))(decoder)
-
-		decoder_model = keras.Model(inputs=decoder_input, outputs=decoder, name='decoder')
-		decoder_model.summary()
-		self.decoder = decoder_model
-
-		autoencoder = encoder_model(input_layer)
-		autoencoder = decoder_model(autoencoder)
-		output_layer = layers.Concatenate()([autoencoder, metadata_layer])
-
-		autoencoder_model = keras.Model(inputs=input_layer, outputs=output_layer, name='autocoder')
-		autoencoder_model.summary()
-		self.model = autoencoder_model
-
-	def compile(self):
-		super().compile()
-		self.encoder.compile(optimizer='rmsprop', loss=None, metrics=None)
-		self.decoder.compile(optimizer='rmsprop', loss=None, metrics=None)
-
-
-	def get_encoder(self):
-		if self.encoder is None:
-			raise Exception("No encoder model defined.")
-		else:
-			return self.encoder
-
-
-	def get_decoder(self):
-		if self.decoder is None:
-			raise Exception("No decoder model defined.")
-		else:
-			return self.decoder
+	def _define_model(self) -> Model:
+		return self._model_helper()['autoencoder']
