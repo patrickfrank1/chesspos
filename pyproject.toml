@@ -1,38 +1,24 @@
-[tool.poetry]
-name = "chess-embedding-experiments"
+[project]
+name = "chesspos"
 version = "0.1.0"
-description = "For rapid prototyping on embedding experiments, starting from scratch"
+description = "Learn an embedding for chess positions"
 authors = ["Patrick Frank <patr.frank@gmx.de>"]
-packages = [
-    { include = "src" }
+readme = "README.md"
+requires-python = ">=3.11.8"
+dependencies = [
+    "chess>=1.11.2",
+    "datasets>=4.5.0",
+    "keras-nlp>=0.26.0",
+    "numpy>=1.24,<2.4",
+    "pymilvus>=2.6.9",
+    "tensorflow>=2.20.0",
 ]
 
-
-[tool.poetry.dependencies]
-python = "~3.11.8" # needed to install tensorflow # https://stackoverflow.com/a/76477590
-dvc = {version = "2.55.0", extras = ["s3"]} # needs to be smaller than 3, because of dagshub incompatibility
-chess = "^1.10.0"
-# tensorflow = "2.11.0" # Downgraded from 2.13.0 for AWS Sage Maker Lab Compatibility
-tensorflow = ">=2.13.0,<2.16.0" # Need to ensure keras v3 compatibility
-keras-nlp = "^0.6.2"
-numpy = "^1.24.3"
-pymilvus = "^2.3.6"
-
-
-[tool.poetry.group.dev.dependencies]
-mlflow = "^2.5.0"
-jupyter = "^1.0.0"
-matplotlib = "^3.7.2"
-ipywidgets = "^8.1.0"
-llvmlite = "^0.41.0"
-umap-learn = "^0.5.4"
-
-
-[tool.poetry.group.test.dependencies]
-flake8 = "^7.0.0"
-pytest = "^8.0.2"
-
-
-[build-system]
-requires = ["poetry-core>=1.0.0"]
-build-backend = "poetry.core.masonry.api"
+[dependency-groups]
+dev = [
+    "ipywidgets>=8.1.8",
+    "jupyter>=1.1.1",
+    "matplotlib>=3.10.8",
+    "mlflow>=3.9.0",
+    "umap-learn>=0.5.11",
+]
