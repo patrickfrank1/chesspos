@@ -19,7 +19,6 @@
         "ms-python.debugpy",
         "ms-toolsai.jupyter",
         "ms-toolsai.jupyter-renderers",
-        "github.copilot-chat",
         "charliermarsh.ruff",
         "eamodio.gitlens",
         "mhutchie.git-graph",
