@@ -1,4 +1,3 @@
-- move repo and add license
 - setup context7 mcp server
 - setup openspec and opencode
 - setup uv, install dependencies
