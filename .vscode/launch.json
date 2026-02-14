@@ -1,0 +1,41 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+      {
+        "name": "train.py",
+        "type": "debugpy",
+        "request": "launch",
+        "program": "${workspaceFolder}/src/run/train.py",
+        "env": {
+            "PYTHONPATH": "${workspaceFolder}"
+          },
+        "args": [],
+        "cwd": "${workspaceFolder}",
+        "console": "integratedTerminal"
+      },
+      {
+        "name": "generate_positions.py",
+        "type": "debugpy",
+        "request": "launch",
+        "program": "${workspaceFolder}/src/run/generate_positions.py",
+        "env": {
+            "PYTHONPATH": "${workspaceFolder}"
+          },
+        "args": [],
+        "cwd": "${workspaceFolder}",
+        "console": "integratedTerminal"
+      },
+      {
+        "name": "build_vector_db.py",
+        "type": "debugpy",
+        "request": "launch",
+        "program": "${workspaceFolder}/src/run/build_vector_db.py",
+        "env": {
+            "PYTHONPATH": "${workspaceFolder}"
+          },
+        "args": [],
+        "cwd": "${workspaceFolder}",
+        "console": "integratedTerminal"
+      }
+    ]
+  }

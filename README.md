@@ -1,25 +1,52 @@
-# chess-embedding
-Python package for generating and applying chess embeddings
+# Chess Embedding Experiments
 
-### Installation
+## Cheat Sheet
 
-1. Create virtual environment with python 3.7
+- Generate training positions
 
-2. Install chesspos package
-`$ python -m pip install chesspos`
+    python -m src.run.generate_positions
 
-### Recommended workspace setup
+- Train a neural network
 
-For development:
-check out the following packages 
+    python -m src.run.train
 
-For usage in embedding learning
+- Evaluate a trained network by starting the notebook: `src/run/evaluate.ipynb`
 
-### Bitboard generation
+## Tools
 
-...
+- Start ML Flow UI, in correct python venv
 
-### Testing
+    mlflow ui
 
-- install pytest
-- $ python -m pytest
+- Export dependencies to requirements.txt
+
+    poetry export > requirements.txt
+
+## Notes
+
+### Milvus
+
+Start local milvus db instance with:
+
+`docker compose -f milvus-2-3-10-standalone-docker-compose.yml up -d`
+
+Stop the instance with:
+
+`docker compose -f milvus-2-3-10-standalone-docker-compose.yml down`
+
+- could only get milvus 2.3.1 to work, so use that for now
+- but had to downgrade python to 3.9, because of compatibility issues
+- and only works with recent tensorflow version, so it's incompatible with aws sage maker
+  - maybe I need to build a different toolchain for different python versions
+
+## TODOs
+
+- [ ] Document findings of up to current model training
+- [ ] Write to db from .npy files
+  - [ ] write tokenized positions with some metadata and id
+  - [ ] write embeddings generated from a model
+- [ ] Write to db from .pgn file
+  - maybe some refactoring is needed
+- make embeddings better for search
+  - document approaches
+  - make a plan
