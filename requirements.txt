@@ -29,7 +29,7 @@ oauthlib==3.2.2; python_version >= "3.7" and python_full_version < "3.0.0" or py
 opt-einsum==3.3.0; python_version >= "3.7"
 packaging==21.3; python_version >= "3.8"
 pillow==9.3.0; python_version >= "3.8"
-protobuf==3.19.6; python_version >= "3.7"
+protobuf==5.29.6; python_version >= "3.7"
 pyasn1-modules==0.2.8; python_version >= "3.7" and python_full_version < "3.0.0" or python_full_version >= "3.6.0" and python_version >= "3.7"
 pyasn1==0.4.8; python_version >= "3.7" and python_full_version < "3.0.0" and python_version < "4" and (python_version >= "3.7" and python_full_version < "3.0.0" or python_full_version >= "3.6.0" and python_version >= "3.7") or python_full_version >= "3.6.0" and python_version >= "3.7" and python_version < "4" and (python_version >= "3.7" and python_full_version < "3.0.0" or python_full_version >= "3.6.0" and python_version >= "3.7")
 pyparsing==3.0.9; python_full_version >= "3.6.8" and python_version >= "3.8"
