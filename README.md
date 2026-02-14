@@ -3,7 +3,8 @@
 ## Setup
 
 npm install @fission-ai/openspec@latest
-openspec update
+npx openspec init
+npx openspec update
 Run /opsx:onboard in opencode or another agent
 
 ## Cheat Sheet

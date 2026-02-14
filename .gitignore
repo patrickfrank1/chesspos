@@ -3,6 +3,11 @@ mlruns
 volumes
 deprecated
 requirements.txt
+.github
+.opencode
+
+# Node
+node_modules
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
