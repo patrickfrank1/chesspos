@@ -1,4 +1,10 @@
-# Chess Embedding Experiments
+# Chess Position Embeddings
+
+## Setup
+
+npm install @fission-ai/openspec@latest
+openspec update
+Run /opsx:onboard in opencode or another agent
 
 ## Cheat Sheet
 

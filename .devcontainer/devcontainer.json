@@ -5,7 +5,8 @@
   },
   "remoteUser": "root",
   "features": {
-    "ghcr.io/devcontainers/features/docker-in-docker:2": {}
+    "ghcr.io/devcontainers/features/docker-in-docker:2": {},
+      "ghcr.io/devcontainers/features/node:1": {}
   },
   "customizations": {
     "vscode": {
@@ -38,7 +39,7 @@
       }
     }
   },
-  "postCreateCommand": "uv --version && python --version",
+  "postCreateCommand": "uv --version && python --version && npm --version && node --version && dockerd --version && docker --version",
   "forwardPorts": [],
   "mounts": [
     "source=/var/run/docker.sock,target=/var/run/docker.sock,type=bind"
