@@ -112,7 +112,10 @@ Interpretation:
 Description:
 
 - implement transformer network using keras_nlp library
-  - choose encoder, decoder or encoder-decoder architecture
-- encoding choice: tokeize 
-- masking
+  - choose encoder-decoder architecture
+- encoding choice
+  - represent a board as a tensor of shape (69,), 64 squares plus special position information
+  - each element is an integer representing one of 17 tokens (12 piece types plus special tokens)
 - loss function
+  - we train on a self supervised learning task where the input position should be recreated on the output head (going through the bottleneck)
+  
