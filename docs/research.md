@@ -1,5 +1,15 @@
 # Research to validate my ideas
 
+## Some other references
+
+### Chess RL library pettingzoo
+
+- https://pettingzoo.farama.org/environments/classic/chess/
+- follow alphazero and leelazero conventions
+- also based on channels of base dimension (8,8,*)
+- include the last 7 boards in history
+- coding for 5 move rule and en-passant
+
 ## Research prompt
 
 I want to built an ai model that can analyze and interpret chess positions. It should be able to represent a chess position as a vector semantically to enable search. Also the vector representation can be used to train downstream models that evaluate the position or classify typical patterns. How should I train such an algorithm. Consider that a game is the overall unit of concern. A game is made up of a sequence of positions. Each position represents the current game state at that time with perfect information. However, some patterns only emerge from a sequence of positions, e.g. captures, attacks, strategies, etc. Should I train the embedding algorithm on samples of a position, two adjacent positions, a sequence of positions or on some other unit? What should the loss function be?
