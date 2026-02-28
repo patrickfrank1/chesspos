@@ -10,7 +10,6 @@ dependencies = [
     "datasets>=4.5.0",
     "keras-nlp>=0.26.0",
     "numpy>=1.24,<2.4",
-    "pymilvus>=2.6.9",
     "ray[data]>=2.40.0",
     "tensorflow>=2.20.0",
 ]
