@@ -20,5 +20,7 @@ dev = [
     "jupyter>=1.1.1",
     "matplotlib>=3.10.8",
     "mlflow>=3.9.0",
+    "pytest>=9.0.2",
+    "ruff>=0.15.4",
     "umap-learn>=0.5.11",
 ]
