@@ -4,9 +4,7 @@ from typing import Tuple
 
 import numpy as np
 
-from src.dataset.encoder import (
-    INVERSE_PIECE_ENCODING,
-    PIECE_ENCODING,
+from src.dataset import (
     bitboard_to_board,
     board_to_bitboard,
     board_to_tensor,
@@ -16,8 +14,6 @@ from src.dataset.encoder import (
 )
 
 __all__ = [
-    "INVERSE_PIECE_ENCODING",
-    "PIECE_ENCODING",
     "bitboard_to_board",
     "board_to_bitboard",
     "board_to_tensor",

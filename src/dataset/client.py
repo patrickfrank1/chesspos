@@ -1,12 +1,10 @@
 from __future__ import annotations
 
-import os
-from dataclasses import dataclass, field
-from pathlib import Path
+from dataclasses import dataclass
 from typing import Any
 
 from datasets import Dataset
-from huggingface_hub import HfApi, Repository, create_repo, repo_exists
+from huggingface_hub import HfApi
 from huggingface_hub.utils import RepositoryNotFoundError
 
 import numpy as np
@@ -30,22 +28,6 @@ class HuggingFaceClient:
                 "Not authenticated with HuggingFace Hub. "
                 "Run 'huggingface-cli login' first."
             ) from e
-
-    def get_repository(self) -> Repository:
-        Path(self.local_path).mkdir(parents=True, exist_ok=True)
-        repo_local_path = os.path.join(self.local_path, self.repo_name.split("/")[-1])
-
-        if not repo_exists(self.repo_name):
-            create_repo(self.repo_name, repo_type="dataset", exist_ok=True)
-
-        if os.path.exists(repo_local_path):
-            return Repository(repo_local_path, clone_from=self.repo_name)
-        else:
-            return Repository(
-                repo_local_path,
-                clone_from=self.repo_name,
-                repo_type="dataset",
-            )
 
     def push_batch(
         self,

@@ -47,6 +47,24 @@ class TestTokenSequenceEncoder:
 
         assert not np.array_equal(encoded1, encoded2)
 
+    def test_decode_reconstructs_board(self):
+        encoder = TokenSequenceEncoder()
+        board = chess.Board()
+        encoded = encoder.encode(board)
+        decoded = encoder.decode(encoded)
+        assert decoded.fen() == board.fen()
+
+    def test_decode_batch_reconstructs_boards(self):
+        encoder = TokenSequenceEncoder()
+        boards = [
+            chess.Board(),
+            chess.Board("rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1"),
+        ]
+        encoded = encoder.encode_batch(boards)
+        decoded = encoder.decode_batch(encoded)
+        assert decoded[0].fen() == boards[0].fen()
+        assert decoded[1].fen() == boards[1].fen()
+
 
 class TestTensorEncoder:
     def test_encoding_format(self):
@@ -71,6 +89,24 @@ class TestTensorEncoder:
         assert encoded.shape == (2, 8, 8, 15)
         assert encoded.dtype == bool
 
+    def test_decode_reconstructs_board(self):
+        encoder = TensorEncoder()
+        board = chess.Board()
+        encoded = encoder.encode(board)
+        decoded = encoder.decode(encoded)
+        assert decoded.fen() == board.fen()
+
+    def test_decode_batch_reconstructs_boards(self):
+        encoder = TensorEncoder()
+        boards = [
+            chess.Board(),
+            chess.Board("rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1"),
+        ]
+        encoded = encoder.encode_batch(boards)
+        decoded = encoder.decode_batch(encoded)
+        assert decoded[0].fen() == boards[0].fen()
+        assert decoded[1].fen() == boards[1].fen()
+
 
 class TestBitboardEncoder:
     def test_encoding_format(self):
@@ -87,6 +123,24 @@ class TestBitboardEncoder:
         encoded = encoder.encode(board)
         assert encoded.shape == (773,)
         assert encoded.dtype == bool
+
+    def test_decode_reconstructs_board(self):
+        encoder = BitboardEncoder()
+        board = chess.Board()
+        encoded = encoder.encode(board)
+        decoded = encoder.decode(encoded)
+        assert decoded.fen() == board.fen()
+
+    def test_decode_batch_reconstructs_boards(self):
+        encoder = BitboardEncoder()
+        boards = [
+            chess.Board(),
+            chess.Board("rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1"),
+        ]
+        encoded = encoder.encode_batch(boards)
+        decoded = encoder.decode_batch(encoded)
+        assert decoded[0].fen() == boards[0].fen()
+        assert decoded[1].fen() == boards[1].fen()
 
 
 class TestGetEncoder:
@@ -123,6 +177,12 @@ class TestRegisterEncoder:
 
             def encode_batch(self, boards):
                 return np.zeros((len(boards), 10), dtype=np.int8)
+
+            def decode(self, data):
+                return chess.Board()
+
+            def decode_batch(self, data):
+                return [chess.Board() for _ in data]
 
         register_encoder("custom", CustomEncoder)
         encoder = get_encoder("custom")
