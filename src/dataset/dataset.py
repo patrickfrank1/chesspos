@@ -1,17 +1,26 @@
 from __future__ import annotations
 
+import io
 from dataclasses import dataclass, field
+from functools import partial
 from typing import Iterator
 
+import chess
+import chess.pgn
 import numpy as np
 import ray
 import ray.data
 
 from src.dataset.client import HuggingFaceClient
-from src.dataset.config import DatasetConfig, EncoderConfig, PreprocessingConfig
+from src.dataset.config import (
+    DatasetConfig,
+    EncoderConfig,
+    PreprocessingConfig,
+    SamplingFilters,
+)
 from src.dataset.encoder import get_encoder
 from src.dataset.processor import PGNProcessor
-from src.dataset.types import ENCODING_SHAPES
+from src.dataset.types import ENCODING_SHAPES, EncodingFormat
 from src.utils.fileops import file_paths_from_directory
 
 
@@ -27,6 +36,45 @@ class ChessPositionDataset:
     def __post_init__(self):
         if self.hf_client is None:
             self.hf_client = HuggingFaceClient(repo_name=self.dataset_config.repo_name)
+
+    @staticmethod
+    def _extract_positions(row: dict, sampling_filters: SamplingFilters) -> list[dict]:
+        processor = PGNProcessor(sampling_filters=sampling_filters)
+        bytes_data = row["bytes"]
+        positions = []
+
+        pgn_file = io.StringIO(bytes_data.decode("utf-8", errors="ignore"))
+        while True:
+            game = chess.pgn.read_game(pgn_file)
+            if game is None:
+                break
+            record = processor.extract_game(game)
+            if record is not None:
+                for pos in record.positions:
+                    positions.append(
+                        {
+                            "fen": pos.board.fen(),
+                            "ply": pos.ply,
+                            "white_elo": pos.metadata.white_elo,
+                            "black_elo": pos.metadata.black_elo,
+                            "result": pos.metadata.result or "",
+                        }
+                    )
+        return positions
+
+    @staticmethod
+    def _encode_batch(batch: dict, encoding_format: EncodingFormat) -> dict:
+        encoder = get_encoder(encoding_format)
+        fens = batch["fen"]
+        boards = [chess.Board(fen) for fen in fens]
+        encoded = encoder.encode_batch(boards)
+        return {
+            "encoded": encoded,
+            "ply": np.array(batch["ply"], dtype=np.int32),
+            "white_elo": np.array(batch["white_elo"], dtype=np.int32),
+            "black_elo": np.array(batch["black_elo"], dtype=np.int32),
+            "result": batch["result"],
+        }
 
     def generate(
         self,
@@ -68,55 +116,12 @@ class ChessPositionDataset:
 
         dataset = ray.data.read_binary_files(file_paths, include_paths=True)
 
-        def extract_positions(row: dict) -> list[dict]:
-            import io
+        extract_fn = partial(self._extract_positions, sampling_filters=sampling_filters)
+        encode_fn = partial(self._encode_batch, encoding_format=encoding_format)
 
-            import chess.pgn
-
-            processor = PGNProcessor(sampling_filters=sampling_filters)
-            bytes_data = row["bytes"]
-            positions = []
-
-            pgn_file = io.StringIO(bytes_data.decode("utf-8", errors="ignore"))
-            while True:
-                game = chess.pgn.read_game(pgn_file)
-                if game is None:
-                    break
-                record = processor.extract_game(game)
-                if record is not None:
-                    for pos in record.positions:
-                        positions.append(
-                            {
-                                "fen": pos.board.fen(),
-                                "ply": pos.ply,
-                                "white_elo": pos.metadata.white_elo,
-                                "black_elo": pos.metadata.black_elo,
-                                "result": pos.metadata.result or "",
-                            }
-                        )
-            return positions
-
-        def encode_batch(batch: dict) -> dict:
-            import chess
-
-            encoder = get_encoder(encoding_format)
-            fens = batch["fen"]
-            boards = [chess.Board(fen) for fen in fens]
-            encoded = encoder.encode_batch(boards)
-            return {
-                "encoded": encoded,
-                "ply": np.array(batch["ply"], dtype=np.int32),
-                "white_elo": np.array(batch["white_elo"], dtype=np.int32),
-                "black_elo": np.array(batch["black_elo"], dtype=np.int32),
-                "result": batch["result"],
-            }
-
-        positions = dataset.flat_map(extract_positions)
-
+        positions = dataset.flat_map(extract_fn)
         limited = positions.limit(batch_size)
-
-        encoded = limited.map_batches(encode_batch, batch_format="numpy")
-
+        encoded = limited.map_batches(encode_fn, batch_format="numpy")
         train_ds, test_ds = encoded.train_test_split(train_ratio)
 
         return train_ds, test_ds
