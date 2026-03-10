@@ -9,17 +9,14 @@ import ray
 from src.dataset.client import HuggingFaceClient
 from src.dataset.config import DatasetConfig, EncoderConfig, PreprocessingConfig
 from src.dataset.encoder import PositionEncoder, get_encoder
-from src.dataset.processor import PGNProcessor
 from src.dataset.ray_actors import (
     RayEncoderActor,
     RayPGNActor,
     RayProgress,
-    distribute_pgn_files,
     init_ray,
-    monitor_progress,
     shutdown_ray,
 )
-from src.dataset.types import ENCODING_SHAPES, EncodingFormat
+from src.dataset.types import ENCODING_SHAPES
 from src.utils.fileops import file_paths_from_directory
 
 
@@ -90,26 +87,54 @@ class ChessPositionDataset:
         file_paths: list[str],
         progress: RayProgress,
     ) -> list[dict]:
-        processor = PGNProcessor(
-            sampling_filters=self.preprocessing_config.sampling_filters
-        )
+        num_workers = self.preprocessing_config.worker_count
+        actors = [
+            RayPGNActor.remote(self.preprocessing_config) for _ in range(num_workers)
+        ]
+
+        file_chunks = np.array_split(file_paths, num_workers)
+        futures = []
+        for actor, chunk in zip(actors, file_chunks):
+            for file_path in chunk:
+                futures.append(actor.process_file.remote(str(file_path)))
+
         positions = []
+        completed = 0
 
-        for file_path in file_paths:
-            for game in processor.process_file(file_path):
-                for pos in game.positions:
-                    positions.append(pos.to_dict())
-                    if len(positions) >= self.dataset_config.batch_size:
-                        return positions
-                progress.files_processed += 1
+        while futures and len(positions) < self.dataset_config.batch_size:
+            ready, futures = ray.wait(futures, num_returns=1)
+            for future in ready:
+                games_data = ray.get(future)
+                for game in games_data:
+                    for pos in game["positions"]:
+                        positions.append(pos)
+                        if len(positions) >= self.dataset_config.batch_size:
+                            progress.files_processed = completed
+                            return positions
+                completed += 1
 
+        progress.files_processed = completed
         return positions
 
     def _encode_positions(self, positions: list[dict]) -> np.ndarray:
-        import chess
+        num_workers = self.preprocessing_config.worker_count
+        actors = [
+            RayEncoderActor.remote(self.dataset_config.encoding)
+            for _ in range(num_workers)
+        ]
 
-        boards = [chess.Board(p["fen"]) for p in positions]
-        return self.encoder.encode_batch(boards)
+        chunk_size = max(1, len(positions) // num_workers)
+        chunks = [
+            positions[i : i + chunk_size] for i in range(0, len(positions), chunk_size)
+        ]
+
+        futures = []
+        for actor, chunk in zip(actors, chunks):
+            if chunk:
+                futures.append(actor.encode_positions.remote(chunk))
+
+        encoded_chunks = ray.get(futures)
+        return np.concatenate(encoded_chunks, axis=0)
 
     def _split_data(self, data: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         split_idx = int(len(data) * self.dataset_config.train_ratio)
