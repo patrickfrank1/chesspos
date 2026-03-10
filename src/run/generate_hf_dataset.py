@@ -97,6 +97,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Create and push a dataset card to HuggingFace Hub",
     )
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Run in debug mode (local, single-threaded, breakpoints work)",
+    )
 
     return parser.parse_args()
 
@@ -121,6 +126,7 @@ def main() -> int:
         worker_count=args.workers,
         memory_limit_mb=args.memory,
         sampling_filters=sampling_filters,
+        debug=args.debug,
     )
 
     encoder_config = EncoderConfig(

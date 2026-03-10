@@ -86,6 +86,7 @@ class ChessPositionDataset:
             num_cpus=self.preprocessing_config.worker_count,
             object_store_memory=self.preprocessing_config.memory_limit_mb * 1024 * 1024,
             ignore_reinit_error=True,
+            local_mode=self.preprocessing_config.debug,
         )
 
         try:

@@ -65,6 +65,7 @@ class PreprocessingConfig:
     worker_count: int = 4
     memory_limit_mb: int = 4096
     sampling_filters: SamplingFilters = field(default_factory=SamplingFilters)
+    debug: bool = False
 
     def __post_init__(self):
         if self.worker_count <= 0:
