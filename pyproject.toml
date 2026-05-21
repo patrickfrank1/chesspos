@@ -19,6 +19,6 @@ dev = [
     "ipywidgets>=8.1.8",
     "jupyter>=1.1.1",
     "matplotlib>=3.10.8",
-    "mlflow>=3.9.0",
+    "mlflow>=3.11.1",
     "umap-learn>=0.5.11",
 ]
