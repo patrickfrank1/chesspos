@@ -3,7 +3,7 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import pytest
 
-from src.dataset.generator import TrainingDataGenerator
+from src.dataset.data_loader import TrainingDataGenerator
 
 
 @pytest.fixture
@@ -83,7 +83,7 @@ class TestTrainingDataGenerator:
         transformed = gen.with_transformation(double_fn)
         assert transformed.repo_name == gen.repo_name
 
-    @patch("src.dataset.generator.load_dataset")
+    @patch("src.dataset.data_loader.load_dataset")
     def test_to_tf_dataset_streaming(self, mock_load_dataset, mock_dataset):
         mock_load_dataset.return_value = mock_dataset
 
@@ -103,7 +103,7 @@ class TestTrainingDataGenerator:
         )
         assert ds is not None
 
-    @patch("src.dataset.generator.load_dataset")
+    @patch("src.dataset.data_loader.load_dataset")
     def test_to_tf_dataset_memory(self, mock_load_dataset):
         mock_ds = [
             {

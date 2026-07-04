@@ -11,7 +11,7 @@ from src.dataset.config import (
     PreprocessingConfig,
     SamplingFilters,
 )
-from src.dataset.dataset import ChessPositionDataset
+from src.dataset.etl import ChessPositionDataset
 
 
 SAMPLE_PGN = """[Event "Test"]

@@ -3,12 +3,12 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import pytest
 
-from src.dataset.client import HuggingFaceClient
+from src.dataset.huggingface_client import HuggingFaceClient
 
 
 @pytest.fixture
 def mock_hf_api():
-    with patch("src.dataset.client.HfApi") as mock_api:
+    with patch("src.dataset.huggingface_client.HfApi") as mock_api:
         mock_instance = MagicMock()
         mock_instance.whoami.return_value = {"name": "test_user"}
         mock_api.return_value = mock_instance
@@ -17,13 +17,13 @@ def mock_hf_api():
 
 @pytest.fixture
 def mock_repo_exists():
-    with patch("src.dataset.client.repo_exists", return_value=True):
+    with patch("src.dataset.huggingface_client.repo_exists", return_value=True):
         yield
 
 
 @pytest.fixture
 def mock_create_repo():
-    with patch("src.dataset.client.create_repo") as mock:
+    with patch("src.dataset.huggingface_client.create_repo") as mock:
         yield mock
 
 
@@ -33,7 +33,7 @@ class TestHuggingFaceClient:
         mock_hf_api.whoami.assert_called_once()
 
     def test_init_raises_on_auth_failure(self):
-        with patch("src.dataset.client.HfApi") as mock_api:
+        with patch("src.dataset.huggingface_client.HfApi") as mock_api:
             mock_instance = MagicMock()
             mock_instance.whoami.side_effect = Exception("Not authenticated")
             mock_api.return_value = mock_instance
@@ -120,7 +120,7 @@ class TestHuggingFaceClient:
         assert "(10, 69)" in card
 
     def test_push_batch(self, mock_hf_api):
-        with patch("src.dataset.client.Dataset") as mock_dataset:
+        with patch("src.dataset.huggingface_client.Dataset") as mock_dataset:
             mock_ds_instance = MagicMock()
             mock_ds_instance.push_to_hub.return_value = (
                 "https://huggingface.co/datasets/test/repo"

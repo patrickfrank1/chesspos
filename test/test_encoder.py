@@ -2,7 +2,7 @@ import chess
 import numpy as np
 import pytest
 
-from src.dataset.encoder import (
+from src.dataset.position_encoder import (
     BitboardEncoder,
     PositionEncoder,
     TensorEncoder,

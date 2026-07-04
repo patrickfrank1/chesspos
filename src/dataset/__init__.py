@@ -2,7 +2,7 @@ import chess
 import numpy as np
 
 from src.dataset.config import DatasetConfig, EncoderConfig, PreprocessingConfig
-from src.dataset.encoder import (
+from src.dataset.position_encoder import (
     BitboardEncoder,
     PositionEncoder,
     TensorEncoder,
@@ -10,10 +10,10 @@ from src.dataset.encoder import (
     get_encoder,
     register_encoder,
 )
-from src.dataset.processor import GameRecord, PGNProcessor
-from src.dataset.client import HuggingFaceClient
-from src.dataset.dataset import ChessPositionDataset
-from src.dataset.generator import TrainingDataGenerator
+from src.dataset.pgn_processor import GameRecord, PGNProcessor
+from src.dataset.huggingface_client import HuggingFaceClient
+from src.dataset.etl import ChessPositionDataset
+from src.dataset.data_loader import TrainingDataGenerator
 
 _token_encoder = TokenSequenceEncoder()
 _tensor_encoder = TensorEncoder()

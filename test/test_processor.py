@@ -6,7 +6,7 @@ import chess.pgn
 import pytest
 
 from src.dataset.config import SamplingFilters
-from src.dataset.processor import PGNProcessor
+from src.dataset.pgn_processor import PGNProcessor
 from src.dataset.types import GameRecord, GameMetadata, PositionRecord
 
 

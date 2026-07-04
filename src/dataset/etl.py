@@ -11,15 +11,15 @@ import numpy as np
 import ray
 import ray.data
 
-from src.dataset.client import HuggingFaceClient
+from src.dataset.huggingface_client import HuggingFaceClient
 from src.dataset.config import (
     DatasetConfig,
     EncoderConfig,
     PreprocessingConfig,
     SamplingFilters,
 )
-from src.dataset.encoder import get_encoder
-from src.dataset.processor import PGNProcessor
+from src.dataset.position_encoder import get_encoder
+from src.dataset.pgn_processor import PGNProcessor
 from src.dataset.types import ENCODING_SHAPES, EncodingFormat
 from src.utils.fileops import file_paths_from_directory
 
