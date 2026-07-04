@@ -34,6 +34,10 @@ class DatasetConfig:
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "DatasetConfig":
+        return cls(**data)
+
 
 @dataclass
 class SamplingFilters:
@@ -85,6 +89,10 @@ class PreprocessingConfig:
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "EncoderConfig":
+        return cls(**data)
+
 
 @dataclass
 class EncoderConfig:
@@ -105,3 +113,7 @@ class EncoderConfig:
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "EncoderConfig":
+        return cls(**data)
