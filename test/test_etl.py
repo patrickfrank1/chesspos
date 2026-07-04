@@ -2,8 +2,10 @@ import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import chess
 import numpy as np
 import pytest
+import ray.data
 
 from src.dataset.config import (
     DatasetConfig,
@@ -12,9 +14,10 @@ from src.dataset.config import (
     SamplingFilters,
 )
 from src.dataset.etl import ChessPositionDataset
+from src.dataset.types import TOKEN_SEQUENCE
 
 
-SAMPLE_PGN = """[Event "Test"]
+SAMPLE_PGN = b"""[Event "Test"]
 [White "Player1"]
 [Black "Player2"]
 [Result "1-0"]
@@ -29,7 +32,7 @@ SAMPLE_PGN = """[Event "Test"]
 def temp_pgn_dir():
     with tempfile.TemporaryDirectory() as tmpdir:
         pgn_path = Path(tmpdir) / "test.pgn"
-        pgn_path.write_text(SAMPLE_PGN)
+        pgn_path.write_bytes(SAMPLE_PGN)
         yield str(tmpdir)
 
 
@@ -38,7 +41,7 @@ def dataset_config(temp_pgn_dir):
     return DatasetConfig(
         repo_name="test/chesspos-test",
         batch_size=10,
-        encoding="token_sequence",
+        encoding=TOKEN_SEQUENCE,
         train_ratio=0.8,
         data_path=temp_pgn_dir,
     )
@@ -55,121 +58,82 @@ def preprocessing_config():
 
 @pytest.fixture
 def encoder_config():
-    return EncoderConfig(encoding_format="token_sequence", window_size=5)
+    return EncoderConfig(encoding_format=TOKEN_SEQUENCE, window_size=5)
+
+
+@pytest.fixture
+def dataset(dataset_config, preprocessing_config, encoder_config):
+    with patch.object(ChessPositionDataset, "__post_init__", lambda self: None):
+        return ChessPositionDataset(
+            dataset_config=dataset_config,
+            preprocessing_config=preprocessing_config,
+            encoder_config=encoder_config,
+        )
 
 
 class TestChessPositionDataset:
-    def test_dataset_initialization(
-        self, dataset_config, preprocessing_config, encoder_config
-    ):
-        with patch.object(ChessPositionDataset, "__post_init__", lambda self: None):
-            dataset = ChessPositionDataset(
-                dataset_config=dataset_config,
-                preprocessing_config=preprocessing_config,
-                encoder_config=encoder_config,
-            )
-            assert dataset.dataset_config == dataset_config
+    def test_dataset_initialization(self, dataset, dataset_config):
+        assert dataset.dataset_config == dataset_config
 
-    def test_encoder_property(
-        self, dataset_config, preprocessing_config, encoder_config
-    ):
-        with patch.object(ChessPositionDataset, "__post_init__", lambda self: None):
-            dataset = ChessPositionDataset(
-                dataset_config=dataset_config,
-                preprocessing_config=preprocessing_config,
-                encoder_config=encoder_config,
-            )
-            encoder = dataset.encoder
-            assert encoder.encoding_format == "token_sequence"
+    def test_extract_positions(self):
+        row = {"bytes": SAMPLE_PGN, "path": "/fake/test.pgn"}
+        filters = SamplingFilters(min_elo=0, subsample_rate=1.0)
+        positions = ChessPositionDataset._extract_positions(row, filters)
+        assert len(positions) > 0
+        for pos in positions:
+            assert "fen" in pos
+            assert "ply" in pos
+            assert "white_elo" in pos
+            assert "black_elo" in pos
+            assert "result" in pos
 
-    def test_split_data(self, dataset_config, preprocessing_config, encoder_config):
-        with patch.object(ChessPositionDataset, "__post_init__", lambda self: None):
-            dataset = ChessPositionDataset(
-                dataset_config=dataset_config,
-                preprocessing_config=preprocessing_config,
-                encoder_config=encoder_config,
-            )
+    def test_extract_positions_filters(self):
+        row = {"bytes": SAMPLE_PGN, "path": "/fake/test.pgn"}
+        filters = SamplingFilters(min_elo=3000, subsample_rate=1.0)
+        positions = ChessPositionDataset._extract_positions(row, filters)
+        assert len(positions) == 0
 
-            data = np.zeros((100, 69), dtype=np.int8)
-            train, test = dataset._split_data(data)
+    def test_extract_positions_empty_pgn(self):
+        row = {"bytes": b"", "path": "/fake/empty.pgn"}
+        filters = SamplingFilters(min_elo=0, subsample_rate=1.0)
+        positions = ChessPositionDataset._extract_positions(row, filters)
+        assert len(positions) == 0
 
-            assert len(train) == 80
-            assert len(test) == 20
+    def test_encode_batch(self):
+        batch = {
+            "fen": [chess.Board().fen() for _ in range(3)],
+            "ply": np.array([1, 2, 3], dtype=np.int32),
+            "white_elo": np.array([2000, 2000, 2000], dtype=np.int32),
+            "black_elo": np.array([2000, 2000, 2000], dtype=np.int32),
+            "result": ["1-0", "1/2-1/2", "0-1"],
+        }
+        result = ChessPositionDataset._encode_batch(batch, TOKEN_SEQUENCE)
+        assert "encoded" in result
+        assert result["encoded"].shape == (3, 69)
+        np.testing.assert_array_equal(result["ply"], batch["ply"])
 
-    def test_array_to_dict_shape(
-        self, dataset_config, preprocessing_config, encoder_config
-    ):
-        with patch.object(ChessPositionDataset, "__post_init__", lambda self: None):
-            dataset = ChessPositionDataset(
-                dataset_config=dataset_config,
-                preprocessing_config=preprocessing_config,
-                encoder_config=encoder_config,
-            )
+    def test_get_start_batch_default(self, dataset):
+        assert dataset._get_start_batch(resume=False) == 1
 
-            data = np.zeros((50, 69), dtype=np.int8)
-            result = dataset._array_to_dict(data)
+    def test_get_start_batch_resume_unknown(self, dataset):
+        mock_client = MagicMock()
+        mock_client.get_next_batch_number.return_value = 5
+        dataset.hf_client = mock_client
+        assert dataset._get_start_batch(resume=True) == 5
 
-            assert "window" in result
-            assert "scalars" in result
-            assert result["window"].shape == (50, 5, 69)
-            assert result["scalars"].shape == (50, 3)
+    def test_generate_dry_run(self, dataset):
+        mock_train = MagicMock(spec=ray.data.Dataset)
+        mock_test = MagicMock(spec=ray.data.Dataset)
+        dataset._process_batch = MagicMock(return_value=(mock_train, mock_test))
 
-    def test_validate_schema_valid(
-        self, dataset_config, preprocessing_config, encoder_config
-    ):
-        with patch.object(ChessPositionDataset, "__post_init__", lambda self: None):
-            dataset = ChessPositionDataset(
-                dataset_config=dataset_config,
-                preprocessing_config=preprocessing_config,
-                encoder_config=encoder_config,
-            )
+        batches = list(dataset.generate(num_batches=1, dry_run=True))
+        assert len(batches) == 1
+        assert batches[0] == (mock_train, mock_test)
 
-            data = np.zeros((10, 69), dtype=np.int8)
-            assert dataset.validate_schema(data) is True
-
-    def test_validate_schema_invalid(
-        self, dataset_config, preprocessing_config, encoder_config
-    ):
-        with patch.object(ChessPositionDataset, "__post_init__", lambda self: None):
-            dataset = ChessPositionDataset(
-                dataset_config=dataset_config,
-                preprocessing_config=preprocessing_config,
-                encoder_config=encoder_config,
-            )
-
-            data = np.zeros((10, 8, 8, 15), dtype=np.int8)
-            with pytest.raises(ValueError, match="does not match expected"):
-                dataset.validate_schema(data)
-
-    def test_create_dataset_card(
-        self, dataset_config, preprocessing_config, encoder_config
-    ):
+    def test_create_dataset_card(self, dataset):
         mock_client = MagicMock()
         mock_client.create_dataset_card.return_value = "# Dataset Card"
+        dataset.hf_client = mock_client
 
-        with patch.object(ChessPositionDataset, "__post_init__", lambda self: None):
-            dataset = ChessPositionDataset(
-                dataset_config=dataset_config,
-                preprocessing_config=preprocessing_config,
-                encoder_config=encoder_config,
-            )
-            dataset.hf_client = mock_client
-
-            card = dataset.create_dataset_card()
-            assert "Dataset Card" in card
-
-    def test_generate_dry_run(
-        self, dataset_config, preprocessing_config, encoder_config
-    ):
-        with patch.object(ChessPositionDataset, "__post_init__", lambda self: None):
-            dataset = ChessPositionDataset(
-                dataset_config=dataset_config,
-                preprocessing_config=preprocessing_config,
-                encoder_config=encoder_config,
-            )
-
-            batches = list(dataset.generate(num_batches=1, dry_run=True))
-            assert len(batches) == 1
-            train, test = batches[0]
-            assert train.shape[1] == 69
-            assert test.shape[1] == 69
+        card = dataset.create_dataset_card()
+        assert "Dataset Card" in card
