@@ -1,181 +1,133 @@
-# AGENTS.md - Instructions for Coding Agents
+# AGENTS.md
 
-This document provides essential guidelines for agentic coding tools working in the chesspos repository.
+Guidance for AI agents (and humans) working in this repository.
 
-## Project Overview
+## Project
 
-Chess position embedding learning system using TensorFlow/Keras with Milvus vector database for semantic search of chess positions.
+`chesspos` learns an embedding for chess positions. PGN games are parsed into
+positions, encoded, published to a HuggingFace dataset repo, and consumed by a
+Keras model for self-supervised training. The resulting embeddings feed
+downstream tasks (semantic search, evaluation, pattern classification).
 
-## Critical Instructions
+## Tech Stack
 
-- **Always use the context7 MCP server** to research usage of libraries that are not well known (e.g., keras-nlp, python-chess, etc.)
-- **Always use `uv` for package management** instead of pip
-- **Always use `uv run python` instead of `python`** to run scripts
+### Language & tooling
+- **Python ≥ 3.11.8**, managed with **`uv`** (`uv.lock` is the source of truth).
+- **Ruff** for lint and formatting; **pytest** for tests.
+- **YAML** config files for the dataset generator
+  (`src/run/generate_hf_dataset.py --config …`).
 
-## Build/Lint/Test Commands
+### ML framework
+- **Keras 3** with **`keras-nlp`** transformer layers.
+- Backend may be **TensorFlow** *or* **PyTorch** — Keras 3 supports both. Do not
+  import `tensorflow` or `torch` directly in new code; go through `keras` /
+  `keras.backend` so the backend stays swappable. Existing modules under
+  `src/modeling/` and `src/run/train.py` still import `tensorflow` directly and
+  are pending migration.
 
-### Package Management
+### Data processing
+- **python-chess** for PGN parsing, board manipulation, and FEN handling.
+- **Ray** (Ray Data) for distributed ETL in `src/dataset/etl.py`.
+- **HuggingFace `datasets` + `huggingface_hub`** for dataset distribution as
+  Parquet shards on the Hub.
+- **NumPy** for in-memory tensors.
 
-```bash
-uv sync                    # Install dependencies
-uv sync --dev              # Install dev dependencies
-uv add <package>           # Add a new dependency
-uv add --dev <package>     # Add a dev dependency
+### Vector database
+- **Not finalized.** The current implementation in `src/search/db.py`,
+  `src/search/indexer.py`, and `src/run/build_vector_db.py` uses **Milvus** via
+  `pymilvus`. Milvus is **deprecated and will be removed** — do not extend it.
+- **LanceDB** is the leading candidate replacement (offers built-in vector
+  indexes and ML-framework integration). Treat the vector store layer as in
+  flux; new work should be written behind an abstraction so the backend can be
+  swapped once a decision is made.
+
+### Experiment tracking
+- **MLflow** (`mlflow ui` to view runs).
+
+## Data Pipeline
+
+See [`docs/dataset_pipeline.md`](docs/dataset_pipeline.md) for the full
+entity-relationship diagram and runtime flow. Summary:
+
+- **Write side** (`src/dataset/etl.py`) — `ChessPositionDataset` composes
+  `DatasetConfig`, `PreprocessingConfig`, `EncoderConfig`, and a
+  `HuggingFaceClient`. Ray Data reads `*.pgn` → `PGNProcessor` extracts and
+  samples positions (logistic ELO gate + ply² subsample) → one of three
+  `PositionEncoder` implementations encodes each board → `train_test_split` →
+  Parquet shards pushed to the Hub as `{train,test}/batch_{NNNN}_*.parquet`.
+- **Read side** (`src/dataset/data_loader.py`) — `TrainingDataGenerator` loads
+  the Hub dataset back via `datasets.load_dataset` and yields a
+  `tf.data.Dataset` of `(window, target)` pairs with optional BERT-style
+  masking (`mask_token_id=16`).
+- **Encoders** (`src/dataset/position_encoder.py`) — `token_sequence` `(69,)`,
+  `tensor` `(8,8,15)`, `bitboard` `(773,)`, all behind the `PositionEncoder`
+  ABC and a registry (`get_encoder`).
+
+> Note: there is a known schema mismatch between what `_encode_batch` writes
+> (`encoded`, `ply`, …) and what `TrainingDataGenerator` reads (`window`,
+> `scalars`). Documented in `docs/dataset_pipeline.md`.
+
+## Development Workflow
+
+1. **Branch from `main`** for every feature: `feature/<short-description>`.
+2. **Optionally link to a GitHub issue** and/or an **OpenSpec** change
+   (`.opencode/skills/openspec-*` and `openspec/` directory). Use the
+   `openspec-new-change` / `openspec-apply-change` skills when working through
+   an OpenSpec change.
+3. **Implement** following existing conventions in `src/dataset/` — dataclasses
+   for config, ABC + registry for pluggable components, static methods for Ray
+   callables.
+4. **Verify locally** before pushing:
+   - `uv run ruff format && uv run ruff check`
+   - `uv run pytest`
+   - If you add a new library, confirm it resolves in `uv.lock`.
+5. **Open a PR** into `main`. A CI pipeline runs the test suite on every merge
+   to `main`; PRs are expected to be green before merge.
+6. **Squash-merge** completed features into `main`.
+
+## Using Context7 for Dependency Documentation
+
+This repo has the **Context7** MCP server configured in `opencode.json`. Use it
+to fetch current documentation for any dependency instead of guessing from
+training data — especially for libraries with evolving APIs like
+`python-chess`, `lancedb`, `keras-nlp`, `ray`, or `datasets`.
+
+How to use it:
+
+1. Call `context7_resolve-library-id` with the library name
+   (e.g. `libraryName: "python-chess"`, `query: "how to read PGN games and
+   iterate mainline moves"`). It returns Context7-compatible IDs such as
+   `/niklasf/python-chess`.
+2. Call `context7_query-docs` with that `libraryId` and a **specific** question
+   (e.g. `"how to read PGN games and iterate mainline moves"`). Good queries
+   include the API surface you need; bad queries are single keywords like
+   `"board"`.
+3. Cite the returned snippets when writing or modifying code, and prefer the
+   documented API over assumptions.
+
+When to use Context7:
+- Adding or upgrading a dependency.
+- Touching an unfamiliar library (e.g. the first time you write LanceDB code).
+- Debugging a library-specific error.
+- Migrating between backends (e.g. TensorFlow ↔ PyTorch via Keras 3).
+
+When **not** to use it: refactoring business logic, writing tests against
+internal modules, or general programming concepts — those don't need external
+docs.
+
+## Repository Layout
+
 ```
-
-### Running Scripts
-
-```bash
-uv run python -m src.run.generate_positions   # Generate training positions
-uv run python -m src.run.train                # Train a neural network
-uv run python -m src.run.build_vector_db      # Build vector database
+src/
+  dataset/        # ETL + HF dataset client + position encoders (current focus)
+  modeling/       # Keras model definitions
+  training/       # Data generators for training
+  search/         # Vector store (Milvus, deprecated) + indexer
+  preprocessing/  # Legacy board representation / extraction helpers
+  evaluation/     # Visualisation
+  run/            # CLI entry points (generate_hf_dataset.py, train.py, …)
+  utils/          # fileops, legacy data_loader
+docs/             # Pipeline docs, research notes, framework evaluations
+openspec/         # OpenSpec change specs
+test/             # pytest suite
 ```
-
-### Testing
-
-```bash
-uv run pytest test/                                    # Run all tests
-uv run pytest test/test_vector_db.py                   # Run a single test file
-uv run pytest test/test_vector_db.py::test_milvus_vector_store_insert_and_search   # Run specific test
-uv run pytest -v test/                                 # Run with verbose output
-uv run pytest -x test/                                 # Stop on first failure
-```
-
-### Linting and Formatting
-
-```bash
-uv run ruff format .        # Format all Python files
-uv run ruff check .         # Lint all Python files
-uv run ruff check --fix .   # Auto-fix linting issues
-```
-
-### Infrastructure
-
-```bash
-uv run mlflow ui                                                        # Start MLflow UI
-```
-
-## Code Style Guidelines
-
-### Python Version
-
-- Requires Python >=3.11.8
-
-### Imports
-
-- Group imports in the following order, separated by blank lines:
-  1. Standard library imports (alphabetically sorted)
-  2. Third-party imports (alphabetically sorted)
-  3. Local imports (alphabetically sorted)
-- Use explicit imports, avoid `from module import *`
-- Example:
-  ```python
-  import os
-  from typing import Tuple
-
-  import numpy as np
-  import tensorflow as tf
-  from tensorflow import keras
-
-  from src.types import IOTensorPair
-  from src.modeling.model import get_model
-  ```
-
-### Formatting
-
-- Use Ruff for formatting (configured via VS Code settings)
-- Format on save is enabled
-- Auto-organize imports on save
-
-### Type Annotations
-
-- Use type hints for function parameters and return types
-- Use modern Python type syntax (e.g., `list[str]` instead of `List[str]`)
-- Use `|` for union types instead of `Union`
-- Example:
-  ```python
-  def get_model(model: str) -> dict[str, keras.Model]:
-  def search_by_ids(self, query_ids: list[int]) -> list[dict]:
-  def _piece_id_to_piece(id: int) -> chess.Piece | None:
-  ```
-
-### Naming Conventions
-
-- Functions and variables: `snake_case`
-- Classes: `PascalCase`
-- Constants (module-level): `UPPER_SNAKE_CASE`
-- Private methods: prefix with underscore (e.g., `_connect`, `_create_collection`)
-- Example:
-  ```python
-  PIECE_ENCODING = {...}  # Constant
-  EMBEDDING_SIZE = 256    # Constant
-
-  def board_to_bitboard(board: chess.Board) -> np.ndarray:  # Function
-  class MilvusVectorStore:  # Class
-  def _connect(self):  # Private method
-  ```
-
-### Error Handling
-
-- Raise specific exceptions with descriptive messages
-- Use `ValueError` for invalid arguments
-- Use `assert` for internal invariants and preconditions
-- Example:
-  ```python
-  raise ValueError("The requested neural network architecture does not exist.")
-  raise ValueError(f"Invalid embedding data type for collection {self.collection_name}.")
-  assert bb.shape == (773,)
-  assert tensor.shape == (8, 8, 15)
-  ```
-
-### Documentation
-
-- Use inline comments sparingly for complex logic
-- Use docstrings for public classes and methods
-- Keep comments on the same line as code for short explanations
-- Example:
-  ```python
-  def _connect(self):
-      """Connect to the Milvus server."""
-      ...
-
-  # one plane per piece
-  for color in [1, 0]:
-  ```
-
-### Code Organization
-
-- Source code lives in `src/` with subdirectories by concern:
-  - `src/modeling/` - Model definitions
-  - `src/preprocessing/` - Data processing and board representations
-  - `src/training/` - Data generators and training utilities
-  - `src/run/` - Main executable scripts
-  - `src/search/` - Vector database integration
-  - `src/evaluation/` - Visualization and evaluation
-  - `src/utils/` - File operations and utilities
-- Tests live in `test/` directory
-- Notebooks for debugging in `notebooks/`
-- Saved models in `model/`
-
-### TensorFlow/Keras Conventions
-
-- Use `bfloat16` dtype for neural network computations
-- Use `keras.Model` for model definitions
-- Return model components as dict: `{'encoder': encoder, 'decoder': decoder, 'autoencoder': autoencoder}`
-- Use `keras_nlp` layers for transformer components
-
-## Project-Specific Patterns
-
-### Board Representations
-
-- **Token Sequence**: 69-token sequence for Transformers
-
-### Model Architecture
-
-- Models are defined in `src/modeling/model.py`
-- Use factory pattern: `get_model(model_name: str) -> dict[str, keras.Model]`
-- Available architectures: `vanilla_dense`, `skip_dense`, `skip_equi_dense`, `cnn_dense`, `trivial`, `encoder_decoder_transformer`
-
-## Notes
-
-- Run linting after making changes: `uv run ruff check .`
