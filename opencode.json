@@ -5,6 +5,15 @@
       "type": "local",
       "command": ["npx", "context7-mcp"],
       "enabled": true
+    },
+    "github": {
+      "type": "remote",
+      "url": "https://api.githubcopilot.com/mcp/",
+      "enabled": true,
+      "oauth": false,
+      "headers": {
+        "Authorization": "{env:GH_MCP_TOKEN}"
+      }
     }
   }
 }

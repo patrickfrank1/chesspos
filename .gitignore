@@ -4,7 +4,6 @@ volumes
 deprecated
 requirements.txt
 .github
-.opencode
 
 # Node
 node_modules
@@ -131,7 +130,7 @@ celerybeat.pid
 *.sage.py
 
 # Environments
-.env*
+*.env*
 .venv*
 env/
 venv/
