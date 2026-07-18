@@ -4,7 +4,6 @@ volumes
 deprecated
 requirements.txt
 .github
-.opencode
 
 # Node
 node_modules
