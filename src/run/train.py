@@ -8,12 +8,14 @@ import mlflow
 
 from src.types import IOTensorPair
 from src.modeling.model import get_model
-from src.training.sample_generator import AutoencoderDataGenerator, ReconstructAutoencoderDataGenerator
+from src.training.sample_generator import (
+    AutoencoderDataGenerator,
+    ReconstructAutoencoderDataGenerator,
+)
 from src.modeling import custom_losses as cl
 
 
 if __name__ == "__main__":
-
     mlflow.autolog()
 
     # parameters
@@ -34,7 +36,7 @@ if __name__ == "__main__":
     autoencoder: keras.Model = get_model(MODEL_TYPE)["autoencoder"]
 
     # compile model
-    optimizer = 'rmsprop'
+    optimizer = "rmsprop"
     if MODEL_TYPE == "encoder_decoder_transformer":
         autoencoder.compile(
             loss=keras.losses.SparseCategoricalCrossentropy(from_logits=True),
@@ -50,27 +52,28 @@ if __name__ == "__main__":
                 cl.sum_squared_loss,
                 cl.num_pc_reg,
                 cl.pc_column_reg,
-                cl.pc_plane_reg
+                cl.pc_plane_reg,
             ],
-            jit_compile=True
+            jit_compile=True,
         )
 
     # plot model graph
-    plot_model(autoencoder, to_file=f"{MODEL_DIR}/model_plot.png", show_shapes=True, expand_nested=True)
+    plot_model(
+        autoencoder,
+        to_file=f"{MODEL_DIR}/model_plot.png",
+        show_shapes=True,
+        expand_nested=True,
+    )
 
     # print model architecture
     autoencoder.summary(expand_nested=True)
 
     # load train and test data
     train_data = ReconstructAutoencoderDataGenerator(
-        f"{DATA_DIR}/train",
-        number_squares=MASKED_SQUARES,
-        batch_size=BATCH_SIZE
+        f"{DATA_DIR}/train", number_squares=MASKED_SQUARES, batch_size=BATCH_SIZE
     )
     test_data = ReconstructAutoencoderDataGenerator(
-        f"{DATA_DIR}/test",
-        number_squares=MASKED_SQUARES,
-        batch_size=BATCH_SIZE
+        f"{DATA_DIR}/test", number_squares=MASKED_SQUARES, batch_size=BATCH_SIZE
     )
 
     # TODO: also print a couple of layers
@@ -83,9 +86,11 @@ if __name__ == "__main__":
         print(f"First item: shape={train_sample.shape}, dtype={train_sample.dtype}")
 
         pieces = ["pawn", "knight", "bishop", "rook", "queen", "king"]
-        piece_map = ["white " + piece for piece in pieces] + \
-                    ["black " + piece for piece in pieces] + \
-                    ["castling rights", "en passant", "turn"]
+        piece_map = (
+            ["white " + piece for piece in pieces]
+            + ["black " + piece for piece in pieces]
+            + ["castling rights", "en passant", "turn"]
+        )
         print("First train position:")
         for i, piece in enumerate(piece_map):
             print(piece)
@@ -147,14 +152,14 @@ if __name__ == "__main__":
             mode="auto",
             min_delta=0.02,
             cooldown=0,
-            min_lr=1e-6
+            min_lr=1e-6,
         ),
         tf.keras.callbacks.BackupAndRestore(
             f"{MODEL_DIR}/checkpoints",
             save_freq="epoch",
             delete_checkpoint=True,
-            save_before_preemption=False
-        )
+            save_before_preemption=False,
+        ),
     ]
 
     # train model
@@ -166,7 +171,7 @@ if __name__ == "__main__":
         batch_size=BATCH_SIZE,
         shuffle=True,
         validation_data=test_data,
-        callbacks=callbacks
+        callbacks=callbacks,
     )
 
     # save

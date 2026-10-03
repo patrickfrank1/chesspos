@@ -1,6 +1,13 @@
 from datetime import datetime
 
-from pymilvus import Collection, connections, FieldSchema, CollectionSchema, DataType, SearchResult
+from pymilvus import (
+    Collection,
+    connections,
+    FieldSchema,
+    CollectionSchema,
+    DataType,
+    SearchResult,
+)
 from pymilvus import utility
 
 
@@ -9,13 +16,13 @@ class MilvusVectorStore:
         "float": {
             "dtype": DataType.FLOAT_VECTOR,
             "index_type": "IVF_FLAT",
-            "metric_type": "L2"
+            "metric_type": "L2",
         },
         "binary": {
             "dtype": DataType.BINARY_VECTOR,
             "index_type": "BIN_IVF_FLAT",
-            "metric_type": "HAMMING"
-        }
+            "metric_type": "HAMMING",
+        },
     }
     ID_FIELD = "id"
     EMBEDDING_FIELD = "embedding"
@@ -26,7 +33,7 @@ class MilvusVectorStore:
         embedding_type: str,  # float | binary
         host: str = "localhost",
         port: str = "19530",
-        collection_name: str = 'example_collection'
+        collection_name: str = "example_collection",
     ):
         self.embedding_dimensions = embedding_dimensions
         self.embedding_type = embedding_type
@@ -39,7 +46,7 @@ class MilvusVectorStore:
 
     def _connect(self):
         """Connect to the Milvus server."""
-        connections.connect(alias='default', host=self.host, port=self.port)
+        connections.connect(alias="default", host=self.host, port=self.port)
         print("Connected to Milvus")
 
     def _create_collection_if_not_exists(self):
@@ -49,14 +56,16 @@ class MilvusVectorStore:
             self.collection = Collection(name=self.collection_name)
         else:
             if self.embedding_type not in self.DTYPE_PARAMETERS.keys():
-                raise ValueError(f"Invalid embedding data type for collection {self.collection_name}.")
+                raise ValueError(
+                    f"Invalid embedding data type for collection {self.collection_name}."
+                )
             fields = [
                 FieldSchema(name=self.ID_FIELD, dtype=DataType.INT64, is_primary=True),
                 FieldSchema(
                     name=self.EMBEDDING_FIELD,
                     dtype=self.DTYPE_PARAMETERS[self.embedding_type]["dtype"],
-                    dim=self.embedding_dimensions
-                )
+                    dim=self.embedding_dimensions,
+                ),
             ]
             description = f"Collection {self.collection_name} created {datetime.now().strftime('%d/%m/%Y, %H:%M:%S')}"
             schema = CollectionSchema(fields, description=description)
@@ -74,13 +83,13 @@ class MilvusVectorStore:
 
     def create_index(self, params: dict):
         """Create an index on a specified field."""
-        index_name = f"{self.EMBEDDING_FIELD}_{params['index_type']}_{params['metric_type']}"
-        if 'params' in params.keys() and 'nlists' in params['params'].keys():
+        index_name = (
+            f"{self.EMBEDDING_FIELD}_{params['index_type']}_{params['metric_type']}"
+        )
+        if "params" in params.keys() and "nlists" in params["params"].keys():
             index_name += f"_{params['params']['nlists']}"
         self.collection.create_index(
-            index_name=index_name,
-            field_name=self.EMBEDDING_FIELD,
-            index_params=params
+            index_name=index_name, field_name=self.EMBEDDING_FIELD, index_params=params
         )
         print(f"Index {index_name} on {self.EMBEDDING_FIELD} created.")
         self.collection.load()
@@ -89,7 +98,7 @@ class MilvusVectorStore:
         params = {
             "metric_type": self.DTYPE_PARAMETERS[self.embedding_type]["metric_type"],
             "index_type": self.DTYPE_PARAMETERS[self.embedding_type]["index_type"],
-            "params": {"nlist": 1024}
+            "params": {"nlist": 1024},
         }
         self.create_index(params)
 
@@ -105,13 +114,13 @@ class MilvusVectorStore:
         self,
         query_embeddings: list[list[float]] | list[bytes],
         top_k: int = 10,
-        nprobe: int = 10
+        nprobe: int = 10,
     ) -> SearchResult:
         """Search the collection for similar embeddings."""
         search_params = {
             "metric_type": self.DTYPE_PARAMETERS[self.embedding_type]["metric_type"],
             "offset": 0,
-            "params": {"nprobe": nprobe}
+            "params": {"nprobe": nprobe},
         }
         if not self.collection:
             raise ValueError("Collection not created or loaded.")
@@ -121,7 +130,7 @@ class MilvusVectorStore:
             output_fields=[self.ID_FIELD, self.EMBEDDING_FIELD],
             param=search_params,
             limit=top_k,
-            expr=None
+            expr=None,
         )
         return search_results
 
@@ -133,6 +142,6 @@ class MilvusVectorStore:
             expr=f"{self.ID_FIELD} in [{','.join(str(id) for id in query_ids)}]",
             offset=0,
             limit=len(query_ids),
-            output_fields=[self.ID_FIELD, self.EMBEDDING_FIELD]
+            output_fields=[self.ID_FIELD, self.EMBEDDING_FIELD],
         )
         return search_results

@@ -11,7 +11,9 @@ def _increment_postfix(path: str, pattern: str) -> str:
         postfix = "000"
     else:
         # Extract the postfix numbers and find the highest one, assumes test_001.npz
-        existing_postfixes = [int(file.split("_")[-1].split(".")[0]) for file in existing_files]
+        existing_postfixes = [
+            int(file.split("_")[-1].split(".")[0]) for file in existing_files
+        ]
         highest_postfix = max(existing_postfixes)
         postfix = f"{highest_postfix + 1:03d}"
     return postfix

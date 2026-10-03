@@ -14,14 +14,14 @@ THRESHOLD_ELO = 2000.0
 
 
 def sample_position_by_ply(ply: int) -> float:
-    return min((ply/30.0**2), 1.0)
+    return min((ply / 30.0**2), 1.0)
 
 
 def sample_elo(header: pgn.Headers) -> float:
     white_elo = 1500 if header["WhiteElo"] == "?" else int(header["WhiteElo"])
     black_elo = 1500 if header["BlackElo"] == "?" else int(header["BlackElo"])
     min_elo = min(white_elo, black_elo)
-    return 1.0 / (1.0 + math.exp(-0.005*(min_elo - THRESHOLD_ELO)))
+    return 1.0 / (1.0 + math.exp(-0.005 * (min_elo - THRESHOLD_ELO)))
 
 
 def extract_board(directory: str) -> Generator[chess.Board]:
@@ -33,7 +33,7 @@ def extract_board(directory: str) -> Generator[chess.Board]:
     # iterate over all pgn files
     for file_path in pgn_files:
         print(f"Extraction from {file_path}")
-        with open(file_path, 'r') as file:
+        with open(file_path, "r") as file:
             # iterate over all games in a file
             while True:
                 header = pgn.read_headers(file)
@@ -56,5 +56,8 @@ def extract_board(directory: str) -> Generator[chess.Board]:
                         except Exception as exc:
                             print(f"Invalid move at position {i}.")
                             print(exc)
-                        if random.random() < sample_position_by_ply(i) * SUBSAMPLE_POSITIONS:
+                        if (
+                            random.random()
+                            < sample_position_by_ply(i) * SUBSAMPLE_POSITIONS
+                        ):
                             yield board

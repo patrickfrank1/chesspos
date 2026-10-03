@@ -198,24 +198,43 @@ def main() -> int:
 
     repo_name: str = _resolve(args.repo, _yaml_val(yaml_cfg, "repo_name"), None)
     if not repo_name:
-        print("Error: --repo is required (or set repo_name in YAML config)", file=sys.stderr)
+        print(
+            "Error: --repo is required (or set repo_name in YAML config)",
+            file=sys.stderr,
+        )
         return 1
 
-    data_path: str = _resolve(args.data_path, _yaml_val(yaml_cfg, "data_path"), "./data/raw")
-    batch_size: int = _resolve(args.batch_size, _yaml_val(yaml_cfg, "batch_size"), 100_000)
-    encoding: str = _resolve(args.encoding, _yaml_val(yaml_cfg, "encoding"), "token_sequence")
-    train_ratio: float = _resolve(args.train_ratio, _yaml_val(yaml_cfg, "train_ratio"), 0.95)
-    window_size: int = _resolve(args.window_size, _yaml_val(yaml_cfg, "window_size"), 10)
+    data_path: str = _resolve(
+        args.data_path, _yaml_val(yaml_cfg, "data_path"), "./data/raw"
+    )
+    batch_size: int = _resolve(
+        args.batch_size, _yaml_val(yaml_cfg, "batch_size"), 100_000
+    )
+    encoding: str = _resolve(
+        args.encoding, _yaml_val(yaml_cfg, "encoding"), "token_sequence"
+    )
+    train_ratio: float = _resolve(
+        args.train_ratio, _yaml_val(yaml_cfg, "train_ratio"), 0.95
+    )
+    window_size: int = _resolve(
+        args.window_size, _yaml_val(yaml_cfg, "window_size"), 10
+    )
     num_batches: int = _resolve(args.batches, _yaml_val(yaml_cfg, "batches"), 3)
     worker_count: int = _resolve(args.workers, _yaml_val(yaml_cfg, "worker_count"), 4)
-    memory_limit_mb: int = _resolve(args.memory, _yaml_val(yaml_cfg, "memory_limit_mb"), 4096)
+    memory_limit_mb: int = _resolve(
+        args.memory, _yaml_val(yaml_cfg, "memory_limit_mb"), 4096
+    )
     min_elo: int = _resolve(args.min_elo, _yaml_val(yaml_cfg, "min_elo"), 2000)
     min_ply: int = _resolve(args.min_ply, _yaml_val(yaml_cfg, "min_ply"), 0)
     max_ply: int | None = _resolve(args.max_ply, _yaml_val(yaml_cfg, "max_ply"), None)
-    subsample_rate: float = _resolve(args.subsample, _yaml_val(yaml_cfg, "subsample_rate"), 0.33)
+    subsample_rate: float = _resolve(
+        args.subsample, _yaml_val(yaml_cfg, "subsample_rate"), 0.33
+    )
     dry_run: bool = _resolve(args.dry_run, _yaml_val(yaml_cfg, "dry_run"), False)
     resume: bool = _resolve(args.resume, _yaml_val(yaml_cfg, "resume"), False)
-    create_card: bool = _resolve(args.create_card, _yaml_val(yaml_cfg, "create_card"), False)
+    create_card: bool = _resolve(
+        args.create_card, _yaml_val(yaml_cfg, "create_card"), False
+    )
     debug: bool = _resolve(args.debug, _yaml_val(yaml_cfg, "debug"), False)
 
     sampling_filters = SamplingFilters(

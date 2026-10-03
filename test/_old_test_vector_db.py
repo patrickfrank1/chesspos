@@ -2,7 +2,10 @@ import pytest
 import numpy as np
 
 from src.search.db import MilvusVectorStore
-from src.preprocessing.board_representation import boolean_to_byte_vector, byte_to_boolean_vector
+from src.preprocessing.board_representation import (
+    boolean_to_byte_vector,
+    byte_to_boolean_vector,
+)
 
 
 def generate_embeddings(num_embeddings, dimensions, embedding_type):
@@ -13,9 +16,6 @@ def generate_embeddings(num_embeddings, dimensions, embedding_type):
         raw_vector = (np.random.random((num_embeddings, dimensions)) > 0.5).astype(int)
         binary_vector = boolean_to_byte_vector(raw_vector)
         return raw_vector, binary_vector
-
-
-
 
 
 @pytest.fixture(params=["float", "binary"])
@@ -30,19 +30,27 @@ def test_milvus_vector_store_insert_and_search(milvus_store: MilvusVectorStore):
     top_k = 5
     dimensions = 128
     example_ids = np.random.randint(1, 100, size=(40))
-    example_vectors, example_embeddings = generate_embeddings(40, dimensions, milvus_store.embedding_type)
+    example_vectors, example_embeddings = generate_embeddings(
+        40, dimensions, milvus_store.embedding_type
+    )
     milvus_store.insert_embeddings([example_ids[:20], example_embeddings[:20]])
-    milvus_store.insert_embeddings([
-        {"id": id, "embedding": embedding}
-        for id, embedding in zip(example_ids[20:], example_embeddings[20:])
-    ])
+    milvus_store.insert_embeddings(
+        [
+            {"id": id, "embedding": embedding}
+            for id, embedding in zip(example_ids[20:], example_embeddings[20:])
+        ]
+    )
 
     # Create index
     milvus_store.create_default_index()
 
     # Search for similar embeddings
-    query_vectors, query_embeddings = generate_embeddings(2, dimensions, milvus_store.embedding_type)
-    search_results = milvus_store.search_by_embeddings(query_embeddings=query_embeddings, top_k=top_k)
+    query_vectors, query_embeddings = generate_embeddings(
+        2, dimensions, milvus_store.embedding_type
+    )
+    search_results = milvus_store.search_by_embeddings(
+        query_embeddings=query_embeddings, top_k=top_k
+    )
 
     # Plausibility check for results
     assert len(search_results) == 2
@@ -63,8 +71,12 @@ def test_milvus_vector_store_insert_and_search(milvus_store: MilvusVectorStore):
     result_vector = result_fields["embedding"]
     if milvus_store.embedding_type == "binary":
         assert isinstance(result_fields["embedding"], bytes)
-        result_vector = byte_to_boolean_vector(result_fields["embedding"], original_shape=(1, dimensions))[0]
-    result_in_examples = np.all(np.isclose(np.array(example_vectors), np.array(result_vector)), axis=1)  # broadcasting!
+        result_vector = byte_to_boolean_vector(
+            result_fields["embedding"], original_shape=(1, dimensions)
+        )[0]
+    result_in_examples = np.all(
+        np.isclose(np.array(example_vectors), np.array(result_vector)), axis=1
+    )  # broadcasting!
     assert np.any(result_in_examples)
 
 
@@ -72,12 +84,16 @@ def test_milvus_vector_store_search_by_ids(milvus_store: MilvusVectorStore):
     # Insert some example embeddings
     dimensions = 128
     example_ids = np.random.randint(1, 100, size=(4))
-    example_vectors, example_embeddings = generate_embeddings(4, dimensions, milvus_store.embedding_type)
+    example_vectors, example_embeddings = generate_embeddings(
+        4, dimensions, milvus_store.embedding_type
+    )
     milvus_store.insert_embeddings([example_ids[:2], example_embeddings[:2]])
-    milvus_store.insert_embeddings([
-        {"id": id, "embedding": embedding}
-        for id, embedding in zip(example_ids[2:], example_embeddings[2:])
-    ])
+    milvus_store.insert_embeddings(
+        [
+            {"id": id, "embedding": embedding}
+            for id, embedding in zip(example_ids[2:], example_embeddings[2:])
+        ]
+    )
 
     # Create index
     milvus_store.create_default_index()
@@ -92,6 +108,10 @@ def test_milvus_vector_store_search_by_ids(milvus_store: MilvusVectorStore):
         result_vector = result["embedding"]
         if milvus_store.embedding_type == "binary":
             assert isinstance(result["embedding"][0], bytes)
-            result_vector = byte_to_boolean_vector(result["embedding"][0], original_shape=(1, dimensions))[0]
-        ground_truth = np.array(example_vectors)[np.argwhere(example_ids == result["id"])]
+            result_vector = byte_to_boolean_vector(
+                result["embedding"][0], original_shape=(1, dimensions)
+            )[0]
+        ground_truth = np.array(example_vectors)[
+            np.argwhere(example_ids == result["id"])
+        ]
         assert np.allclose(ground_truth, np.array(result_vector))

@@ -14,7 +14,7 @@ class AutoencoderDataGenerator(tf.keras.utils.Sequence):
         self.current_file = self.files.pop()
         self.visited_files = []
         self.train_positions = None
-        self.label_positions = np.load(self.current_file)['data'].astype(self.dtype)
+        self.label_positions = np.load(self.current_file)["data"].astype(self.dtype)
         self.batch_size = batch_size
 
     def __len__(self) -> int:
@@ -38,13 +38,13 @@ class AutoencoderDataGenerator(tf.keras.utils.Sequence):
             self.files = self.visited_files
             self.visited_files = []
         self.current_file = self.files.pop()
-        self.label_positions = np.load(self.current_file)['data'].astype(self.dtype)
+        self.label_positions = np.load(self.current_file)["data"].astype(self.dtype)
 
     def total_dataset_length(self) -> int:
         # Calculate the total number of batches based on the number of samples in all files and the batch size.
         number_samples = 0
         for file_path in file_paths_from_directory(self.directory_path, ".npz"):
-            number_samples += len(np.load(file_path)['data'])
+            number_samples += len(np.load(file_path)["data"])
         return number_samples
 
 
@@ -69,10 +69,12 @@ class ReconstructAutoencoderDataGenerator(AutoencoderDataGenerator):
     def _mask_tensor(self) -> None:
         squares = np.arange(64)
         num_positions = len(self.label_positions)
-        tmp_positions: np.ndarray = self.label_positions.reshape((num_positions, 64, 15))
+        tmp_positions: np.ndarray = self.label_positions.reshape(
+            (num_positions, 64, 15)
+        )
         for i in range(num_positions):
             np.random.shuffle(squares)
-            mask_squares = squares[:self.number_squares]
+            mask_squares = squares[: self.number_squares]
             tmp_positions[i, mask_squares, :] = self.mask_token
         self.train_positions = tmp_positions.reshape(num_positions, 8, 8, 15)
 
@@ -82,6 +84,6 @@ class ReconstructAutoencoderDataGenerator(AutoencoderDataGenerator):
         tokens = np.arange(69)
         for i in range(num_positions):
             np.random.shuffle(tokens)
-            mask_squares = tokens[:self.number_squares]
+            mask_squares = tokens[: self.number_squares]
             tmp_positions[i, mask_squares] = self.mask_token
         self.train_positions = tmp_positions
