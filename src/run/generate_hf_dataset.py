@@ -240,10 +240,12 @@ def main() -> int:
         dry_run=dry_run,
     ):
         batches_completed += 1
-        total_positions += len(train_data) + len(test_data)
+        train_count = train_data.count()
+        test_count = test_data.count()
+        total_positions += train_count + test_count
         print(
             f"Batch {batches_completed}/{num_batches}: "
-            f"train={len(train_data)}, test={len(test_data)}"
+            f"train={train_count}, test={test_count}"
         )
 
     if create_card and not dry_run:
@@ -252,7 +254,7 @@ def main() -> int:
         print("Dataset card pushed to HuggingFace Hub")
 
     print(
-        f"\nComplete! Generated {total_positions} positions in {batches_completed} batches"
+        f"\nComplete! Generated {total_positions} games in {batches_completed} batches"
     )
     return 0
 

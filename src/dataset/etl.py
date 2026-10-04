@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import os
 from dataclasses import dataclass, field
 from functools import partial
 from typing import Iterator
@@ -115,12 +116,21 @@ class ChessPositionDataset:
         resume: bool = False,
         dry_run: bool = False,
     ) -> Iterator[tuple[ray.data.Dataset, ray.data.Dataset]]:
-        ray.init(
-            num_cpus=self.preprocessing_config.worker_count,
-            object_store_memory=self.preprocessing_config.memory_limit_mb * 1024 * 1024,
-            ignore_reinit_error=True,
-            local_mode=self.preprocessing_config.debug,
-        )
+        ray_kwargs: dict = {
+            "ignore_reinit_error": True,
+            "local_mode": self.preprocessing_config.debug,
+        }
+        if os.environ.get("RAY_ADDRESS") is None:
+            ray_kwargs["num_cpus"] = self.preprocessing_config.worker_count
+            ray_kwargs["object_store_memory"] = (
+                self.preprocessing_config.memory_limit_mb * 1024 * 1024
+            )
+        try:
+            ray.init(**ray_kwargs)
+        except ValueError:
+            ray_kwargs.pop("num_cpus", None)
+            ray_kwargs.pop("object_store_memory", None)
+            ray.init(**ray_kwargs)
 
         try:
             file_paths = file_paths_from_directory(
