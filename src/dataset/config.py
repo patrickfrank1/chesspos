@@ -4,14 +4,14 @@ import json
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
-from src.dataset.types import EncodingFormat, TOKEN_SEQUENCE
+from src.dataset.types import EncodingFormat
 
 
 @dataclass
 class DatasetConfig:
     repo_name: str
     batch_size: int = 100_000
-    encoding: EncodingFormat = TOKEN_SEQUENCE
+    encoding: EncodingFormat | None = None
     train_ratio: float = 0.95
     data_path: str = "./data/raw"
 
@@ -96,7 +96,7 @@ class PreprocessingConfig:
 
 @dataclass
 class EncoderConfig:
-    encoding_format: EncodingFormat = TOKEN_SEQUENCE
+    encoding_format: EncodingFormat | None = None
     window_size: int = 10
 
     def __post_init__(self):

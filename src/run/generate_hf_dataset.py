@@ -99,7 +99,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--encoding",
         type=str,
-        choices=["token_sequence", "tensor", "bitboard"],
         default=None,
         help="Position encoding format",
     )
@@ -210,9 +209,7 @@ def main() -> int:
     batch_size: int = _resolve(
         args.batch_size, _yaml_val(yaml_cfg, "batch_size"), 100_000
     )
-    encoding: str = _resolve(
-        args.encoding, _yaml_val(yaml_cfg, "encoding"), "token_sequence"
-    )
+    encoding: str = _resolve(args.encoding, _yaml_val(yaml_cfg, "encoding"), None)
     train_ratio: float = _resolve(
         args.train_ratio, _yaml_val(yaml_cfg, "train_ratio"), 0.95
     )

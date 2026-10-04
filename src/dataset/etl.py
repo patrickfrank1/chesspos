@@ -20,7 +20,7 @@ from src.dataset.config import (
 )
 from src.dataset.position_encoder import get_encoder
 from src.dataset.pgn_processor import PGNProcessor
-from src.dataset.types import ENCODING_SHAPES, EncodingFormat
+from src.dataset.types import EncodingFormat
 from src.utils.fileops import file_paths_from_directory
 
 
@@ -180,8 +180,6 @@ class ChessPositionDataset:
     def create_dataset_card(self) -> str:
         features = {
             "encoded": {
-                "shape": ENCODING_SHAPES[self.dataset_config.encoding],
-                "dtype": "int8",
                 "description": "Encoded chess position",
             },
             "ply": {
@@ -195,7 +193,7 @@ class ChessPositionDataset:
 
 dataset = load_dataset("{self.dataset_config.repo_name}", split="train")
 for sample in dataset:
-    encoded = sample["encoded"]  # {ENCODING_SHAPES[self.dataset_config.encoding]}
+    encoded = sample["encoded"]
     ply = sample["ply"]
 '''
 

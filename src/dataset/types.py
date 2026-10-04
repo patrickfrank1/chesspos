@@ -83,13 +83,3 @@ class EncodedBatch:
 
 
 EncodingFormat = str
-
-TOKEN_SEQUENCE: EncodingFormat = "token_sequence"
-TENSOR: EncodingFormat = "tensor"
-BITBOARD: EncodingFormat = "bitboard"
-
-ENCODING_SHAPES: dict[EncodingFormat, tuple[int, ...]] = {
-    TOKEN_SEQUENCE: (69,),
-    TENSOR: (8, 8, 15),
-    BITBOARD: (773,),
-}
