@@ -20,7 +20,7 @@ def load_yaml_config(path: str) -> dict[str, Any]:
 
 
 def _get_nested(data: dict[str, Any], key: str) -> Any:
-    flat_fields = {"batch_size", "train_ratio", "repo_name", "data_path"}
+    flat_fields = {"batch_size", "train_ratio", "repo_name", "data_path", "output_dir"}
     runtime_fields = {"num_batches", "dry_run", "resume", "create_card"}
     preprocessing_fields = {"worker_count", "memory_limit_mb", "debug"}
     sampling_fields = {"tiers", "min_time_control_seconds"}
@@ -95,6 +95,12 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         default=None,
         help="Generate locally without pushing to HuggingFace Hub",
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=str,
+        default=None,
+        help="Directory to write parquet shards to in dry-run mode",
     )
     parser.add_argument(
         "--resume",
@@ -176,6 +182,9 @@ def main() -> int:
         args.memory, _yaml_val(yaml_cfg, "memory_limit_mb"), 4096
     )
     dry_run: bool = _resolve(args.dry_run, _yaml_val(yaml_cfg, "dry_run"), False)
+    output_dir: str | None = _resolve(
+        args.output_dir, _yaml_val(yaml_cfg, "output_dir"), None
+    )
     resume: bool = _resolve(args.resume, _yaml_val(yaml_cfg, "resume"), False)
     create_card: bool = _resolve(
         args.create_card, _yaml_val(yaml_cfg, "create_card"), False
@@ -230,6 +239,8 @@ def main() -> int:
 
     if dry_run:
         print("DRY RUN: Data will not be pushed to HuggingFace Hub")
+        if output_dir:
+            print(f"Writing parquet shards to: {output_dir}")
 
     batches_completed = 0
     total_positions = 0
@@ -238,6 +249,7 @@ def main() -> int:
         num_batches=num_batches,
         resume=resume,
         dry_run=dry_run,
+        output_dir=output_dir,
     ):
         batches_completed += 1
         train_count = train_data.count()

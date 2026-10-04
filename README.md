@@ -92,6 +92,7 @@ Precedence: **CLI args > YAML file > defaults**.
 | `train_ratio` | `--train-ratio` | `0.95` | Train/test split ratio |
 | `num_batches` | `--batches` | `3` | Number of batches to generate |
 | `dry_run` | `--dry-run` | `false` | Generate locally without pushing |
+| `output_dir` | `--output-dir` | *(none)* | Write parquet shards here in dry-run mode |
 | `resume` | `--resume` | `false` | Continue from last batch on Hub |
 | `create_card` | `--create-card` | `false` | Push a dataset card |
 | `preprocessing.worker_count` | `--workers` | `4` | Ray parallel workers |
@@ -154,6 +155,35 @@ uv run ray job submit --address http://127.0.0.1:8265 -- \
 The job then appears in the dashboard's *Jobs* tab, including stdout/stderr,
 even if the submitting terminal is closed. Stop the cluster afterwards with
 `uv run ray stop`.
+
+#### Full local run over `data/raw` as a Ray job
+
+Example: process everything in `data/raw/` in a single batch and write the
+Parquet shards locally (dry run, no Hub push):
+
+```bash
+uv run ray job submit --address http://127.0.0.1:8265 \
+  --runtime-env-json '{"working_dir": ".", "excludes": ["data", "test", "docs", "notebooks"]}' \
+  -- python -m src.run.generate_hf_dataset \
+    --repo local/full-run \
+    --data-path "$PWD/data/raw" \
+    --output-dir "$PWD/data/processed" \
+    --dry-run --batches 1 --batch-size 5000000 --workers 12
+```
+
+Two details matter here:
+
+- **`--runtime-env-json` with `excludes`:** job mode packages the working
+  directory and uploads it to the cluster, with a 500 MiB limit for a local
+  `working_dir`. `data/` (several GB) must be excluded from that package.
+- **Absolute paths for `--data-path` and `--output-dir`:** the job runs in an
+  uploaded *copy* of the repo, not in the real directory, so relative paths
+  point into the copy. Absolute paths read/write the real `data/` on the
+  machine (for a single-node local cluster this is what you want).
+
+A submitted job keeps running even if the submitting terminal is closed;
+stream the logs with `uv run ray job logs --follow <job-id>` or watch them in
+the dashboard.
 
 Known issue: `--debug` (Ray `local_mode=True`) currently fails at `ray.init`
 on Ray 2.54 with a `working_dir` URI validation error. Run without `--debug`

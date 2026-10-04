@@ -115,6 +115,7 @@ class ChessPositionDataset:
         num_batches: int = 1,
         resume: bool = False,
         dry_run: bool = False,
+        output_dir: str | None = None,
     ) -> Iterator[tuple[ray.data.Dataset, ray.data.Dataset]]:
         ray_kwargs: dict = {
             "ignore_reinit_error": True,
@@ -143,6 +144,8 @@ class ChessPositionDataset:
 
                 if not dry_run:
                     self._push_batch(train_ds, test_ds, batch_num)
+                elif output_dir:
+                    self._write_batch(train_ds, test_ds, batch_num, output_dir)
 
                 yield train_ds, test_ds
         finally:
@@ -223,6 +226,39 @@ class ChessPositionDataset:
             )
 
         import shutil
+
+        shutil.rmtree(temp_dir)
+
+    def _write_batch(
+        self,
+        train_ds: ray.data.Dataset,
+        test_ds: ray.data.Dataset,
+        batch_num: int,
+        output_dir: str,
+    ) -> None:
+        import shutil
+        import tempfile
+        from pathlib import Path
+
+        temp_dir = Path(tempfile.mkdtemp())
+
+        train_path = temp_dir / "train"
+        test_path = temp_dir / "test"
+        train_path.mkdir()
+        test_path.mkdir()
+
+        train_ds.write_parquet(str(train_path))
+        test_ds.write_parquet(str(test_path))
+
+        out = Path(output_dir)
+        for split, temp_split in (("train", train_path), ("test", test_path)):
+            split_dir = out / split
+            split_dir.mkdir(parents=True, exist_ok=True)
+            for pq_file in temp_split.glob("*.parquet"):
+                shutil.move(
+                    str(pq_file),
+                    str(split_dir / f"batch_{batch_num:04d}_{pq_file.name}"),
+                )
 
         shutil.rmtree(temp_dir)
 
