@@ -1,9 +1,4 @@
-from src.dataset.config import DatasetConfig, EncoderConfig, PreprocessingConfig
-from src.dataset.position_encoder import (
-    PositionEncoder,
-    get_encoder,
-    register_encoder,
-)
+from src.dataset.config import DatasetConfig, PreprocessingConfig
 from src.dataset.token_stream import (
     CASTLE_BASE,
     CLS,
@@ -18,7 +13,6 @@ from src.dataset.token_stream import (
     TokenStreamEncoder,
     pack_stream,
 )
-from src.dataset.types import TOKEN_STREAM
 from src.dataset.pgn_processor import GameRecord, PGNProcessor
 from src.dataset.huggingface_client import HuggingFaceClient
 from src.dataset.etl import ChessPositionDataset
@@ -30,23 +24,18 @@ __all__ = [
     "ChessPositionDataset",
     "DatasetConfig",
     "EP_BASE",
-    "EncoderConfig",
     "GameRecord",
     "HuggingFaceClient",
     "MASK",
     "PAD",
     "PGNProcessor",
     "PIECE_SQUARE_BASE",
-    "PositionEncoder",
     "PreprocessingConfig",
     "SEP",
-    "TOKEN_STREAM",
     "TURN_BLACK",
     "TURN_WHITE",
     "TokenStreamEncoder",
     "TrainingDataGenerator",
     "VOCAB_SIZE",
-    "get_encoder",
     "pack_stream",
-    "register_encoder",
 ]

@@ -14,13 +14,11 @@ import ray.data
 from src.dataset.huggingface_client import HuggingFaceClient
 from src.dataset.config import (
     DatasetConfig,
-    EncoderConfig,
     PreprocessingConfig,
     SamplingFilters,
 )
-from src.dataset.position_encoder import get_encoder
 from src.dataset.pgn_processor import PGNProcessor
-from src.dataset.types import EncodingFormat
+from src.dataset.token_stream import TokenStreamEncoder
 from src.utils.fileops import file_paths_from_directory
 
 
@@ -30,7 +28,6 @@ class ChessPositionDataset:
     preprocessing_config: PreprocessingConfig = field(
         default_factory=PreprocessingConfig
     )
-    encoder_config: EncoderConfig = field(default_factory=EncoderConfig)
     hf_client: HuggingFaceClient | None = None
 
     def __post_init__(self):
@@ -63,8 +60,8 @@ class ChessPositionDataset:
         return positions
 
     @staticmethod
-    def _encode_batch(batch: dict, encoding_format: EncodingFormat) -> dict:
-        encoder = get_encoder(encoding_format)
+    def _encode_batch(batch: dict) -> dict:
+        encoder = TokenStreamEncoder()
         fens = batch["fen"]
         boards = [chess.Board(fen) for fen in fens]
         encoded, lengths = encoder.encode_batch(boards)
@@ -112,18 +109,16 @@ class ChessPositionDataset:
         batch_num: int,
     ) -> tuple[ray.data.Dataset, ray.data.Dataset]:
         sampling_filters = self.preprocessing_config.sampling_filters
-        encoding_format = self.dataset_config.encoding
         batch_size = self.dataset_config.batch_size
         train_ratio = self.dataset_config.train_ratio
 
         dataset = ray.data.read_binary_files(file_paths, include_paths=True)
 
         extract_fn = partial(self._extract_positions, sampling_filters=sampling_filters)
-        encode_fn = partial(self._encode_batch, encoding_format=encoding_format)
 
         positions = dataset.flat_map(extract_fn)
         limited = positions.limit(batch_size)
-        encoded = limited.map_batches(encode_fn, batch_format="numpy")
+        encoded = limited.map_batches(self._encode_batch, batch_format="numpy")
         train_ds, test_ds = encoded.train_test_split(train_ratio)
 
         return train_ds, test_ds

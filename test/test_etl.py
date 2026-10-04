@@ -9,12 +9,10 @@ import ray.data
 
 from src.dataset.config import (
     DatasetConfig,
-    EncoderConfig,
     PreprocessingConfig,
     SamplingFilters,
 )
 from src.dataset.etl import ChessPositionDataset
-from src.dataset.types import TOKEN_STREAM
 
 
 SAMPLE_PGN = b"""[Event "Test"]
@@ -56,17 +54,11 @@ def preprocessing_config():
 
 
 @pytest.fixture
-def encoder_config():
-    return EncoderConfig(window_size=5)
-
-
-@pytest.fixture
-def dataset(dataset_config, preprocessing_config, encoder_config):
+def dataset(dataset_config, preprocessing_config):
     with patch.object(ChessPositionDataset, "__post_init__", lambda self: None):
         return ChessPositionDataset(
             dataset_config=dataset_config,
             preprocessing_config=preprocessing_config,
-            encoder_config=encoder_config,
         )
 
 
@@ -106,7 +98,7 @@ class TestChessPositionDataset:
             "black_elo": np.array([2000, 2000, 2000], dtype=np.int32),
             "result": ["1-0", "1/2-1/2", "0-1"],
         }
-        result = ChessPositionDataset._encode_batch(batch, TOKEN_STREAM)
+        result = ChessPositionDataset._encode_batch(batch)
         assert result["encoded"].shape == (3, 34)
         assert result["encoded"].dtype == np.int16
         np.testing.assert_array_equal(result["length"], [34, 34, 34])

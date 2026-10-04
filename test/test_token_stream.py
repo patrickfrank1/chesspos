@@ -4,7 +4,6 @@ import chess
 import numpy as np
 import pytest
 
-from src.dataset.position_encoder import get_encoder
 from src.dataset.token_stream import (
     CASTLE_BASE,
     CLS,
@@ -20,7 +19,6 @@ from src.dataset.token_stream import (
     pack_stream,
     piece_square_id,
 )
-from src.dataset.types import TOKEN_STREAM
 
 
 @pytest.fixture
@@ -41,9 +39,6 @@ def random_game_boards(rng: random.Random, max_plies: int = 60) -> list[chess.Bo
 
 
 class TestVocabulary:
-    def test_registered_in_registry(self):
-        assert isinstance(get_encoder(TOKEN_STREAM), TokenStreamEncoder)
-
     def test_special_token_values(self):
         assert (PAD, MASK, SEP, CLS) == (0, 1, 2, 3)
         assert (TURN_WHITE, TURN_BLACK) == (4, 5)

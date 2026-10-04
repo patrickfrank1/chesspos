@@ -5,9 +5,6 @@ from dataclasses import dataclass
 import chess
 import numpy as np
 
-from src.dataset.position_encoder import PositionEncoder
-from src.dataset.types import TOKEN_STREAM
-
 PAD = 0
 MASK = 1
 SEP = 2
@@ -103,10 +100,7 @@ def parse_ep_token(token: int) -> int:
 
 
 @dataclass
-class TokenStreamEncoder(PositionEncoder):
-    encoding_format = TOKEN_STREAM
-    output_shape = None
-
+class TokenStreamEncoder:
     def encode(self, board: chess.Board) -> np.ndarray:
         tokens = [TURN_WHITE if board.turn else TURN_BLACK, castle_token(board)]
         ep = ep_token(board)

@@ -4,14 +4,11 @@ import json
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
-from src.dataset.types import EncodingFormat, TOKEN_STREAM
-
 
 @dataclass
 class DatasetConfig:
     repo_name: str
     batch_size: int = 100_000
-    encoding: EncodingFormat = TOKEN_STREAM
     train_ratio: float = 0.95
     data_path: str = "./data/raw"
 
@@ -90,30 +87,5 @@ class PreprocessingConfig:
         return asdict(self)
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "EncoderConfig":
-        return cls(**data)
-
-
-@dataclass
-class EncoderConfig:
-    encoding_format: EncodingFormat = TOKEN_STREAM
-    window_size: int = 10
-
-    def __post_init__(self):
-        if self.window_size <= 0:
-            raise ValueError("window_size must be positive")
-
-    def to_json(self) -> str:
-        return json.dumps(asdict(self))
-
-    @classmethod
-    def from_json(cls, json_str: str) -> "EncoderConfig":
-        data = json.loads(json_str)
-        return cls(**data)
-
-    def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
-
-    @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "EncoderConfig":
+    def from_dict(cls, data: dict[str, Any]) -> "PreprocessingConfig":
         return cls(**data)

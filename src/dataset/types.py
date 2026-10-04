@@ -1,21 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Iterator, Protocol, runtime_checkable
+from typing import Iterator
 
 import chess
-import numpy as np
-
-if TYPE_CHECKING:
-    pass
-
-
-@runtime_checkable
-class PositionEncoderProtocol(Protocol):
-    def encode(self, board: chess.Board) -> np.ndarray: ...
-    def encode_batch(self, boards: list[chess.Board]) -> np.ndarray: ...
-    def decode(self, data: np.ndarray) -> chess.Board: ...
-    def decode_batch(self, data: np.ndarray) -> list[chess.Board]: ...
 
 
 @dataclass
@@ -70,18 +58,3 @@ class GameRecord:
 
     def __len__(self) -> int:
         return len(self.positions)
-
-
-@dataclass
-class EncodedBatch:
-    data: np.ndarray
-    encoding_format: str
-    metadata: list[dict] = field(default_factory=list)
-
-    def __len__(self) -> int:
-        return len(self.data)
-
-
-EncodingFormat = str
-
-TOKEN_STREAM: EncodingFormat = "token_stream"
