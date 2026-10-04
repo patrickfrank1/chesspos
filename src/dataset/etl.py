@@ -15,7 +15,7 @@ from src.dataset.huggingface_client import HuggingFaceClient
 from src.dataset.config import (
     DatasetConfig,
     PreprocessingConfig,
-    SamplingFilters,
+    GameSubsampling,
 )
 from src.dataset.pgn_processor import PGNProcessor
 from src.dataset.token_stream import TokenStreamEncoder
@@ -35,8 +35,8 @@ class ChessPositionDataset:
             self.hf_client = HuggingFaceClient(repo_name=self.dataset_config.repo_name)
 
     @staticmethod
-    def _extract_positions(row: dict, sampling_filters: SamplingFilters) -> list[dict]:
-        processor = PGNProcessor(sampling_filters=sampling_filters)
+    def _extract_positions(row: dict, subsampling: GameSubsampling) -> list[dict]:
+        processor = PGNProcessor(subsampling=subsampling)
         bytes_data = row["bytes"]
         positions = []
 
@@ -108,13 +108,13 @@ class ChessPositionDataset:
         file_paths: list[str],
         batch_num: int,
     ) -> tuple[ray.data.Dataset, ray.data.Dataset]:
-        sampling_filters = self.preprocessing_config.sampling_filters
+        subsampling = self.preprocessing_config.subsampling
         batch_size = self.dataset_config.batch_size
         train_ratio = self.dataset_config.train_ratio
 
         dataset = ray.data.read_binary_files(file_paths, include_paths=True)
 
-        extract_fn = partial(self._extract_positions, sampling_filters=sampling_filters)
+        extract_fn = partial(self._extract_positions, subsampling=subsampling)
 
         positions = dataset.flat_map(extract_fn)
         limited = positions.limit(batch_size)

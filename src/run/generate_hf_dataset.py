@@ -7,8 +7,9 @@ import yaml
 
 from src.dataset.config import (
     DatasetConfig,
+    GameSubsampleTier,
+    GameSubsampling,
     PreprocessingConfig,
-    SamplingFilters,
 )
 from src.dataset.etl import ChessPositionDataset
 
@@ -22,7 +23,7 @@ def _get_nested(data: dict[str, Any], key: str) -> Any:
     flat_fields = {"batch_size", "train_ratio", "repo_name", "data_path"}
     runtime_fields = {"num_batches", "dry_run", "resume", "create_card"}
     preprocessing_fields = {"worker_count", "memory_limit_mb", "debug"}
-    sampling_fields = {"min_elo", "min_ply", "max_ply", "subsample_rate"}
+    sampling_fields = {"tiers"}
 
     if key in flat_fields:
         return data.get(key)
@@ -114,30 +115,6 @@ def parse_args() -> argparse.Namespace:
         help="Memory limit per worker in MB",
     )
     parser.add_argument(
-        "--min-elo",
-        type=int,
-        default=None,
-        help="Minimum ELO for position sampling",
-    )
-    parser.add_argument(
-        "--min-ply",
-        type=int,
-        default=None,
-        help="Minimum ply to start sampling",
-    )
-    parser.add_argument(
-        "--max-ply",
-        type=int,
-        default=None,
-        help="Maximum ply for sampling",
-    )
-    parser.add_argument(
-        "--subsample",
-        type=float,
-        default=None,
-        help="Position subsampling rate",
-    )
-    parser.add_argument(
         "--create-card",
         action="store_true",
         default=None,
@@ -198,12 +175,6 @@ def main() -> int:
     memory_limit_mb: int = _resolve(
         args.memory, _yaml_val(yaml_cfg, "memory_limit_mb"), 4096
     )
-    min_elo: int = _resolve(args.min_elo, _yaml_val(yaml_cfg, "min_elo"), 2000)
-    min_ply: int = _resolve(args.min_ply, _yaml_val(yaml_cfg, "min_ply"), 0)
-    max_ply: int | None = _resolve(args.max_ply, _yaml_val(yaml_cfg, "max_ply"), None)
-    subsample_rate: float = _resolve(
-        args.subsample, _yaml_val(yaml_cfg, "subsample_rate"), 0.33
-    )
     dry_run: bool = _resolve(args.dry_run, _yaml_val(yaml_cfg, "dry_run"), False)
     resume: bool = _resolve(args.resume, _yaml_val(yaml_cfg, "resume"), False)
     create_card: bool = _resolve(
@@ -211,11 +182,17 @@ def main() -> int:
     )
     debug: bool = _resolve(args.debug, _yaml_val(yaml_cfg, "debug"), False)
 
-    sampling_filters = SamplingFilters(
-        min_elo=min_elo,
-        min_ply=min_ply,
-        max_ply=max_ply,
-        subsample_rate=subsample_rate,
+    tiers_yaml = _yaml_val(yaml_cfg, "tiers")
+    if tiers_yaml is not None:
+        subsampling = GameSubsampling.from_dict({"tiers": tiers_yaml})
+    else:
+        subsampling = GameSubsampling()
+
+    preprocessing_config = PreprocessingConfig(
+        worker_count=worker_count,
+        memory_limit_mb=memory_limit_mb,
+        subsampling=subsampling,
+        debug=debug,
     )
 
     dataset_config = DatasetConfig(
@@ -223,13 +200,6 @@ def main() -> int:
         batch_size=batch_size,
         train_ratio=train_ratio,
         data_path=data_path,
-    )
-
-    preprocessing_config = PreprocessingConfig(
-        worker_count=worker_count,
-        memory_limit_mb=memory_limit_mb,
-        sampling_filters=sampling_filters,
-        debug=debug,
     )
 
     dataset = ChessPositionDataset(
@@ -241,7 +211,10 @@ def main() -> int:
     print(f"Data path: {data_path}")
     print(f"Batch size: {batch_size}")
     print(f"Workers: {worker_count}, Memory: {memory_limit_mb}MB")
-    print(f"ELO filter: >= {min_elo}, Subsample: {subsample_rate}")
+    print(
+        "Game subsampling tiers: "
+        + ", ".join(f">={t.min_elo}: {t.rate:.0%}" for t in subsampling.tiers)
+    )
 
     if dry_run:
         print("DRY RUN: Data will not be pushed to HuggingFace Hub")

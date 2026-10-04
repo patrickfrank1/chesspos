@@ -1,14 +1,19 @@
 import random
 import tempfile
 from pathlib import Path
+from unittest.mock import patch
 
 import chess
 import chess.pgn
 import pytest
 
-from src.dataset.config import SamplingFilters
+from src.dataset.config import GameSubsampling, GameSubsampleTier
 from src.dataset.pgn_processor import PGNProcessor
 from src.dataset.types import GameRecord, GameMetadata, PositionRecord
+
+
+def keep_all() -> GameSubsampling:
+    return GameSubsampling(tiers=[GameSubsampleTier(min_elo=0, rate=1.0)])
 
 
 SAMPLE_PGN_60 = b"""[Event "Test Match"]
@@ -46,18 +51,18 @@ class TestPGNProcessor:
         random.seed(42)
 
     def test_process_file_returns_game_records(self, temp_pgn_file):
-        processor = PGNProcessor(SamplingFilters(min_elo=0, subsample_rate=1.0))
+        processor = PGNProcessor(keep_all())
         games = list(processor.process_file(temp_pgn_file))
         assert len(games) >= 1
         assert all(isinstance(g, GameRecord) for g in games)
 
     def test_extract_game_returns_positions(self, temp_pgn_file):
-        processor = PGNProcessor(SamplingFilters(min_elo=0, subsample_rate=1.0))
+        processor = PGNProcessor(keep_all())
         games = list(processor.process_file(temp_pgn_file))
         assert all(len(g.positions) > 0 for g in games)
 
     def test_extract_game_metadata(self, temp_pgn_file):
-        processor = PGNProcessor(SamplingFilters(min_elo=0, subsample_rate=1.0))
+        processor = PGNProcessor(keep_all())
         games = list(processor.process_file(temp_pgn_file))
 
         first_game = games[0]
@@ -66,20 +71,20 @@ class TestPGNProcessor:
         assert first_game.metadata.result == "1-0"
         assert first_game.metadata.opening == "Italian Game"
 
-    def test_sampling_filters_by_elo(self, temp_pgn_file):
-        filters = SamplingFilters(min_elo=2500, subsample_rate=1.0)
-        processor = PGNProcessor(sampling_filters=filters)
+    def test_subsampling_drops_weak_games(self, temp_pgn_file):
+        filters = GameSubsampling(tiers=[GameSubsampleTier(min_elo=2500, rate=1.0)])
+        processor = PGNProcessor(subsampling=filters)
         games = list(processor.process_file(temp_pgn_file))
         assert len(games) == 0
 
-    def test_sampling_filters_allows_games(self, temp_pgn_file):
-        filters = SamplingFilters(min_elo=0, subsample_rate=1.0)
-        processor = PGNProcessor(sampling_filters=filters)
+    def test_subsampling_allows_games(self, temp_pgn_file):
+        filters = keep_all()
+        processor = PGNProcessor(subsampling=filters)
         games = list(processor.process_file(temp_pgn_file))
         assert len(games) >= 1
 
     def test_position_records_have_ply(self, temp_pgn_file):
-        processor = PGNProcessor(SamplingFilters(min_elo=0, subsample_rate=1.0))
+        processor = PGNProcessor(keep_all())
         games = list(processor.process_file(temp_pgn_file))
 
         for game in games:
@@ -88,7 +93,7 @@ class TestPGNProcessor:
                 assert pos.ply >= 0
 
     def test_position_records_have_board(self, temp_pgn_file):
-        processor = PGNProcessor(SamplingFilters(min_elo=0, subsample_rate=1.0))
+        processor = PGNProcessor(keep_all())
         games = list(processor.process_file(temp_pgn_file))
 
         for game in games:
@@ -96,7 +101,7 @@ class TestPGNProcessor:
                 assert isinstance(pos.board, chess.Board)
 
     def test_process_directory(self, temp_pgn_directory):
-        processor = PGNProcessor(SamplingFilters(min_elo=0, subsample_rate=1.0))
+        processor = PGNProcessor(keep_all())
         games = list(processor.process_directory(temp_pgn_directory))
         assert len(games) == 1
 
@@ -110,9 +115,77 @@ class TestPGNProcessor:
         assert all(len(w) == 5 for w in windows)
 
     def test_game_record_iteration(self, temp_pgn_file):
-        processor = PGNProcessor(SamplingFilters(min_elo=0, subsample_rate=1.0))
+        processor = PGNProcessor(keep_all())
         games = list(processor.process_file(temp_pgn_file))
 
         for game in games:
             positions = list(game)
             assert len(positions) == len(game.positions)
+
+
+class TestGameSubsampling:
+    def test_match_tier_strictest_qualifying_wins(self):
+        processor = PGNProcessor()
+        assert (
+            processor._match_tier(GameMetadata(white_elo=2600, black_elo=2550)).min_elo
+            == 2500
+        )
+        assert (
+            processor._match_tier(GameMetadata(white_elo=2700, black_elo=2300)).min_elo
+            == 2200
+        )
+        assert (
+            processor._match_tier(GameMetadata(white_elo=1900, black_elo=1850)).min_elo
+            == 1800
+        )
+        assert (
+            processor._match_tier(GameMetadata(white_elo=1500, black_elo=1200)).min_elo
+            == 0
+        )
+
+    def test_match_tier_missing_ratings_fall_to_catch_all(self):
+        processor = PGNProcessor()
+        tier = processor._match_tier(GameMetadata(white_elo=None, black_elo=2600))
+        assert tier is not None
+        assert tier.min_elo == 0
+
+    def test_no_matching_tier_drops_game(self):
+        processor = PGNProcessor(
+            GameSubsampling(tiers=[GameSubsampleTier(min_elo=2500, rate=1.0)])
+        )
+        assert (
+            processor._keep_game(GameMetadata(white_elo=2000, black_elo=2000)) is False
+        )
+
+    def test_keep_game_respects_rate(self):
+        processor = PGNProcessor(
+            GameSubsampling(tiers=[GameSubsampleTier(min_elo=0, rate=0.5)])
+        )
+        with patch("src.dataset.pgn_processor.random.random", return_value=0.4):
+            assert processor._keep_game(GameMetadata(white_elo=2000, black_elo=2000))
+        with patch("src.dataset.pgn_processor.random.random", return_value=0.6):
+            assert not processor._keep_game(
+                GameMetadata(white_elo=2000, black_elo=2000)
+            )
+
+    def test_all_positions_extracted_without_subsampling(self, temp_pgn_file):
+        processor = PGNProcessor(keep_all())
+        with open(temp_pgn_file) as f:
+            game = chess.pgn.read_game(f)
+        record = processor.extract_game(game)
+        assert record is not None
+        assert len(record.positions) == len(list(game.mainline_moves()))
+        assert len(record.positions) > 0
+
+    def test_tier_validation(self):
+        with pytest.raises(ValueError):
+            GameSubsampleTier(min_elo=-1)
+        with pytest.raises(ValueError):
+            GameSubsampleTier(rate=0)
+        with pytest.raises(ValueError):
+            GameSubsampleTier(rate=1.5)
+
+    def test_subsampling_round_trip(self):
+        subsampling = GameSubsampling(tiers=[GameSubsampleTier(min_elo=2400, rate=0.5)])
+        restored = GameSubsampling.from_dict(subsampling.to_dict())
+        assert restored == subsampling

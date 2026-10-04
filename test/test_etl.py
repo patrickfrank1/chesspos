@@ -9,8 +9,9 @@ import ray.data
 
 from src.dataset.config import (
     DatasetConfig,
+    GameSubsampling,
+    GameSubsampleTier,
     PreprocessingConfig,
-    SamplingFilters,
 )
 from src.dataset.etl import ChessPositionDataset
 
@@ -49,7 +50,7 @@ def preprocessing_config():
     return PreprocessingConfig(
         worker_count=1,
         memory_limit_mb=1024,
-        sampling_filters=SamplingFilters(min_elo=1500, subsample_rate=1.0),
+        subsampling=GameSubsampling(tiers=[GameSubsampleTier(min_elo=0, rate=1.0)]),
     )
 
 
@@ -68,8 +69,8 @@ class TestChessPositionDataset:
 
     def test_extract_positions(self):
         row = {"bytes": SAMPLE_PGN, "path": "/fake/test.pgn"}
-        filters = SamplingFilters(min_elo=0, subsample_rate=1.0)
-        positions = ChessPositionDataset._extract_positions(row, filters)
+        subsampling = GameSubsampling(tiers=[GameSubsampleTier(min_elo=0, rate=1.0)])
+        positions = ChessPositionDataset._extract_positions(row, subsampling)
         assert len(positions) > 0
         for pos in positions:
             assert "fen" in pos
@@ -80,14 +81,14 @@ class TestChessPositionDataset:
 
     def test_extract_positions_filters(self):
         row = {"bytes": SAMPLE_PGN, "path": "/fake/test.pgn"}
-        filters = SamplingFilters(min_elo=3000, subsample_rate=1.0)
-        positions = ChessPositionDataset._extract_positions(row, filters)
+        subsampling = GameSubsampling(tiers=[GameSubsampleTier(min_elo=3000, rate=1.0)])
+        positions = ChessPositionDataset._extract_positions(row, subsampling)
         assert len(positions) == 0
 
     def test_extract_positions_empty_pgn(self):
         row = {"bytes": b"", "path": "/fake/empty.pgn"}
-        filters = SamplingFilters(min_elo=0, subsample_rate=1.0)
-        positions = ChessPositionDataset._extract_positions(row, filters)
+        subsampling = GameSubsampling(tiers=[GameSubsampleTier(min_elo=0, rate=1.0)])
+        positions = ChessPositionDataset._extract_positions(row, subsampling)
         assert len(positions) == 0
 
     def test_encode_batch(self):
