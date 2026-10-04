@@ -7,7 +7,6 @@ import yaml
 
 from src.dataset.config import (
     DatasetConfig,
-    EncoderConfig,
     PreprocessingConfig,
     SamplingFilters,
 )
@@ -20,8 +19,7 @@ def load_yaml_config(path: str) -> dict[str, Any]:
 
 
 def _get_nested(data: dict[str, Any], key: str) -> Any:
-    flat_fields = {"batch_size", "encoding", "train_ratio", "repo_name", "data_path"}
-    encoder_fields = {"window_size"}
+    flat_fields = {"batch_size", "train_ratio", "repo_name", "data_path"}
     runtime_fields = {"num_batches", "dry_run", "resume", "create_card"}
     preprocessing_fields = {"worker_count", "memory_limit_mb", "debug"}
     sampling_fields = {"min_elo", "min_ply", "max_ply", "subsample_rate"}
@@ -30,11 +28,6 @@ def _get_nested(data: dict[str, Any], key: str) -> Any:
         return data.get(key)
     if key in runtime_fields:
         return data.get(key)
-    if key in encoder_fields:
-        encoder = data.get("encoder", {})
-        if isinstance(encoder, dict):
-            return encoder.get(key)
-        return None
     if key in preprocessing_fields:
         pre = data.get("preprocessing", {})
         if isinstance(pre, dict):
@@ -95,19 +88,6 @@ def parse_args() -> argparse.Namespace:
         type=str,
         default=None,
         help="Path to directory containing PGN files",
-    )
-    parser.add_argument(
-        "--encoding",
-        type=str,
-        choices=["token_sequence", "tensor", "bitboard"],
-        default=None,
-        help="Position encoding format",
-    )
-    parser.add_argument(
-        "--window-size",
-        type=int,
-        default=None,
-        help="Temporal window size for training",
     )
     parser.add_argument(
         "--dry-run",
@@ -210,14 +190,8 @@ def main() -> int:
     batch_size: int = _resolve(
         args.batch_size, _yaml_val(yaml_cfg, "batch_size"), 100_000
     )
-    encoding: str = _resolve(
-        args.encoding, _yaml_val(yaml_cfg, "encoding"), "token_sequence"
-    )
     train_ratio: float = _resolve(
         args.train_ratio, _yaml_val(yaml_cfg, "train_ratio"), 0.95
-    )
-    window_size: int = _resolve(
-        args.window_size, _yaml_val(yaml_cfg, "window_size"), 10
     )
     num_batches: int = _resolve(args.batches, _yaml_val(yaml_cfg, "batches"), 3)
     worker_count: int = _resolve(args.workers, _yaml_val(yaml_cfg, "worker_count"), 4)
@@ -247,7 +221,6 @@ def main() -> int:
     dataset_config = DatasetConfig(
         repo_name=repo_name,
         batch_size=batch_size,
-        encoding=encoding,
         train_ratio=train_ratio,
         data_path=data_path,
     )
@@ -259,20 +232,14 @@ def main() -> int:
         debug=debug,
     )
 
-    encoder_config = EncoderConfig(
-        encoding_format=encoding,
-        window_size=window_size,
-    )
-
     dataset = ChessPositionDataset(
         dataset_config=dataset_config,
         preprocessing_config=preprocessing_config,
-        encoder_config=encoder_config,
     )
 
     print(f"Generating {num_batches} batches for {repo_name}")
     print(f"Data path: {data_path}")
-    print(f"Batch size: {batch_size}, Encoding: {encoding}")
+    print(f"Batch size: {batch_size}")
     print(f"Workers: {worker_count}, Memory: {memory_limit_mb}MB")
     print(f"ELO filter: >= {min_elo}, Subsample: {subsample_rate}")
 

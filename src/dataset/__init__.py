@@ -1,68 +1,41 @@
-import chess
-import numpy as np
-
-from src.dataset.config import DatasetConfig, EncoderConfig, PreprocessingConfig
-from src.dataset.position_encoder import (
-    BitboardEncoder,
-    PositionEncoder,
-    TensorEncoder,
-    TokenSequenceEncoder,
-    get_encoder,
-    register_encoder,
+from src.dataset.config import DatasetConfig, PreprocessingConfig
+from src.dataset.token_stream import (
+    CASTLE_BASE,
+    CLS,
+    EP_BASE,
+    MASK,
+    PAD,
+    PIECE_SQUARE_BASE,
+    SEP,
+    TURN_BLACK,
+    TURN_WHITE,
+    VOCAB_SIZE,
+    TokenStreamEncoder,
+    pack_stream,
 )
 from src.dataset.pgn_processor import GameRecord, PGNProcessor
 from src.dataset.huggingface_client import HuggingFaceClient
 from src.dataset.etl import ChessPositionDataset
 from src.dataset.data_loader import TrainingDataGenerator
 
-_token_encoder = TokenSequenceEncoder()
-_tensor_encoder = TensorEncoder()
-_bitboard_encoder = BitboardEncoder()
-
-
-def board_to_token_sequence(board: chess.Board) -> np.ndarray:
-    return _token_encoder.encode(board)
-
-
-def token_sequence_to_board(data: np.ndarray) -> chess.Board:
-    return _token_encoder.decode(data)
-
-
-def board_to_tensor(board: chess.Board) -> np.ndarray:
-    return _tensor_encoder.encode(board)
-
-
-def tensor_to_board(data: np.ndarray) -> chess.Board:
-    return _tensor_encoder.decode(data)
-
-
-def board_to_bitboard(board: chess.Board) -> np.ndarray:
-    return _bitboard_encoder.encode(board)
-
-
-def bitboard_to_board(data: np.ndarray) -> chess.Board:
-    return _bitboard_encoder.decode(data)
-
-
 __all__ = [
-    "BitboardEncoder",
+    "CASTLE_BASE",
+    "CLS",
     "ChessPositionDataset",
     "DatasetConfig",
-    "EncoderConfig",
+    "EP_BASE",
     "GameRecord",
     "HuggingFaceClient",
+    "MASK",
+    "PAD",
     "PGNProcessor",
-    "PositionEncoder",
+    "PIECE_SQUARE_BASE",
     "PreprocessingConfig",
-    "TensorEncoder",
-    "TokenSequenceEncoder",
+    "SEP",
+    "TURN_BLACK",
+    "TURN_WHITE",
+    "TokenStreamEncoder",
     "TrainingDataGenerator",
-    "bitboard_to_board",
-    "board_to_bitboard",
-    "board_to_tensor",
-    "board_to_token_sequence",
-    "get_encoder",
-    "register_encoder",
-    "tensor_to_board",
-    "token_sequence_to_board",
+    "VOCAB_SIZE",
+    "pack_stream",
 ]

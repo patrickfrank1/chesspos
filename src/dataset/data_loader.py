@@ -7,14 +7,11 @@ import numpy as np
 import tensorflow as tf
 from datasets import load_dataset
 
-from src.dataset.types import EncodingFormat, TOKEN_SEQUENCE
-
 
 @dataclass
 class TrainingDataGenerator:
     repo_name: str
     split: str = "train"
-    encoding: EncodingFormat = TOKEN_SEQUENCE
     shuffle_buffer_size: int = 10_000
     batch_size: int = 32
     mask_tokens: int = 0
@@ -107,7 +104,6 @@ class TrainingDataGenerator:
         transformed_gen = TrainingDataGenerator(
             repo_name=self.repo_name,
             split=self.split,
-            encoding=self.encoding,
             shuffle_buffer_size=self.shuffle_buffer_size,
             batch_size=self.batch_size,
             mask_tokens=self.mask_tokens,
@@ -126,7 +122,6 @@ class TrainingDataGenerator:
         return TrainingDataGenerator(
             repo_name=self.repo_name,
             split=self.split,
-            encoding=self.encoding,
             shuffle_buffer_size=self.shuffle_buffer_size,
             batch_size=self.batch_size,
             mask_tokens=num_tokens,
@@ -137,7 +132,6 @@ class TrainingDataGenerator:
         return TrainingDataGenerator(
             repo_name=self.repo_name,
             split=split,
-            encoding=self.encoding,
             shuffle_buffer_size=self.shuffle_buffer_size,
             batch_size=self.batch_size,
             mask_tokens=self.mask_tokens,
