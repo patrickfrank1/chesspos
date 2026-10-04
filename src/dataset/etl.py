@@ -51,11 +51,26 @@ class ChessPositionDataset:
         games = []
 
         pgn_file = io.StringIO(bytes_data.decode("utf-8", errors="ignore"))
+
+        # Pass 1: header-only scan (no movetext parsing); record the offset of
+        # every game that passes the filters so the expensive parse can skip
+        # the rest.
+        keep_offsets = []
         while True:
+            offset = pgn_file.tell()
+            headers = chess.pgn.read_headers(pgn_file)
+            if headers is None:
+                break
+            if processor.keep_game(headers):
+                keep_offsets.append(offset)
+
+        # Pass 2: fully parse only the games that passed the filters.
+        for offset in keep_offsets:
+            pgn_file.seek(offset)
             game = chess.pgn.read_game(pgn_file)
             if game is None:
-                break
-            record = processor.extract_game(game)
+                continue
+            record = processor.extract_kept_game(game)
             if record is not None:
                 games.append(
                     {

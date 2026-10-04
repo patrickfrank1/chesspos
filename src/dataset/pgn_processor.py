@@ -39,6 +39,20 @@ class PGNProcessor:
         if not self._keep_game(metadata):
             return None
 
+        return self._build_record(game, metadata)
+
+    def keep_game(self, headers: chess.pgn.Headers) -> bool:
+        """Filter decision from headers only, without parsing movetext."""
+        return self._keep_game(self._extract_metadata(headers))
+
+    def extract_kept_game(self, game: chess.pgn.Game) -> GameRecord | None:
+        """Extract a record from a game that already passed keep_game()."""
+        metadata = self._extract_metadata(game.headers)
+        return self._build_record(game, metadata)
+
+    def _build_record(
+        self, game: chess.pgn.Game, metadata: GameMetadata
+    ) -> GameRecord | None:
         positions = list(self._extract_positions(game, metadata))
         if len(positions) == 0:
             return None
