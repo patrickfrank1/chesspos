@@ -2,13 +2,12 @@ from __future__ import annotations
 
 import random
 from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Generator, Iterator
+from typing import Generator
 
 import chess
 import chess.pgn
 
-from src.dataset.config import GameSubsampling, GameSubsampleTier
+from src.dataset.config import GameSubsampling, GameSubsampleTier, TimeControlFilter
 from src.dataset.types import GameMetadata, GameRecord, PositionRecord
 from src.utils.fileops import file_paths_from_directory
 
@@ -16,6 +15,7 @@ from src.utils.fileops import file_paths_from_directory
 @dataclass
 class PGNProcessor:
     subsampling: GameSubsampling = field(default_factory=GameSubsampling)
+    time_control_filter: TimeControlFilter = field(default_factory=TimeControlFilter)
 
     def process_directory(self, directory: str) -> Generator[GameRecord, None, None]:
         pgn_files = file_paths_from_directory(directory, ".pgn")
@@ -55,6 +55,7 @@ class PGNProcessor:
             opening=headers.get("Opening"),
             event=headers.get("Event"),
             date=headers.get("Date"),
+            time_control=headers.get("TimeControl"),
         )
 
     def _parse_elo(self, elo_str: str | None) -> int | None:
@@ -65,11 +66,41 @@ class PGNProcessor:
         except ValueError:
             return None
 
+    def _parse_time_control(self, tc: str | None) -> int | None:
+        """Return the base time in seconds, or None when unknown/unparseable.
+
+        Supported PGN formats: "sec" (e.g. "300"), "sec+inc" (e.g. "180+2"),
+        and "moves/sec" (e.g. "40/900"). "-", "?", "*" and malformed values
+        yield None.
+        """
+        if tc is None:
+            return None
+        tc = tc.strip()
+        if tc in {"-", "?", "*", ""}:
+            return None
+        try:
+            if "/" in tc:
+                return int(tc.split("/")[-1])
+            return int(tc.split("+")[0])
+        except ValueError:
+            return None
+
     def _keep_game(self, metadata: GameMetadata) -> bool:
+        if not self._passes_time_control_filter(metadata):
+            return False
         tier = self._match_tier(metadata)
         if tier is None:
             return False
         return random.random() < tier.rate
+
+    def _passes_time_control_filter(self, metadata: GameMetadata) -> bool:
+        min_seconds = self.time_control_filter.min_seconds
+        if min_seconds is None:
+            return True
+        base_seconds = self._parse_time_control(metadata.time_control)
+        if base_seconds is None:
+            return True
+        return base_seconds >= min_seconds
 
     def _match_tier(self, metadata: GameMetadata) -> GameSubsampleTier | None:
         strength = min(

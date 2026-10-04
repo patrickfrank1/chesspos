@@ -12,6 +12,7 @@ from src.dataset.config import (
     GameSubsampling,
     GameSubsampleTier,
     PreprocessingConfig,
+    TimeControlFilter,
 )
 from src.dataset.etl import ChessPositionDataset
 
@@ -70,7 +71,9 @@ class TestChessPositionDataset:
     def test_extract_positions(self):
         row = {"bytes": SAMPLE_PGN, "path": "/fake/test.pgn"}
         subsampling = GameSubsampling(tiers=[GameSubsampleTier(min_elo=0, rate=1.0)])
-        positions = ChessPositionDataset._extract_positions(row, subsampling)
+        positions = ChessPositionDataset._extract_positions(
+            row, subsampling, TimeControlFilter()
+        )
         assert len(positions) > 0
         for pos in positions:
             assert "fen" in pos
@@ -82,13 +85,28 @@ class TestChessPositionDataset:
     def test_extract_positions_filters(self):
         row = {"bytes": SAMPLE_PGN, "path": "/fake/test.pgn"}
         subsampling = GameSubsampling(tiers=[GameSubsampleTier(min_elo=3000, rate=1.0)])
-        positions = ChessPositionDataset._extract_positions(row, subsampling)
+        positions = ChessPositionDataset._extract_positions(
+            row, subsampling, TimeControlFilter()
+        )
         assert len(positions) == 0
 
     def test_extract_positions_empty_pgn(self):
         row = {"bytes": b"", "path": "/fake/empty.pgn"}
         subsampling = GameSubsampling(tiers=[GameSubsampleTier(min_elo=0, rate=1.0)])
-        positions = ChessPositionDataset._extract_positions(row, subsampling)
+        positions = ChessPositionDataset._extract_positions(
+            row, subsampling, TimeControlFilter()
+        )
+        assert len(positions) == 0
+
+    def test_extract_positions_filters_bullet(self):
+        bullet_pgn = SAMPLE_PGN.replace(
+            b'[Result "1-0"]', b'[Result "1-0"]\n[TimeControl "180+0"]'
+        )
+        row = {"bytes": bullet_pgn, "path": "/fake/bullet.pgn"}
+        subsampling = GameSubsampling(tiers=[GameSubsampleTier(min_elo=0, rate=1.0)])
+        positions = ChessPositionDataset._extract_positions(
+            row, subsampling, TimeControlFilter(min_seconds=300)
+        )
         assert len(positions) == 0
 
     def test_encode_batch(self):

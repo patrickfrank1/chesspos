@@ -7,9 +7,9 @@ import yaml
 
 from src.dataset.config import (
     DatasetConfig,
-    GameSubsampleTier,
     GameSubsampling,
     PreprocessingConfig,
+    TimeControlFilter,
 )
 from src.dataset.etl import ChessPositionDataset
 
@@ -23,7 +23,7 @@ def _get_nested(data: dict[str, Any], key: str) -> Any:
     flat_fields = {"batch_size", "train_ratio", "repo_name", "data_path"}
     runtime_fields = {"num_batches", "dry_run", "resume", "create_card"}
     preprocessing_fields = {"worker_count", "memory_limit_mb", "debug"}
-    sampling_fields = {"tiers"}
+    sampling_fields = {"tiers", "min_time_control_seconds"}
 
     if key in flat_fields:
         return data.get(key)
@@ -188,10 +188,17 @@ def main() -> int:
     else:
         subsampling = GameSubsampling()
 
+    min_tc_yaml = _yaml_val(yaml_cfg, "min_time_control_seconds")
+    if min_tc_yaml is not None:
+        time_control_filter = TimeControlFilter(min_seconds=int(min_tc_yaml))
+    else:
+        time_control_filter = TimeControlFilter()
+
     preprocessing_config = PreprocessingConfig(
         worker_count=worker_count,
         memory_limit_mb=memory_limit_mb,
         subsampling=subsampling,
+        time_control_filter=time_control_filter,
         debug=debug,
     )
 
@@ -215,6 +222,11 @@ def main() -> int:
         "Game subsampling tiers: "
         + ", ".join(f">={t.min_elo}: {t.rate:.0%}" for t in subsampling.tiers)
     )
+    min_tc = time_control_filter.min_seconds
+    if min_tc is None:
+        print("Time control filter: disabled")
+    else:
+        print(f"Time control filter: excluding games with base time < {min_tc}s")
 
     if dry_run:
         print("DRY RUN: Data will not be pushed to HuggingFace Hub")

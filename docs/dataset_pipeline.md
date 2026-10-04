@@ -169,19 +169,24 @@ inputs to the orchestrator and thread through every stage:
 - `DatasetConfig` — what to build (`repo_name`, `batch_size`, `train_ratio`,
   `data_path`).
 - `PreprocessingConfig` — how to build it (`worker_count`, `memory_limit_mb`,
-  `debug`) and embeds `GameSubsampling`.
+  `debug`) and embeds `GameSubsampling` and `TimeControlFilter`.
 - `GameSubsampling` — tiered game subsampling by player strength: a list of
   `GameSubsampleTier(min_elo, rate)` entries. A game is assigned to the
   strictest tier whose `min_elo` both players meet and kept with probability
   `rate`; games with missing ratings only qualify for the `min_elo=0`
   catch-all tier.
+- `TimeControlFilter` — hard filter (not stochastic) that excludes games whose
+  TimeControl header parses to a base time below `min_seconds` (default 300s,
+  i.e. bullet games). Games with missing/unparseable time control are kept;
+  set `min_seconds=None` to disable.
 
 ### Domain types (`types.py`)
 
 In-memory representations only; never persisted directly. The ETL flattens
 these into dict rows before encoding.
 
-- `GameMetadata` — PGN header fields (ELOs, result, opening, event, date).
+- `GameMetadata` — PGN header fields (ELOs, result, opening, event, date,
+  time control).
 - `PositionRecord` — `board` (a `chess.Board`), `ply`, `metadata`,
   `move_sequence`.
 - `GameRecord` — a list of `PositionRecord`s sharing one `GameMetadata`.

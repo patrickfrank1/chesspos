@@ -74,10 +74,9 @@ class GameSubsampling:
 
     tiers: list[GameSubsampleTier] = field(
         default_factory=lambda: [
-            GameSubsampleTier(min_elo=2500, rate=0.40),
-            GameSubsampleTier(min_elo=2200, rate=0.30),
-            GameSubsampleTier(min_elo=1800, rate=0.25),
-            GameSubsampleTier(min_elo=0, rate=0.05),
+            GameSubsampleTier(min_elo=2400, rate=1.0),
+            GameSubsampleTier(min_elo=2000, rate=0.4),
+            GameSubsampleTier(min_elo=0, rate=0.001),
         ]
     )
 
@@ -92,10 +91,35 @@ class GameSubsampling:
 
 
 @dataclass
+class TimeControlFilter:
+    """Filter out fast games (bullet) by base time control.
+
+    A game is excluded when its TimeControl header parses to a base time
+    strictly below ``min_seconds``. Games with missing or unparseable time
+    control headers are kept, since their speed cannot be determined. Set
+    ``min_seconds=None`` to disable the filter.
+    """
+
+    min_seconds: int | None = 300
+
+    def __post_init__(self):
+        if self.min_seconds is not None and self.min_seconds < 0:
+            raise ValueError("min_seconds cannot be negative")
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "TimeControlFilter":
+        return cls(**data)
+
+
+@dataclass
 class PreprocessingConfig:
     worker_count: int = 4
     memory_limit_mb: int = 4096
     subsampling: GameSubsampling = field(default_factory=GameSubsampling)
+    time_control_filter: TimeControlFilter = field(default_factory=TimeControlFilter)
     debug: bool = False
 
     def __post_init__(self):
@@ -111,6 +135,9 @@ class PreprocessingConfig:
     def from_json(cls, json_str: str) -> "PreprocessingConfig":
         data = json.loads(json_str)
         data["subsampling"] = GameSubsampling.from_dict(data["subsampling"])
+        data["time_control_filter"] = TimeControlFilter.from_dict(
+            data["time_control_filter"]
+        )
         return cls(**data)
 
     def to_dict(self) -> dict[str, Any]:
