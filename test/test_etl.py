@@ -2,6 +2,8 @@ import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import chess
+import numpy as np
 import pytest
 import ray.data
 
@@ -12,6 +14,7 @@ from src.dataset.config import (
     SamplingFilters,
 )
 from src.dataset.etl import ChessPositionDataset
+from src.dataset.types import TOKEN_STREAM
 
 
 SAMPLE_PGN = b"""[Event "Test"]
@@ -94,6 +97,20 @@ class TestChessPositionDataset:
         filters = SamplingFilters(min_elo=0, subsample_rate=1.0)
         positions = ChessPositionDataset._extract_positions(row, filters)
         assert len(positions) == 0
+
+    def test_encode_batch(self):
+        batch = {
+            "fen": [chess.Board().fen() for _ in range(3)],
+            "ply": np.array([1, 2, 3], dtype=np.int32),
+            "white_elo": np.array([2000, 2000, 2000], dtype=np.int32),
+            "black_elo": np.array([2000, 2000, 2000], dtype=np.int32),
+            "result": ["1-0", "1/2-1/2", "0-1"],
+        }
+        result = ChessPositionDataset._encode_batch(batch, TOKEN_STREAM)
+        assert result["encoded"].shape == (3, 34)
+        assert result["encoded"].dtype == np.int16
+        np.testing.assert_array_equal(result["length"], [34, 34, 34])
+        np.testing.assert_array_equal(result["ply"], batch["ply"])
 
     def test_get_start_batch_default(self, dataset):
         assert dataset._get_start_batch(resume=False) == 1

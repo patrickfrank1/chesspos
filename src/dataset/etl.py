@@ -67,9 +67,10 @@ class ChessPositionDataset:
         encoder = get_encoder(encoding_format)
         fens = batch["fen"]
         boards = [chess.Board(fen) for fen in fens]
-        encoded = encoder.encode_batch(boards)
+        encoded, lengths = encoder.encode_batch(boards)
         return {
             "encoded": encoded,
+            "length": lengths,
             "ply": np.array(batch["ply"], dtype=np.int32),
             "white_elo": np.array(batch["white_elo"], dtype=np.int32),
             "black_elo": np.array(batch["black_elo"], dtype=np.int32),
@@ -180,7 +181,13 @@ class ChessPositionDataset:
     def create_dataset_card(self) -> str:
         features = {
             "encoded": {
-                "description": "Encoded chess position",
+                "dtype": "int16",
+                "description": "Token stream segment (PAD-padded, see length)",
+            },
+            "length": {
+                "shape": "()",
+                "dtype": "int32",
+                "description": "Number of valid tokens in encoded",
             },
             "ply": {
                 "shape": "()",

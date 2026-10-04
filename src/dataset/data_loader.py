@@ -7,14 +7,14 @@ import numpy as np
 import tensorflow as tf
 from datasets import load_dataset
 
-from src.dataset.types import EncodingFormat
+from src.dataset.types import TOKEN_STREAM, EncodingFormat
 
 
 @dataclass
 class TrainingDataGenerator:
     repo_name: str
     split: str = "train"
-    encoding: EncodingFormat | None = None
+    encoding: EncodingFormat = TOKEN_STREAM
     shuffle_buffer_size: int = 10_000
     batch_size: int = 32
     mask_tokens: int = 0

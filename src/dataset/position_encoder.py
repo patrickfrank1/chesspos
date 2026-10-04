@@ -5,7 +5,7 @@ from abc import ABC, abstractmethod
 import chess
 import numpy as np
 
-from src.dataset.types import EncodingFormat
+from src.dataset.types import TOKEN_STREAM, EncodingFormat
 
 
 class PositionEncoder(ABC):
@@ -52,3 +52,8 @@ def register_encoder(
     encoding_format: EncodingFormat, encoder_class: type[PositionEncoder]
 ) -> None:
     _ENCODER_REGISTRY[encoding_format] = encoder_class
+
+
+from src.dataset.token_stream import TokenStreamEncoder  # noqa: E402
+
+register_encoder(TOKEN_STREAM, TokenStreamEncoder)

@@ -83,3 +83,5 @@ class EncodedBatch:
 
 
 EncodingFormat = str
+
+TOKEN_STREAM: EncodingFormat = "token_stream"
