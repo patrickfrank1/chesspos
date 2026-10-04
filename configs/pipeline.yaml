@@ -1,0 +1,28 @@
+# Chess position pipeline configuration
+# All fields shown with their default values — uncomment and edit as needed.
+
+repo_name: "patrickfrank1/chess-positions"   # HuggingFace Hub repo (required)
+data_path: "./data/raw"                      # Directory with .pgn files
+
+batch_size: 100000                           # Positions per batch
+encoding: "token_sequence"                   # token_sequence | tensor | bitboard
+train_ratio: 0.95                            # Train/test split
+
+num_batches: 3                               # How many batches to generate
+dry_run: true                                # Skip HF Hub upload
+resume: false                                # Continue from last batch on Hub
+create_card: false                           # Push a dataset card
+
+encoder:
+  window_size: 10                            # Temporal window size
+
+preprocessing:
+  worker_count: 4                            # Ray workers
+  memory_limit_mb: 4096                      # Memory per worker (MB)
+  debug: true                                # Single-threaded local mode
+
+sampling:
+  min_elo: 2000                              # Minimum player ELO
+  min_ply: 16                                 # Minimum ply to sample from
+  max_ply: null                              # Maximum ply (null = no limit)
+  subsample_rate: 0.66                       # Position subsampling (lower = fewer, biased toward later plies)

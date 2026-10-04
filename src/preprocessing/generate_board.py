@@ -18,13 +18,12 @@ def generate_random_board(max_pieces: int = 1) -> chess.Board:
     free_sqares.remove(black_king_square)
     piece_map = {
         white_king_square: chess.Piece.from_symbol("K"),
-        black_king_square: chess.Piece.from_symbol("k")
+        black_king_square: chess.Piece.from_symbol("k"),
     }
 
     for _ in range(pieces):
         random_piece = chess.Piece(
-            piece_type=np.random.randint(1, 6),
-            color=random.choice([True, False])
+            piece_type=np.random.randint(1, 6), color=random.choice([True, False])
         )
         random_square = random.choice(free_sqares)
         piece_map[random_square] = random_piece

@@ -36,6 +36,24 @@
         "args": [],
         "cwd": "${workspaceFolder}",
         "console": "integratedTerminal"
+      },
+      {
+        "name": "generate_hf_dataset.py (debug)",
+        "type": "debugpy",
+        "request": "launch",
+        "module": "src.run.generate_hf_dataset",
+        "env": {
+          "PYTHONPATH": "${workspaceFolder}"
+        },
+        "args": [
+          "--repo", "test/chesspos-debug",
+          "--batches", "1",
+          "--batch-size", "100",
+          "--debug",
+          "--dry-run"
+        ],
+        "cwd": "${workspaceFolder}",
+        "console": "integratedTerminal"
       }
     ]
   }

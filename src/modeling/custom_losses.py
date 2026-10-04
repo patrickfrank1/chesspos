@@ -1,7 +1,7 @@
 import tensorflow as tf
 from keras import backend as K
 
-DTYPE = 'bfloat16'
+DTYPE = "bfloat16"
 
 
 @tf.keras.utils.register_keras_serializable()
@@ -16,13 +16,17 @@ def sum_squared_loss(y_true, y_pred):
 
 @tf.keras.utils.register_keras_serializable()
 def num_pc_reg(y_true, y_pred):
-    epsilon = 1.e-3
+    epsilon = 1.0e-3
     batch_size = tf.cast(tf.shape(y_true)[0], DTYPE)
     y_true = K.cast(y_true, dtype=DTYPE)
     y_pred = K.cast(y_pred, dtype=DTYPE)
     pieces_true = K.sum(y_true)
     pieces_predicted = K.sum(y_pred)
-    loss = K.square(pieces_true - pieces_predicted) / (epsilon + pieces_predicted) / batch_size
+    loss = (
+        K.square(pieces_true - pieces_predicted)
+        / (epsilon + pieces_predicted)
+        / batch_size
+    )
     return loss
 
 

@@ -28,26 +28,30 @@ def vanilla_dense() -> dict[str, keras.Model]:
 
     # Encoder
     encoder_input = layers.Input(shape=(8, 8, 15), dtype=dtype)
-    encoder = layers.Reshape((8*8*15,))(encoder_input)
-    encoder = layers.Dense(8*EMBEDDING_SIZE, activation='relu')(encoder)
-    encoder = layers.Dense(4*EMBEDDING_SIZE, activation='relu')(encoder)
-    encoder = layers.Dense(2*EMBEDDING_SIZE, activation='relu')(encoder)
-    encoder = layers.Dense(EMBEDDING_SIZE, activation='relu')(encoder)
+    encoder = layers.Reshape((8 * 8 * 15,))(encoder_input)
+    encoder = layers.Dense(8 * EMBEDDING_SIZE, activation="relu")(encoder)
+    encoder = layers.Dense(4 * EMBEDDING_SIZE, activation="relu")(encoder)
+    encoder = layers.Dense(2 * EMBEDDING_SIZE, activation="relu")(encoder)
+    encoder = layers.Dense(EMBEDDING_SIZE, activation="relu")(encoder)
 
     # Decoder
     decoder_input = layers.Input(shape=(EMBEDDING_SIZE,), dtype=dtype)
-    decoder = layers.Dense(2*EMBEDDING_SIZE, activation='relu')(decoder_input)
-    decoder = layers.Dense(4*EMBEDDING_SIZE, activation='relu')(decoder_input)
-    decoder = layers.Dense(8*EMBEDDING_SIZE, activation='relu')(decoder_input)
-    decoder = layers.Dense(8*8*15, activation='relu')(decoder)
+    decoder = layers.Dense(2 * EMBEDDING_SIZE, activation="relu")(decoder_input)
+    decoder = layers.Dense(4 * EMBEDDING_SIZE, activation="relu")(decoder_input)
+    decoder = layers.Dense(8 * EMBEDDING_SIZE, activation="relu")(decoder_input)
+    decoder = layers.Dense(8 * 8 * 15, activation="relu")(decoder)
     decoder = layers.Reshape((8, 8, 15))(decoder)
 
     # Autoencoder
-    encoder = keras.Model(inputs=encoder_input, outputs=encoder, name='encoder')
-    decoder = keras.Model(inputs=decoder_input, outputs=decoder, name='decoder')
-    autoencoder = keras.Model(inputs=encoder_input, outputs=decoder(encoder(encoder_input)), name='autoencoder')
+    encoder = keras.Model(inputs=encoder_input, outputs=encoder, name="encoder")
+    decoder = keras.Model(inputs=decoder_input, outputs=decoder, name="decoder")
+    autoencoder = keras.Model(
+        inputs=encoder_input,
+        outputs=decoder(encoder(encoder_input)),
+        name="autoencoder",
+    )
 
-    return {'encoder': encoder, 'decoder': decoder, 'autoencoder': autoencoder}
+    return {"encoder": encoder, "decoder": decoder, "autoencoder": autoencoder}
 
 
 def skip_dense() -> dict[str, keras.Model]:
@@ -56,32 +60,36 @@ def skip_dense() -> dict[str, keras.Model]:
 
     # Encoder
     encoder_input = layers.Input(shape=(8, 8, 15), dtype=dtype)
-    encoder = layers.Reshape((8*8*15,))(encoder_input)
-    encoder = layers.Dense(8*EMBEDDING_SIZE, activation='relu')(encoder)
-    encoder_skip_1 = layers.Dense(EMBEDDING_SIZE, activation='relu')(encoder)
-    encoder = layers.Dense(4*EMBEDDING_SIZE, activation='relu')(encoder)
-    encoder_skip_2 = layers.Dense(EMBEDDING_SIZE, activation='relu')(encoder)
-    encoder = layers.Dense(2*EMBEDDING_SIZE, activation='relu')(encoder)
-    encoder_skip_3 = layers.Dense(EMBEDDING_SIZE, activation='relu')(encoder)
+    encoder = layers.Reshape((8 * 8 * 15,))(encoder_input)
+    encoder = layers.Dense(8 * EMBEDDING_SIZE, activation="relu")(encoder)
+    encoder_skip_1 = layers.Dense(EMBEDDING_SIZE, activation="relu")(encoder)
+    encoder = layers.Dense(4 * EMBEDDING_SIZE, activation="relu")(encoder)
+    encoder_skip_2 = layers.Dense(EMBEDDING_SIZE, activation="relu")(encoder)
+    encoder = layers.Dense(2 * EMBEDDING_SIZE, activation="relu")(encoder)
+    encoder_skip_3 = layers.Dense(EMBEDDING_SIZE, activation="relu")(encoder)
     embedding = layers.add([encoder_skip_1, encoder_skip_2, encoder_skip_3])
 
     # Decoder
     decoder_input = layers.Input(shape=(EMBEDDING_SIZE,), dtype=dtype)
-    decoder_skip_1 = layers.Dense(8*EMBEDDING_SIZE, activation='relu')(decoder_input)
-    decoder = layers.Dense(2*EMBEDDING_SIZE, activation='relu')(decoder_input)
-    decoder_skip_2 = layers.Dense(8*EMBEDDING_SIZE, activation='relu')(decoder)
-    decoder = layers.Dense(4*EMBEDDING_SIZE, activation='relu')(decoder)
-    decoder_skip_3 = layers.Dense(8*EMBEDDING_SIZE, activation='relu')(decoder)
+    decoder_skip_1 = layers.Dense(8 * EMBEDDING_SIZE, activation="relu")(decoder_input)
+    decoder = layers.Dense(2 * EMBEDDING_SIZE, activation="relu")(decoder_input)
+    decoder_skip_2 = layers.Dense(8 * EMBEDDING_SIZE, activation="relu")(decoder)
+    decoder = layers.Dense(4 * EMBEDDING_SIZE, activation="relu")(decoder)
+    decoder_skip_3 = layers.Dense(8 * EMBEDDING_SIZE, activation="relu")(decoder)
     decoder = layers.add([decoder_skip_1, decoder_skip_2, decoder_skip_3])
-    decoder = layers.Dense(8*8*15, activation='relu')(decoder)
+    decoder = layers.Dense(8 * 8 * 15, activation="relu")(decoder)
     decoder = layers.Reshape((8, 8, 15))(decoder)
 
     # Autoencoder
-    encoder = keras.Model(inputs=encoder_input, outputs=embedding, name='encoder')
-    decoder = keras.Model(inputs=decoder_input, outputs=decoder, name='decoder')
-    autoencoder = keras.Model(inputs=encoder_input, outputs=decoder(encoder(encoder_input)), name='autoencoder')
+    encoder = keras.Model(inputs=encoder_input, outputs=embedding, name="encoder")
+    decoder = keras.Model(inputs=decoder_input, outputs=decoder, name="decoder")
+    autoencoder = keras.Model(
+        inputs=encoder_input,
+        outputs=decoder(encoder(encoder_input)),
+        name="autoencoder",
+    )
 
-    return {'encoder': encoder, 'decoder': decoder, 'autoencoder': autoencoder}
+    return {"encoder": encoder, "decoder": decoder, "autoencoder": autoencoder}
 
 
 def skip_equi_dense() -> dict[str, keras.Model]:
@@ -90,14 +98,16 @@ def skip_equi_dense() -> dict[str, keras.Model]:
     dtype = tf.bfloat16
 
     def block_with_skip_connection(previous_layer):
-        embedding_layer = layers.Dense(EMBEDDING_SIZE, activation='relu')(previous_layer)
+        embedding_layer = layers.Dense(EMBEDDING_SIZE, activation="relu")(
+            previous_layer
+        )
         combine_layer = layers.add([previous_layer, embedding_layer])
         return combine_layer
 
     # Encoder
     encoder_input = layers.Input(shape=(8, 8, 15), dtype=dtype)
-    encoder = layers.Reshape((8*8*15,))(encoder_input)
-    encoder = layers.Dense(EMBEDDING_SIZE, activation='relu')(encoder)
+    encoder = layers.Reshape((8 * 8 * 15,))(encoder_input)
+    encoder = layers.Dense(EMBEDDING_SIZE, activation="relu")(encoder)
     for _ in range(BLOCKS):
         encoder = block_with_skip_connection(encoder)
 
@@ -106,15 +116,19 @@ def skip_equi_dense() -> dict[str, keras.Model]:
     decoder = decoder_input
     for _ in range(BLOCKS):
         decoder = block_with_skip_connection(decoder)
-    decoder = layers.Dense(8*8*15, activation='relu')(decoder)
+    decoder = layers.Dense(8 * 8 * 15, activation="relu")(decoder)
     decoder = layers.Reshape((8, 8, 15))(decoder)
 
     # Autoencoder
-    encoder = keras.Model(inputs=encoder_input, outputs=encoder, name='encoder')
-    decoder = keras.Model(inputs=decoder_input, outputs=decoder, name='decoder')
-    autoencoder = keras.Model(inputs=encoder_input, outputs=decoder(encoder(encoder_input)), name='autoencoder')
+    encoder = keras.Model(inputs=encoder_input, outputs=encoder, name="encoder")
+    decoder = keras.Model(inputs=decoder_input, outputs=decoder, name="decoder")
+    autoencoder = keras.Model(
+        inputs=encoder_input,
+        outputs=decoder(encoder(encoder_input)),
+        name="autoencoder",
+    )
 
-    return {'encoder': encoder, 'decoder': decoder, 'autoencoder': autoencoder}
+    return {"encoder": encoder, "decoder": decoder, "autoencoder": autoencoder}
 
 
 def cnn_dense() -> dict[str, keras.Model]:
@@ -125,36 +139,62 @@ def cnn_dense() -> dict[str, keras.Model]:
     encoder_input = layers.Input(shape=(8, 8, 15, 1), dtype=dtype)
 
     # Encoder
-    x = layers.Conv3D(CONV_FILTERS, (8, 8, 15), activation="relu", padding="same")(encoder_input)
+    x = layers.Conv3D(CONV_FILTERS, (8, 8, 15), activation="relu", padding="same")(
+        encoder_input
+    )
     x = layers.Conv3D(CONV_FILTERS, (8, 8, 15), activation="relu", padding="same")(x)
     x = layers.MaxPooling3D((2, 2, 1), padding="same")(x)
-    x = layers.Conv3D(2*CONV_FILTERS, (3, 3, 15), activation="relu", padding="same")(x)
-    x = layers.Conv3D(2*CONV_FILTERS, (3, 3, 15), activation="relu", padding="same")(x)
+    x = layers.Conv3D(2 * CONV_FILTERS, (3, 3, 15), activation="relu", padding="same")(
+        x
+    )
+    x = layers.Conv3D(2 * CONV_FILTERS, (3, 3, 15), activation="relu", padding="same")(
+        x
+    )
     x = layers.MaxPooling3D((2, 2, 1), padding="same")(x)
-    x = layers.Conv3D(4*CONV_FILTERS, (3, 3, 15), activation="relu", padding="same")(x)
-    x = layers.Conv3D(4*CONV_FILTERS, (3, 3, 15), activation="relu", padding="same")(x)
+    x = layers.Conv3D(4 * CONV_FILTERS, (3, 3, 15), activation="relu", padding="same")(
+        x
+    )
+    x = layers.Conv3D(4 * CONV_FILTERS, (3, 3, 15), activation="relu", padding="same")(
+        x
+    )
     x = layers.MaxPooling3D((2, 2, 1), padding="same")(x)
     x = layers.Flatten()(x)
     x = layers.Dense(EMBEDDING_SIZE, activation="relu")(x)
 
     # Decoder
     decoder_input = layers.Input(shape=(EMBEDDING_SIZE,), dtype=dtype)
-    y = layers.Dense(4*CONV_FILTERS*2*2*15, activation="relu")(decoder_input)
-    y = layers.Reshape((2, 2, 15, 4*CONV_FILTERS))(y)
-    y = layers.Conv3D(4*CONV_FILTERS, (3, 3, 15), activation="relu", padding="same")(y)
-    y = layers.Conv3DTranspose(2*CONV_FILTERS, (3, 3, 15), strides=(2, 2, 1), activation="relu", padding="same")(y)
-    y = layers.Conv3D(2*CONV_FILTERS, (3, 3, 15), activation="relu", padding="same")(y)
-    y = layers.Conv3DTranspose(CONV_FILTERS, (3, 3, 15), strides=(2, 2, 1), activation="relu", padding="same")(y)
+    y = layers.Dense(4 * CONV_FILTERS * 2 * 2 * 15, activation="relu")(decoder_input)
+    y = layers.Reshape((2, 2, 15, 4 * CONV_FILTERS))(y)
+    y = layers.Conv3D(4 * CONV_FILTERS, (3, 3, 15), activation="relu", padding="same")(
+        y
+    )
+    y = layers.Conv3DTranspose(
+        2 * CONV_FILTERS,
+        (3, 3, 15),
+        strides=(2, 2, 1),
+        activation="relu",
+        padding="same",
+    )(y)
+    y = layers.Conv3D(2 * CONV_FILTERS, (3, 3, 15), activation="relu", padding="same")(
+        y
+    )
+    y = layers.Conv3DTranspose(
+        CONV_FILTERS, (3, 3, 15), strides=(2, 2, 1), activation="relu", padding="same"
+    )(y)
     y = layers.Conv3D(CONV_FILTERS, (8, 8, 15), activation="relu", padding="same")(y)
     y = layers.Conv3D(1, (8, 8, 15), activation="relu", padding="same")(y)
     y = layers.Reshape((8, 8, 15))(y)
 
     # Autoencoder
-    encoder = keras.Model(inputs=encoder_input, outputs=x, name='encoder')
-    decoder = keras.Model(inputs=decoder_input, outputs=y, name='decoder')
-    autoencoder = keras.Model(inputs=encoder_input, outputs=decoder(encoder(encoder_input)), name='autoencoder')
+    encoder = keras.Model(inputs=encoder_input, outputs=x, name="encoder")
+    decoder = keras.Model(inputs=decoder_input, outputs=y, name="decoder")
+    autoencoder = keras.Model(
+        inputs=encoder_input,
+        outputs=decoder(encoder(encoder_input)),
+        name="autoencoder",
+    )
 
-    return {'encoder': encoder, 'decoder': decoder, 'autoencoder': autoencoder}
+    return {"encoder": encoder, "decoder": decoder, "autoencoder": autoencoder}
 
 
 def trivial() -> dict[str, keras.Model]:
@@ -163,20 +203,26 @@ def trivial() -> dict[str, keras.Model]:
 
     # Encoder
     encoder_input = layers.Input(shape=(8, 8, 15), dtype=dtype)
-    encoder = layers.Reshape((8*8*15,))(encoder_input)
-    encoder_embedding = layers.Dense(EMBEDDING_SIZE, activation='relu')(encoder)
+    encoder = layers.Reshape((8 * 8 * 15,))(encoder_input)
+    encoder_embedding = layers.Dense(EMBEDDING_SIZE, activation="relu")(encoder)
 
     # Decoder
     decoder_input = layers.Input(shape=(EMBEDDING_SIZE,), dtype=dtype)
-    decoder = layers.Dense(8*8*15, activation='relu')(decoder_input)
+    decoder = layers.Dense(8 * 8 * 15, activation="relu")(decoder_input)
     decoder = layers.Reshape((8, 8, 15))(decoder)
 
     # Autoencoder
-    encoder = keras.Model(inputs=encoder_input, outputs=encoder_embedding, name='encoder')
-    decoder = keras.Model(inputs=decoder_input, outputs=decoder, name='decoder')
-    autoencoder = keras.Model(inputs=encoder_input, outputs=decoder(encoder(encoder_input)), name='autoencoder')
+    encoder = keras.Model(
+        inputs=encoder_input, outputs=encoder_embedding, name="encoder"
+    )
+    decoder = keras.Model(inputs=decoder_input, outputs=decoder, name="decoder")
+    autoencoder = keras.Model(
+        inputs=encoder_input,
+        outputs=decoder(encoder(encoder_input)),
+        name="autoencoder",
+    )
 
-    return {'encoder': encoder, 'decoder': decoder, 'autoencoder': autoencoder}
+    return {"encoder": encoder, "decoder": decoder, "autoencoder": autoencoder}
 
 
 def encoder_decoder_transformer() -> dict[str, keras.Model]:
@@ -193,7 +239,9 @@ def encoder_decoder_transformer() -> dict[str, keras.Model]:
     STD_DEV = 0.02
 
     # Encoder
-    encoder_token_ids = layers.Input(shape=(SEQUENCE_LENGTH), dtype=ENCODING_DTYPE, name="encoder_token_ids")
+    encoder_token_ids = layers.Input(
+        shape=(SEQUENCE_LENGTH), dtype=ENCODING_DTYPE, name="encoder_token_ids"
+    )
 
     # Embed tokens ans positions
     token_embedding_layer = nlp_layers.ReversibleEmbedding(
@@ -218,7 +266,10 @@ def encoder_decoder_transformer() -> dict[str, keras.Model]:
         epsilon=1e-12,
         dtype=NN_DTYPE,
     )(x)
-    x = layers.Dropout(DROPOUT, name="embeddings_dropout",)(x)
+    x = layers.Dropout(
+        DROPOUT,
+        name="embeddings_dropout",
+    )(x)
 
     # Apply successive transformer encoder blocks.
     for i in range(ENCODER_LAYERS):
@@ -237,16 +288,18 @@ def encoder_decoder_transformer() -> dict[str, keras.Model]:
         EMBEDDING_DIMENSION,
         kernel_initializer=keras.initializers.TruncatedNormal(stddev=STD_DEV),
         activation="tanh",
-        name="dense"
+        name="dense",
     )(x)
 
     # Decoder
-    decoder_input = layers.Input(shape=(EMBEDDING_DIMENSION), dtype=NN_DTYPE, name="decoder_input")
+    decoder_input = layers.Input(
+        shape=(EMBEDDING_DIMENSION), dtype=NN_DTYPE, name="decoder_input"
+    )
     x = layers.Dense(
-        SEQUENCE_LENGTH*EMBEDDING_DIMENSION,
+        SEQUENCE_LENGTH * EMBEDDING_DIMENSION,
         kernel_initializer=keras.initializers.TruncatedNormal(stddev=STD_DEV),
         activation="tanh",
-        name="dense"
+        name="dense",
     )(decoder_input)
     x = layers.Reshape((SEQUENCE_LENGTH, EMBEDDING_DIMENSION))(x)
     # x = keras.layers.Dropout(
@@ -276,14 +329,20 @@ def encoder_decoder_transformer() -> dict[str, keras.Model]:
     decoder_logits = token_embedding_layer(decoder, reverse=True)
 
     # Autoencoder
-    encoder = keras.Model(inputs=encoder_token_ids, outputs=encoder_embedding, name='encoder')
-    decoder = keras.Model(inputs=decoder_input, outputs=decoder_logits, name='decoder')
-    autoencoder = keras.Model(inputs=encoder_token_ids, outputs=decoder(encoder(encoder_token_ids)), name='autoencoder')
+    encoder = keras.Model(
+        inputs=encoder_token_ids, outputs=encoder_embedding, name="encoder"
+    )
+    decoder = keras.Model(inputs=decoder_input, outputs=decoder_logits, name="decoder")
+    autoencoder = keras.Model(
+        inputs=encoder_token_ids,
+        outputs=decoder(encoder(encoder_token_ids)),
+        name="autoencoder",
+    )
 
-    return {'encoder': encoder, 'decoder': decoder, 'autoencoder': autoencoder}
+    return {"encoder": encoder, "decoder": decoder, "autoencoder": autoencoder}
 
 
-class PositionPredictionHead():
+class PositionPredictionHead:
     def __init__(self, backend: keras.Model):
         self.backend = backend
 
