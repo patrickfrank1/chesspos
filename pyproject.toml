@@ -24,3 +24,6 @@ dev = [
     "ruff>=0.15.22",
     "umap-learn>=0.5.11",
 ]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]

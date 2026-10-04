@@ -139,11 +139,13 @@ generate_hf_dataset.py
    2. EXTRACT   _extract_positions ── PGNProcessor.extract_game(game)
          │         ├── _keep_game: tiered game subsampling by player strength
          │         └── _extract_positions: every mainline position (no sampling)
-         │         emits dict{fen, ply, white_elo, black_elo, result} per position
-   3. LIMIT     positions.limit(batch_size)
-   4. ENCODE    _encode_batch ── TokenStreamEncoder().encode_batch(boards)
-         │         → int16 PAD-padded segments + int32 length column
-   5. SPLIT     ray.data.Dataset.train_test_split(train_ratio) → (train_ds, test_ds)
+         │         emits one dict row per game:
+         │         {fens, n_positions, ply, game_id, white_elo, black_elo, result}
+   3. LIMIT     games.limit(batch_size)   (caps games, not positions)
+   4. ENCODE    _encode_batch ── TokenStreamEncoder().encode(board) per position
+         │         → pack_stream(segments, add_cls=True) → 1-D int16 per game
+         │         + split column via hash(game_id) vs train_ratio
+   5. SPLIT     materialize() → filter(split == "train" / "test")
    6. PUSH      _push_batch ── write_parquet(tempdir) → HfApi.upload_file
         │         path_in_repo = f"{split}/batch_{NNNN}_{name}.parquet"
         │         (skipped when --dry-run)
@@ -220,12 +222,13 @@ Variable-length `int16` token segments:
   (base + 64·piece_index + square → 38–805), `VOCAB_SIZE=806`.
 - Segment layout: `TURN CASTLE [EP] piece-square*` with piece tokens sorted by
   square ascending (canonical order).
-- `encode_batch` returns `(padded (N, L) int16, lengths (N,) int32)`; the ETL
-  stores both as the `encoded` and `length` columns.
+- `encode_batch` returns `(padded (N, L) int16, lengths (N,) int32)`.
 - `decode`/`decode_batch` invert the encoding (round trip is exact against
   `board.epd()`; halfmove/fullmove counters are not encoded).
 - `pack_stream(segments, add_cls=True)` concatenates segments with `SEP`
-  (optionally prefixed by `CLS`) into a single training sequence.
+  (prefixed by `CLS`) into a single 1-D `int16` sequence. The ETL uses this to
+  emit **one packed row per game**; no truncation is applied, so long games
+  produce proportionally long rows.
 
 ### ETL orchestrator (`etl.py`)
 
@@ -236,7 +239,15 @@ Variable-length `int16` token segments:
   batch as `ray.data.Dataset`s.
 - `_process_batch` is the Ray pipeline:
   `read_binary_files → flat_map(_extract_positions) → limit(batch_size) →
-  map_batches(_encode_batch) → train_test_split(train_ratio)`.
+  map_batches(_encode_batch, batch_format="pyarrow") → materialize() →
+  filter(split)`. The split is decided per game by `_split_for_game`
+  (`hash(game_id) < train_ratio`), so all positions of a game land in the same
+  split and the row-level `train_test_split` (which caused train/test leakage
+  and scattered game positions) is gone. `batch_size` caps **games** per batch,
+  not positions.
+- `_game_id` derives a stable id from the PGN identifying headers
+  (`Event|Site|Date|Round|White|Black`, sha1, truncated to 16 hex chars) —
+  deterministic across runs and workers (unlike Python's builtin `hash`).
 - `_extract_positions` and `_encode_batch` are static so Ray can pickle them as
   plain functions; each worker reconstructs its own `PGNProcessor` /
   `TokenStreamEncoder`.
@@ -302,14 +313,12 @@ is still used for resume lookups and the dataset card.
 
 ## Known Schema Mismatch
 
-`ChessPositionDataset._encode_batch` writes columns named `encoded`, `ply`,
-`white_elo`, `black_elo`, and `result` — i.e. one encoded position per row plus
-metadata. However, `TrainingDataGenerator._streaming_to_tf_dataset` reads
-columns named `window` and `scalars` and emits `(None, 69)` windows.
+The ETL now writes one row per game with columns `packed` (1-D ragged int16
+token stream, CLS-prefixed, positions separated by SEP), `n_positions`, `ply`,
+`game_id`, `white_elo`, `black_elo`, `result`, and `split`. However,
+`TrainingDataGenerator._streaming_to_tf_dataset` still reads columns named
+`window` and `scalars` and emits `(None, 69)` windows.
 
-These names and shapes do not line up. The loader appears to target a different
-(or older) dataset schema based on temporal windows (see
-`PGNProcessor.extract_temporal_windows`), whereas the current ETL produces
-single encoded positions with metadata. Reconciling this — either by having the
-ETL emit windowed rows, or by having the loader consume single-position rows —
-is a prerequisite for end-to-end training off the generated dataset.
+The loader must be updated to consume per-game packed rows (unpack/segment the
+`packed` stream, or slice windows from it). Until then, end-to-end training off
+the generated dataset is not possible.

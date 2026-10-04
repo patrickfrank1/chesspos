@@ -65,8 +65,9 @@ entity-relationship diagram and runtime flow. Summary:
   variable-length `int16` segments, vocab of 806 tokens.
 
 > Note: there is a known schema mismatch between what `_encode_batch` writes
-> (`encoded`, `ply`, …) and what `TrainingDataGenerator` reads (`window`,
-> `scalars`). Documented in `docs/dataset_pipeline.md`.
+> (per-game rows: `packed`, `n_positions`, `game_id`, `split`, …) and what
+> `TrainingDataGenerator` reads (`window`, `scalars`). Documented in
+> `docs/dataset_pipeline.md`.
 
 ## Development Workflow
 

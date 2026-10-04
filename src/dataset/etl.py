@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import io
 from dataclasses import dataclass, field
 from functools import partial
@@ -7,7 +8,7 @@ from typing import Iterator
 
 import chess
 import chess.pgn
-import numpy as np
+import pyarrow as pa
 import ray
 import ray.data
 
@@ -19,7 +20,7 @@ from src.dataset.config import (
     TimeControlFilter,
 )
 from src.dataset.pgn_processor import PGNProcessor
-from src.dataset.token_stream import TokenStreamEncoder
+from src.dataset.token_stream import TokenStreamEncoder, pack_stream
 from src.utils.fileops import file_paths_from_directory
 
 
@@ -46,7 +47,7 @@ class ChessPositionDataset:
             time_control_filter=time_control_filter,
         )
         bytes_data = row["bytes"]
-        positions = []
+        games = []
 
         pgn_file = io.StringIO(bytes_data.decode("utf-8", errors="ignore"))
         while True:
@@ -55,32 +56,58 @@ class ChessPositionDataset:
                 break
             record = processor.extract_game(game)
             if record is not None:
-                for pos in record.positions:
-                    positions.append(
-                        {
-                            "fen": pos.board.fen(),
-                            "ply": pos.ply,
-                            "white_elo": pos.metadata.white_elo,
-                            "black_elo": pos.metadata.black_elo,
-                            "result": pos.metadata.result or "",
-                        }
-                    )
-        return positions
+                games.append(
+                    {
+                        "fens": [pos.board.fen() for pos in record.positions],
+                        "n_positions": len(record.positions),
+                        "ply": len(record.positions) - 1,
+                        "game_id": ChessPositionDataset._game_id(game),
+                        "white_elo": int(record.metadata.white_elo or 0),
+                        "black_elo": int(record.metadata.black_elo or 0),
+                        "result": record.metadata.result or "",
+                    }
+                )
+        return games
 
     @staticmethod
-    def _encode_batch(batch: dict) -> dict:
+    def _game_id(game: chess.pgn.Game) -> str:
+        parts = [
+            game.headers.get(key, "?")
+            for key in ("Event", "Site", "Date", "Round", "White", "Black")
+        ]
+        identity = "|".join(parts)
+        return hashlib.sha1(identity.encode("utf-8")).hexdigest()[:16]
+
+    @staticmethod
+    def _split_for_game(game_id: str, train_ratio: float) -> str:
+        digest = hashlib.sha1(game_id.encode("utf-8")).digest()
+        uniform = int.from_bytes(digest[:8], "big") / 2**64
+        return "train" if uniform < train_ratio else "test"
+
+    @staticmethod
+    def _encode_batch(batch: pa.Table, train_ratio: float) -> pa.Table:
         encoder = TokenStreamEncoder()
-        fens = batch["fen"]
-        boards = [chess.Board(fen) for fen in fens]
-        encoded, lengths = encoder.encode_batch(boards)
-        return {
-            "encoded": encoded,
-            "length": lengths,
-            "ply": np.array(batch["ply"], dtype=np.int32),
-            "white_elo": np.array(batch["white_elo"], dtype=np.int32),
-            "black_elo": np.array(batch["black_elo"], dtype=np.int32),
-            "result": batch["result"],
-        }
+        packed_rows = []
+        split = []
+        for fens, game_id in zip(
+            batch.column("fens").to_pylist(),
+            batch.column("game_id").to_pylist(),
+        ):
+            segments = [encoder.encode(chess.Board(fen)) for fen in fens]
+            packed_rows.append(pack_stream(segments, add_cls=True))
+            split.append(ChessPositionDataset._split_for_game(game_id, train_ratio))
+        return pa.table(
+            {
+                "packed": pa.array(packed_rows, type=pa.list_(pa.int16())),
+                "n_positions": batch.column("n_positions").cast(pa.int32()),
+                "ply": batch.column("ply").cast(pa.int32()),
+                "game_id": batch.column("game_id"),
+                "white_elo": batch.column("white_elo").cast(pa.int32()),
+                "black_elo": batch.column("black_elo").cast(pa.int32()),
+                "result": batch.column("result"),
+                "split": pa.array(split, type=pa.string()),
+            }
+        )
 
     def generate(
         self,
@@ -129,10 +156,13 @@ class ChessPositionDataset:
             time_control_filter=time_control_filter,
         )
 
-        positions = dataset.flat_map(extract_fn)
-        limited = positions.limit(batch_size)
-        encoded = limited.map_batches(self._encode_batch, batch_format="numpy")
-        train_ds, test_ds = encoded.train_test_split(train_ratio)
+        games = dataset.flat_map(extract_fn)
+        limited = games.limit(batch_size)
+        encode_fn = partial(self._encode_batch, train_ratio=train_ratio)
+        encoded = limited.map_batches(encode_fn, batch_format="pyarrow")
+        encoded = encoded.materialize()
+        train_ds = encoded.filter(lambda row: row["split"] == "train")
+        test_ds = encoded.filter(lambda row: row["split"] == "test")
 
         return train_ds, test_ds
 
@@ -188,19 +218,41 @@ class ChessPositionDataset:
 
     def create_dataset_card(self) -> str:
         features = {
-            "encoded": {
+            "packed": {
                 "dtype": "int16",
-                "description": "Token stream segment (PAD-padded, see length)",
+                "description": (
+                    "Packed token stream for one game: CLS-prefixed, one "
+                    "variable-length segment per position separated by SEP "
+                    "(see token_stream.py for the segment layout)"
+                ),
             },
-            "length": {
+            "n_positions": {
                 "shape": "()",
                 "dtype": "int32",
-                "description": "Number of valid tokens in encoded",
+                "description": "Number of encoded positions in the game",
             },
             "ply": {
                 "shape": "()",
                 "dtype": "int32",
-                "description": "Move number (half-moves)",
+                "description": "Ply index of the final position (n_positions - 1)",
+            },
+            "game_id": {
+                "dtype": "string",
+                "description": "Deterministic hash of the PGN identifying headers",
+            },
+            "white_elo": {
+                "shape": "()",
+                "dtype": "int32",
+                "description": "White player rating (0 when missing)",
+            },
+            "black_elo": {
+                "shape": "()",
+                "dtype": "int32",
+                "description": "Black player rating (0 when missing)",
+            },
+            "result": {
+                "dtype": "string",
+                "description": "Game result header (1-0, 0-1, 1/2-1/2)",
             },
         }
 
@@ -208,8 +260,8 @@ class ChessPositionDataset:
 
 dataset = load_dataset("{self.dataset_config.repo_name}", split="train")
 for sample in dataset:
-    encoded = sample["encoded"]
-    ply = sample["ply"]
+    packed = sample["packed"]
+    game_id = sample["game_id"]
 '''
 
         return self.hf_client.create_dataset_card(
