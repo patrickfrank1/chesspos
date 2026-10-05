@@ -7,8 +7,9 @@ import yaml
 
 from src.dataset.config import (
     DatasetConfig,
+    GameSubsampling,
     PreprocessingConfig,
-    SamplingFilters,
+    TimeControlFilter,
 )
 from src.dataset.etl import ChessPositionDataset
 
@@ -19,10 +20,10 @@ def load_yaml_config(path: str) -> dict[str, Any]:
 
 
 def _get_nested(data: dict[str, Any], key: str) -> Any:
-    flat_fields = {"batch_size", "train_ratio", "repo_name", "data_path"}
+    flat_fields = {"batch_size", "train_ratio", "repo_name", "data_path", "output_dir"}
     runtime_fields = {"num_batches", "dry_run", "resume", "create_card"}
     preprocessing_fields = {"worker_count", "memory_limit_mb", "debug"}
-    sampling_fields = {"min_elo", "min_ply", "max_ply", "subsample_rate"}
+    sampling_fields = {"tiers", "min_time_control_seconds"}
 
     if key in flat_fields:
         return data.get(key)
@@ -96,6 +97,12 @@ def parse_args() -> argparse.Namespace:
         help="Generate locally without pushing to HuggingFace Hub",
     )
     parser.add_argument(
+        "--output-dir",
+        type=str,
+        default=None,
+        help="Directory to write parquet shards to in dry-run mode",
+    )
+    parser.add_argument(
         "--resume",
         action="store_true",
         default=None,
@@ -112,30 +119,6 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=None,
         help="Memory limit per worker in MB",
-    )
-    parser.add_argument(
-        "--min-elo",
-        type=int,
-        default=None,
-        help="Minimum ELO for position sampling",
-    )
-    parser.add_argument(
-        "--min-ply",
-        type=int,
-        default=None,
-        help="Minimum ply to start sampling",
-    )
-    parser.add_argument(
-        "--max-ply",
-        type=int,
-        default=None,
-        help="Maximum ply for sampling",
-    )
-    parser.add_argument(
-        "--subsample",
-        type=float,
-        default=None,
-        help="Position subsampling rate",
     )
     parser.add_argument(
         "--create-card",
@@ -198,24 +181,34 @@ def main() -> int:
     memory_limit_mb: int = _resolve(
         args.memory, _yaml_val(yaml_cfg, "memory_limit_mb"), 4096
     )
-    min_elo: int = _resolve(args.min_elo, _yaml_val(yaml_cfg, "min_elo"), 2000)
-    min_ply: int = _resolve(args.min_ply, _yaml_val(yaml_cfg, "min_ply"), 0)
-    max_ply: int | None = _resolve(args.max_ply, _yaml_val(yaml_cfg, "max_ply"), None)
-    subsample_rate: float = _resolve(
-        args.subsample, _yaml_val(yaml_cfg, "subsample_rate"), 0.33
-    )
     dry_run: bool = _resolve(args.dry_run, _yaml_val(yaml_cfg, "dry_run"), False)
+    output_dir: str | None = _resolve(
+        args.output_dir, _yaml_val(yaml_cfg, "output_dir"), None
+    )
     resume: bool = _resolve(args.resume, _yaml_val(yaml_cfg, "resume"), False)
     create_card: bool = _resolve(
         args.create_card, _yaml_val(yaml_cfg, "create_card"), False
     )
     debug: bool = _resolve(args.debug, _yaml_val(yaml_cfg, "debug"), False)
 
-    sampling_filters = SamplingFilters(
-        min_elo=min_elo,
-        min_ply=min_ply,
-        max_ply=max_ply,
-        subsample_rate=subsample_rate,
+    tiers_yaml = _yaml_val(yaml_cfg, "tiers")
+    if tiers_yaml is not None:
+        subsampling = GameSubsampling.from_dict({"tiers": tiers_yaml})
+    else:
+        subsampling = GameSubsampling()
+
+    min_tc_yaml = _yaml_val(yaml_cfg, "min_time_control_seconds")
+    if min_tc_yaml is not None:
+        time_control_filter = TimeControlFilter(min_seconds=int(min_tc_yaml))
+    else:
+        time_control_filter = TimeControlFilter()
+
+    preprocessing_config = PreprocessingConfig(
+        worker_count=worker_count,
+        memory_limit_mb=memory_limit_mb,
+        subsampling=subsampling,
+        time_control_filter=time_control_filter,
+        debug=debug,
     )
 
     dataset_config = DatasetConfig(
@@ -223,13 +216,6 @@ def main() -> int:
         batch_size=batch_size,
         train_ratio=train_ratio,
         data_path=data_path,
-    )
-
-    preprocessing_config = PreprocessingConfig(
-        worker_count=worker_count,
-        memory_limit_mb=memory_limit_mb,
-        sampling_filters=sampling_filters,
-        debug=debug,
     )
 
     dataset = ChessPositionDataset(
@@ -241,10 +227,20 @@ def main() -> int:
     print(f"Data path: {data_path}")
     print(f"Batch size: {batch_size}")
     print(f"Workers: {worker_count}, Memory: {memory_limit_mb}MB")
-    print(f"ELO filter: >= {min_elo}, Subsample: {subsample_rate}")
+    print(
+        "Game subsampling tiers: "
+        + ", ".join(f">={t.min_elo}: {t.rate:.0%}" for t in subsampling.tiers)
+    )
+    min_tc = time_control_filter.min_seconds
+    if min_tc is None:
+        print("Time control filter: disabled")
+    else:
+        print(f"Time control filter: excluding games with base time < {min_tc}s")
 
     if dry_run:
         print("DRY RUN: Data will not be pushed to HuggingFace Hub")
+        if output_dir:
+            print(f"Writing parquet shards to: {output_dir}")
 
     batches_completed = 0
     total_positions = 0
@@ -253,12 +249,15 @@ def main() -> int:
         num_batches=num_batches,
         resume=resume,
         dry_run=dry_run,
+        output_dir=output_dir,
     ):
         batches_completed += 1
-        total_positions += len(train_data) + len(test_data)
+        train_count = train_data.count()
+        test_count = test_data.count()
+        total_positions += train_count + test_count
         print(
             f"Batch {batches_completed}/{num_batches}: "
-            f"train={len(train_data)}, test={len(test_data)}"
+            f"train={train_count}, test={test_count}"
         )
 
     if create_card and not dry_run:
@@ -267,7 +266,7 @@ def main() -> int:
         print("Dataset card pushed to HuggingFace Hub")
 
     print(
-        f"\nComplete! Generated {total_positions} positions in {batches_completed} batches"
+        f"\nComplete! Generated {total_positions} games in {batches_completed} batches"
     )
     return 0
 

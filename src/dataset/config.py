@@ -37,27 +37,80 @@ class DatasetConfig:
 
 
 @dataclass
-class SamplingFilters:
-    min_elo: int = 2000
-    min_ply: int = 0
-    max_ply: int | None = None
-    subsample_rate: float = 0.33
+class GameSubsampleTier:
+    """Acceptance tier for games by player strength.
+
+    A game qualifies for a tier when both players' ratings are at least
+    ``min_elo``. It is assigned to the strictest qualifying tier and kept
+    with probability ``rate``. Games with missing ratings only qualify for
+    the ``min_elo=0`` tier.
+    """
+
+    min_elo: int = 0
+    rate: float = 1.0
 
     def __post_init__(self):
         if self.min_elo < 0:
             raise ValueError("min_elo cannot be negative")
-        if self.min_ply < 0:
-            raise ValueError("min_ply cannot be negative")
-        if self.max_ply is not None and self.max_ply < self.min_ply:
-            raise ValueError("max_ply cannot be less than min_ply")
-        if not 0 < self.subsample_rate <= 1:
-            raise ValueError("subsample_rate must be between 0 and 1")
+        if not 0 < self.rate <= 1:
+            raise ValueError("rate must be between 0 and 1")
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "SamplingFilters":
+    def from_dict(cls, data: dict[str, Any]) -> "GameSubsampleTier":
+        return cls(**data)
+
+
+@dataclass
+class GameSubsampling:
+    """Tiered subsampling of games by metadata (player strength).
+
+    Tiers are evaluated per game: the game is matched against the strictest
+    tier it qualifies for and accepted with that tier's rate. Include a
+    ``min_elo=0`` catch-all tier to keep weak or unrated games.
+    """
+
+    tiers: list[GameSubsampleTier] = field(
+        default_factory=lambda: [
+            GameSubsampleTier(min_elo=2400, rate=1.0),
+            GameSubsampleTier(min_elo=2000, rate=0.4),
+            GameSubsampleTier(min_elo=0, rate=0.001),
+        ]
+    )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"tiers": [tier.to_dict() for tier in self.tiers]}
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "GameSubsampling":
+        return cls(
+            tiers=[GameSubsampleTier.from_dict(t) for t in data.get("tiers", [])]
+        )
+
+
+@dataclass
+class TimeControlFilter:
+    """Filter out fast games (bullet) by base time control.
+
+    A game is excluded when its TimeControl header parses to a base time
+    strictly below ``min_seconds``. Games with missing or unparseable time
+    control headers are kept, since their speed cannot be determined. Set
+    ``min_seconds=None`` to disable the filter.
+    """
+
+    min_seconds: int | None = 300
+
+    def __post_init__(self):
+        if self.min_seconds is not None and self.min_seconds < 0:
+            raise ValueError("min_seconds cannot be negative")
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "TimeControlFilter":
         return cls(**data)
 
 
@@ -65,7 +118,8 @@ class SamplingFilters:
 class PreprocessingConfig:
     worker_count: int = 4
     memory_limit_mb: int = 4096
-    sampling_filters: SamplingFilters = field(default_factory=SamplingFilters)
+    subsampling: GameSubsampling = field(default_factory=GameSubsampling)
+    time_control_filter: TimeControlFilter = field(default_factory=TimeControlFilter)
     debug: bool = False
 
     def __post_init__(self):
@@ -80,7 +134,10 @@ class PreprocessingConfig:
     @classmethod
     def from_json(cls, json_str: str) -> "PreprocessingConfig":
         data = json.loads(json_str)
-        data["sampling_filters"] = SamplingFilters.from_dict(data["sampling_filters"])
+        data["subsampling"] = GameSubsampling.from_dict(data["subsampling"])
+        data["time_control_filter"] = TimeControlFilter.from_dict(
+            data["time_control_filter"]
+        )
         return cls(**data)
 
     def to_dict(self) -> dict[str, Any]:

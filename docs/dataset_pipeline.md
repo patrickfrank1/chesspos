@@ -23,30 +23,25 @@ erDiagram
     %% ---- Configuration entities ----
     DatasetConfig ||--|| ChessPositionDataset : configures
     PreprocessingConfig ||--|| ChessPositionDataset : configures
-    PreprocessingConfig ||--|| SamplingFilters : contains
-    EncoderConfig ||--|| ChessPositionDataset : configures
+    PreprocessingConfig ||--|| GameSubsampling : contains
 
     DatasetConfig {
         str repo_name
         int batch_size
-        EncodingFormat encoding
         float train_ratio
         str data_path
     }
-    SamplingFilters {
+    GameSubsampling {
+        GameSubsampleTier_tiers tiers
+    }
+    GameSubsampleTier {
         int min_elo
-        int min_ply
-        int max_ply
-        float subsample_rate
+        float rate
     }
     PreprocessingConfig {
         int worker_count
         int memory_limit_mb
         bool debug
-    }
-    EncoderConfig {
-        EncodingFormat encoding_format
-        int window_size
     }
 
     %% ---- Domain entities ----
@@ -78,39 +73,20 @@ erDiagram
     %% ---- Processing components ----
     ChessPositionDataset ||--|| HuggingFaceClient : owns
     ChessPositionDataset ||--o{ PGNProcessor : creates_per_worker
-    ChessPositionDataset ||--|| PositionEncoder : resolves_via_get_encoder
-    PGNProcessor ||--|| SamplingFilters : uses
+    ChessPositionDataset ||--|| TokenStreamEncoder : encodes_with
+    PGNProcessor ||--|| GameSubsampling : uses
     PGNProcessor ||--o{ GameRecord : produces
-    TokenSequenceEncoder ||--|| PositionEncoder : implements
-    TensorEncoder ||--|| PositionEncoder : implements
-    BitboardEncoder ||--|| PositionEncoder : implements
-    PositionEncoder ||--o{ EncodedBatch : produces
 
     ChessPositionDataset {
         DatasetConfig dataset_config
         PreprocessingConfig preprocessing_config
-        EncoderConfig encoder_config
     }
     PGNProcessor {
-        SamplingFilters sampling_filters
+        GameSubsampling subsampling
     }
-    PositionEncoder {
-        EncodingFormat encoding_format
-        tuple output_shape
-    }
-    TokenSequenceEncoder {
-        int_arr shape_69
-    }
-    TensorEncoder {
-        bool_arr shape_8_8_15
-    }
-    BitboardEncoder {
-        bool_arr shape_773
-    }
-    EncodedBatch {
-        ndarray data
-        str encoding_format
-        list metadata
+    TokenStreamEncoder {
+        int_arr int16_segments
+        int length_column
     }
     HuggingFaceClient {
         str repo_name
@@ -125,7 +101,6 @@ erDiagram
     TrainingDataGenerator {
         str repo_name
         str split
-        EncodingFormat encoding
         int batch_size
         int mask_tokens
     }
@@ -156,21 +131,27 @@ erDiagram
 
 ```
 generate_hf_dataset.py
-  ├── parse CLI args + YAML  ──►  DatasetConfig / PreprocessingConfig / EncoderConfig
+  ├── parse CLI args + YAML  ──►  DatasetConfig / PreprocessingConfig
   └── ChessPositionDataset.generate(num_batches, resume, dry_run)
         │
         ▼  (Ray Data cluster, worker_count CPUs)
    1. READ      ray.data.read_binary_files(*.pgn)
-   2. EXTRACT   _extract_positions ── PGNProcessor.extract_game(game)
-        │         ├── SamplingFilters._passes_elo_filter (logistic ELO gating)
-        │         └── _should_sample_position (ply² × subsample_rate)
-        │         emits dict{fen, ply, white_elo, black_elo, result} per position
-   3. LIMIT     positions.limit(batch_size)
-   4. ENCODE    _encode_batch ── get_encoder(encoding_format).encode_batch(boards)
-        │         ├── token_sequence → int8 (69,)
-        │         ├── tensor          → bool (8,8,15)
-        │         └── bitboard        → bool (773,)
-   5. SPLIT     ray.data.Dataset.train_test_split(train_ratio) → (train_ds, test_ds)
+   2. EXTRACT   _extract_positions ── PGNProcessor (two-pass)
+         │         ├── pass 1: chess.pgn.read_headers scan + keep_game
+         │         │   (time-control filter + tiered strength subsampling);
+         │         │   only the offsets of kept games are recorded
+         │         └── pass 2: re-parse kept games only; every mainline
+         │             position is encoded straight from the live board
+         │             (TokenStreamEncoder().encode(board) + pack_stream,
+         │             add_cls=True) — no per-position board copies, no
+         │             FEN roundtrip
+         │         emits one dict row per game:
+         │         {packed, n_positions, ply, game_id, white_elo, black_elo, result}
+   3. LIMIT     games.limit(batch_size)   (caps games, not positions)
+   4. FINALIZE  _finalize_batch ── casts packed to int16 (flat_map rows are
+         │         int64), casts scalar columns, and adds the split column
+         │         via hash(game_id) vs train_ratio
+   5. SPLIT     materialize() → filter(split == "train" / "test")
    6. PUSH      _push_batch ── write_parquet(tempdir) → HfApi.upload_file
         │         path_in_repo = f"{split}/batch_{NNNN}_{name}.parquet"
         │         (skipped when --dry-run)
@@ -193,28 +174,30 @@ generate_hf_dataset.py
 Plain `@dataclass` objects with `__post_init__` validation. They are the only
 inputs to the orchestrator and thread through every stage:
 
-- `DatasetConfig` — what to build (`repo_name`, `batch_size`, `encoding`,
-  `train_ratio`, `data_path`).
+- `DatasetConfig` — what to build (`repo_name`, `batch_size`, `train_ratio`,
+  `data_path`).
 - `PreprocessingConfig` — how to build it (`worker_count`, `memory_limit_mb`,
-  `debug`) and embeds `SamplingFilters`.
-- `SamplingFilters` — game/position gating: `min_elo`, `min_ply`, `max_ply`,
-  `subsample_rate`.
-- `EncoderConfig` — `encoding_format` + `window_size` (the latter is currently
-  consumed by the loader-side windowing, not the ETL).
+  `debug`) and embeds `GameSubsampling` and `TimeControlFilter`.
+- `GameSubsampling` — tiered game subsampling by player strength: a list of
+  `GameSubsampleTier(min_elo, rate)` entries. A game is assigned to the
+  strictest tier whose `min_elo` both players meet and kept with probability
+  `rate`; games with missing ratings only qualify for the `min_elo=0`
+  catch-all tier.
+- `TimeControlFilter` — hard filter (not stochastic) that excludes games whose
+  TimeControl header parses to a base time below `min_seconds` (default 300s,
+  i.e. bullet games). Games with missing/unparseable time control are kept;
+  set `min_seconds=None` to disable.
 
 ### Domain types (`types.py`)
 
 In-memory representations only; never persisted directly. The ETL flattens
 these into dict rows before encoding.
 
-- `GameMetadata` — PGN header fields (ELOs, result, opening, event, date).
+- `GameMetadata` — PGN header fields (ELOs, result, opening, event, date,
+  time control).
 - `PositionRecord` — `board` (a `chess.Board`), `ply`, `metadata`,
   `move_sequence`.
 - `GameRecord` — a list of `PositionRecord`s sharing one `GameMetadata`.
-- `EncodedBatch` — numpy array + encoding format + metadata list (used by
-  encoders' batch APIs; not currently flowed through the ETL itself).
-- `EncodingFormat` is just a `str` alias; the three constants
-  (`TOKEN_SEQUENCE`, `TENSOR`, `BITBOARD`) index `ENCODING_SHAPES`.
 
 ### PGN processing (`pgn_processor.py`)
 
@@ -223,33 +206,35 @@ operate on a single `chess.pgn.Game` (the path used by the ETL, where Ray
 already handles file distribution):
 
 - `_extract_metadata` parses headers; `_parse_elo` tolerates `"?"`/garbage.
-- `_passes_elo_filter` uses a **logistic** acceptance probability on
-  `min(white_elo, black_elo)` centred at `min_elo` — games near the threshold
-  are probabilistically included rather than hard-cut.
-- `_extract_positions` walks the mainline, respecting `min_ply`/`max_ply`, and
-  yields a `PositionRecord` per accepted move.
-- `_should_sample_position` samples with probability
-  `(ply/30)² × subsample_rate`, so early plies are aggressively down-weighted
-  (openings are over-represented in PGN corpora).
+- `_keep_game` applies tiered game subsampling (`GameSubsampling`): the game's
+  strength is `min(white_elo, black_elo)` (missing ratings count as 0); it is
+  matched against the strictest qualifying tier and kept with that tier's
+  `rate` probability.
+- `_extract_positions` walks the mainline and yields a `PositionRecord` for
+  **every** position — no position-level subsampling (that belongs to
+  training-time data selection now).
 - `extract_temporal_windows` is an alternative API yielding fixed-length
   `list[PositionRecord]` sliding windows — currently unused by the ETL but
   aligned with the loader's window-shaped expectations.
 
-### Position encoders (`position_encoder.py`)
+### Token stream encoder (`token_stream.py`)
 
-Abstract `PositionEncoder` with `encode`/`encode_batch`/`decode`/`decode_batch`
-and a registry:
+The only encoder, hardcoded into the ETL (no ABC, no registry, no config).
+Variable-length `int16` token segments:
 
-- `TokenSequenceEncoder` — 64 piece tokens + 5 status tokens (turn + 4 castling
-  rights), dtype `int8`, shape `(69,)`. Vocabulary reserves ids 15 (`empty`),
-  16 (`mask`), 17–28 (pieces), 29–30 (turn), 31–32 (castling). This is the
-  default and the format the loader is wired for.
-- `TensorEncoder` — `8×8×15` boolean tensor (12 piece planes + castling +
-  en-passant + turn).
-- `BitboardEncoder` — flat `773`-bool vector (12×64 + 5 status bits).
-
-`get_encoder(format)` instantiates from the registry; `register_encoder` allows
-extension.
+- Vocabulary: `PAD=0, MASK=1, SEP=2, CLS=3`, `TURN_WHITE=4`, `TURN_BLACK=5`,
+  `CASTLE_BASE=6` (base + 4-bit rights mask → 6–21), `EP_BASE=22` (base +
+  square index → 22–37, only when en passant is *legal*), `PIECE_SQUARE_BASE=38`
+  (base + 64·piece_index + square → 38–805), `VOCAB_SIZE=806`.
+- Segment layout: `TURN CASTLE [EP] piece-square*` with piece tokens sorted by
+  square ascending (canonical order).
+- `encode_batch` returns `(padded (N, L) int16, lengths (N,) int32)`.
+- `decode`/`decode_batch` invert the encoding (round trip is exact against
+  `board.epd()`; halfmove/fullmove counters are not encoded).
+- `pack_stream(segments, add_cls=True)` concatenates segments with `SEP`
+  (prefixed by `CLS`) into a single 1-D `int16` sequence. The ETL uses this to
+  emit **one packed row per game**; no truncation is applied, so long games
+  produce proportionally long rows.
 
 ### ETL orchestrator (`etl.py`)
 
@@ -260,10 +245,18 @@ extension.
   batch as `ray.data.Dataset`s.
 - `_process_batch` is the Ray pipeline:
   `read_binary_files → flat_map(_extract_positions) → limit(batch_size) →
-  map_batches(_encode_batch) → train_test_split(train_ratio)`.
-- `_extract_positions` and `_encode_batch` are static so Ray can pickle them as
+  map_batches(_finalize_batch, batch_format="pyarrow") → materialize() →
+  filter(split)`. The split is decided per game by `_split_for_game`
+  (`hash(game_id) < train_ratio`), so all positions of a game land in the same
+  split and the row-level `train_test_split` (which caused train/test leakage
+  and scattered game positions) is gone. `batch_size` caps **games** per batch,
+  not positions.
+- `_game_id` derives a stable id from the PGN identifying headers
+  (`Event|Site|Date|Round|White|Black`, sha1, truncated to 16 hex chars) —
+  deterministic across runs and workers (unlike Python's builtin `hash`).
+- `_extract_positions` and `_finalize_batch` are static so Ray can pickle them as
   plain functions; each worker reconstructs its own `PGNProcessor` /
-  `PositionEncoder`.
+  `TokenStreamEncoder`.
 - `_push_batch` writes Parquet to a temp dir and uploads each shard via
   `HfApi.upload_file` to `{split}/batch_{NNNN:04d}_{name}.parquet`. Resume
   support comes from `HuggingFaceClient.get_next_batch_number()`, which lists
@@ -305,16 +298,15 @@ is still used for resume lookups and the dataset card.
 
 - **Two-stage lifecycle**: `etl.py` (write side, Ray-backed ETL → HF Hub
   Parquet) and `data_loader.py` (read side, HF Datasets → `tf.data.Dataset`)
-  are decoupled by the HuggingFace Hub repo (`DatasetConfig.repo_name`). Any
-  encoding-format change requires regenerating the dataset.
-- **Sampling is probabilistic and ply-aware**: `PGNProcessor` gates games by a
-  logistic ELO function and samples positions with probability
-  `(ply/30)² × subsample_rate`, so deeper moves are over-represented relative
-  to openings.
-- **Three encoders share the `PositionEncoder` ABC** and a registry
-  (`get_encoder`); the same `EncodingFormat` string threads through config →
-  ETL → dataset card → loader.
-- **`ChessPositionDataset` is the orchestrator**: it composes the three configs
+  are decoupled by the HuggingFace Hub repo (`DatasetConfig.repo_name`).
+- **Subsampling is game-level and tiered**: `PGNProcessor` keeps every position
+  of an accepted game (position selection belongs to training) and accepts
+  games by strength tier — the strictest `GameSubsampleTier(min_elo, rate)`
+  both players qualify for decides acceptance with probability `rate`.
+- **One encoder, no abstraction**: the `TokenStreamEncoder` in
+  `token_stream.py` is instantiated directly by the ETL. There is no
+  `PositionEncoder` ABC, registry, or encoder config to thread through.
+- **`ChessPositionDataset` is the orchestrator**: it composes the two configs
   + `HuggingFaceClient`, drives Ray, and owns the per-batch Parquet push.
   Resume support comes from `HuggingFaceClient.get_next_batch_number()`
   scanning existing shards.
@@ -327,14 +319,12 @@ is still used for resume lookups and the dataset card.
 
 ## Known Schema Mismatch
 
-`ChessPositionDataset._encode_batch` writes columns named `encoded`, `ply`,
-`white_elo`, `black_elo`, and `result` — i.e. one encoded position per row plus
-metadata. However, `TrainingDataGenerator._streaming_to_tf_dataset` reads
-columns named `window` and `scalars` and emits `(None, 69)` windows.
+The ETL now writes one row per game with columns `packed` (1-D ragged int16
+token stream, CLS-prefixed, positions separated by SEP), `n_positions`, `ply`,
+`game_id`, `white_elo`, `black_elo`, `result`, and `split`. However,
+`TrainingDataGenerator._streaming_to_tf_dataset` still reads columns named
+`window` and `scalars` and emits `(None, 69)` windows.
 
-These names and shapes do not line up. The loader appears to target a different
-(or older) dataset schema based on temporal windows (see
-`PGNProcessor.extract_temporal_windows`), whereas the current ETL produces
-single encoded positions with metadata. Reconciling this — either by having the
-ETL emit windowed rows, or by having the loader consume single-position rows —
-is a prerequisite for end-to-end training off the generated dataset.
+The loader must be updated to consume per-game packed rows (unpack/segment the
+`packed` stream, or slice windows from it). Until then, end-to-end training off
+the generated dataset is not possible.

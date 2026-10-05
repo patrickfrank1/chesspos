@@ -18,7 +18,8 @@ preprocessing:
   debug: true                                # Single-threaded local mode
 
 sampling:
-  min_elo: 2000                              # Minimum player ELO
-  min_ply: 16                                 # Minimum ply to sample from
-  max_ply: null                              # Maximum ply (null = no limit)
-  subsample_rate: 0.66                       # Position subsampling (lower = fewer, biased toward later plies)
+  tiers:                                     # Game subsampling by player strength:
+    - {min_elo: 2400, rate: 1.0}             # 100% of games: both players rated >= 2400
+    - {min_elo: 2000, rate: 0.4}             # 40% of games: both players rated >= 2000
+    - {min_elo: 0, rate: 0.001}              # 0.1% of games: any rating (catch-all)
+  min_time_control_seconds: 300              # Exclude bullet games (base time < 5 min)

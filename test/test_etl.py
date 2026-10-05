@@ -1,18 +1,23 @@
+import io
 import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import chess
 import numpy as np
+import pyarrow as pa
 import pytest
 import ray.data
 
 from src.dataset.config import (
     DatasetConfig,
+    GameSubsampling,
+    GameSubsampleTier,
     PreprocessingConfig,
-    SamplingFilters,
+    TimeControlFilter,
 )
 from src.dataset.etl import ChessPositionDataset
+from src.dataset.token_stream import CLS, SEP, TokenStreamEncoder, pack_stream
 
 
 SAMPLE_PGN = b"""[Event "Test"]
@@ -49,7 +54,7 @@ def preprocessing_config():
     return PreprocessingConfig(
         worker_count=1,
         memory_limit_mb=1024,
-        sampling_filters=SamplingFilters(min_elo=1500, subsample_rate=1.0),
+        subsampling=GameSubsampling(tiers=[GameSubsampleTier(min_elo=0, rate=1.0)]),
     )
 
 
@@ -68,41 +73,113 @@ class TestChessPositionDataset:
 
     def test_extract_positions(self):
         row = {"bytes": SAMPLE_PGN, "path": "/fake/test.pgn"}
-        filters = SamplingFilters(min_elo=0, subsample_rate=1.0)
-        positions = ChessPositionDataset._extract_positions(row, filters)
-        assert len(positions) > 0
-        for pos in positions:
-            assert "fen" in pos
-            assert "ply" in pos
-            assert "white_elo" in pos
-            assert "black_elo" in pos
-            assert "result" in pos
+        subsampling = GameSubsampling(tiers=[GameSubsampleTier(min_elo=0, rate=1.0)])
+        games = ChessPositionDataset._extract_positions(
+            row, subsampling, TimeControlFilter()
+        )
+        assert len(games) == 1
+        game = games[0]
+        assert game["n_positions"] > 0
+        assert game["ply"] == game["n_positions"] - 1
+        assert len(game["packed"]) >= game["n_positions"]
+        assert game["packed"][0] == CLS
+        assert SEP in game["packed"]
+        assert game["ply"] == game["n_positions"] - 1
+        assert game["white_elo"] == 2200
+        assert game["black_elo"] == 2100
+        assert game["result"] == "1-0"
+        assert len(game["game_id"]) == 16
+
+    def test_game_id_is_deterministic(self):
+        pgn_file = chess.pgn.read_game(io.StringIO(SAMPLE_PGN.decode("utf-8")))
+        assert ChessPositionDataset._game_id(pgn_file) == ChessPositionDataset._game_id(
+            pgn_file
+        )
 
     def test_extract_positions_filters(self):
         row = {"bytes": SAMPLE_PGN, "path": "/fake/test.pgn"}
-        filters = SamplingFilters(min_elo=3000, subsample_rate=1.0)
-        positions = ChessPositionDataset._extract_positions(row, filters)
-        assert len(positions) == 0
+        subsampling = GameSubsampling(tiers=[GameSubsampleTier(min_elo=3000, rate=1.0)])
+        games = ChessPositionDataset._extract_positions(
+            row, subsampling, TimeControlFilter()
+        )
+        assert len(games) == 0
 
     def test_extract_positions_empty_pgn(self):
         row = {"bytes": b"", "path": "/fake/empty.pgn"}
-        filters = SamplingFilters(min_elo=0, subsample_rate=1.0)
-        positions = ChessPositionDataset._extract_positions(row, filters)
-        assert len(positions) == 0
+        subsampling = GameSubsampling(tiers=[GameSubsampleTier(min_elo=0, rate=1.0)])
+        games = ChessPositionDataset._extract_positions(
+            row, subsampling, TimeControlFilter()
+        )
+        assert len(games) == 0
 
-    def test_encode_batch(self):
-        batch = {
-            "fen": [chess.Board().fen() for _ in range(3)],
-            "ply": np.array([1, 2, 3], dtype=np.int32),
-            "white_elo": np.array([2000, 2000, 2000], dtype=np.int32),
-            "black_elo": np.array([2000, 2000, 2000], dtype=np.int32),
-            "result": ["1-0", "1/2-1/2", "0-1"],
-        }
-        result = ChessPositionDataset._encode_batch(batch)
-        assert result["encoded"].shape == (3, 34)
-        assert result["encoded"].dtype == np.int16
-        np.testing.assert_array_equal(result["length"], [34, 34, 34])
-        np.testing.assert_array_equal(result["ply"], batch["ply"])
+    def test_extract_positions_filters_bullet(self):
+        bullet_pgn = SAMPLE_PGN.replace(
+            b'[Result "1-0"]', b'[Result "1-0"]\n[TimeControl "180+0"]'
+        )
+        row = {"bytes": bullet_pgn, "path": "/fake/bullet.pgn"}
+        subsampling = GameSubsampling(tiers=[GameSubsampleTier(min_elo=0, rate=1.0)])
+        games = ChessPositionDataset._extract_positions(
+            row, subsampling, TimeControlFilter(min_seconds=300)
+        )
+        assert len(games) == 0
+
+    def test_extract_positions_missing_elo_defaults_to_zero(self):
+        no_elo_pgn = SAMPLE_PGN.replace(b'[WhiteElo "2200"]\n', b"").replace(
+            b'[BlackElo "2100"]\n', b""
+        )
+        row = {"bytes": no_elo_pgn, "path": "/fake/no_elo.pgn"}
+        subsampling = GameSubsampling(tiers=[GameSubsampleTier(min_elo=0, rate=1.0)])
+        games = ChessPositionDataset._extract_positions(
+            row, subsampling, TimeControlFilter()
+        )
+        assert len(games) == 1
+        assert games[0]["white_elo"] == 0
+        assert games[0]["black_elo"] == 0
+
+    def test_split_for_game_is_deterministic(self):
+        first = ChessPositionDataset._split_for_game("abc123", 0.8)
+        second = ChessPositionDataset._split_for_game("abc123", 0.8)
+        assert first == second
+        assert first in {"train", "test"}
+
+    def test_split_for_game_extremes(self):
+        assert ChessPositionDataset._split_for_game("abc123", 1.0) == "train"
+        assert ChessPositionDataset._split_for_game("abc123", 0.0) == "test"
+
+    def _make_batch(self) -> pa.Table:
+        boards = [chess.Board(), chess.Board()]
+        boards[1].push_san("e4")
+        encoder = TokenStreamEncoder()
+        segments = [encoder.encode(board) for board in boards]
+        packed = pack_stream(segments, add_cls=True).tolist()
+        return pa.table(
+            {
+                "packed": pa.array([packed], type=pa.list_(pa.int64())),
+                "n_positions": pa.array([2], type=pa.int32()),
+                "ply": pa.array([1], type=pa.int32()),
+                "game_id": pa.array(["deadbeefdeadbeef"]),
+                "white_elo": pa.array([2000], type=pa.int32()),
+                "black_elo": pa.array([2000], type=pa.int32()),
+                "result": pa.array(["1-0"]),
+            }
+        )
+
+    def test_finalize_batch(self):
+        result = ChessPositionDataset._finalize_batch(self._make_batch(), 0.8)
+        packed = result.column("packed").to_pylist()[0]
+        packed = np.asarray(packed, dtype=np.int16)
+        assert packed.dtype == np.int16
+        assert packed[0] == CLS
+        assert SEP in packed.tolist()
+        assert result.column("n_positions").to_pylist() == [2]
+        assert result.column("ply").to_pylist() == [1]
+        assert result.column("game_id").to_pylist() == ["deadbeefdeadbeef"]
+        assert result.column("split").to_pylist()[0] in {"train", "test"}
+
+    def test_finalize_batch_split_is_deterministic(self):
+        first = ChessPositionDataset._finalize_batch(self._make_batch(), 0.8)
+        second = ChessPositionDataset._finalize_batch(self._make_batch(), 0.8)
+        assert first.column("split").to_pylist() == second.column("split").to_pylist()
 
     def test_get_start_batch_default(self, dataset):
         assert dataset._get_start_batch(resume=False) == 1

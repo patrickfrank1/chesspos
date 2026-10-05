@@ -50,22 +50,24 @@ See [`docs/dataset_pipeline.md`](docs/dataset_pipeline.md) for the full
 entity-relationship diagram and runtime flow. Summary:
 
 - **Write side** (`src/dataset/etl.py`) — `ChessPositionDataset` composes
-  `DatasetConfig`, `PreprocessingConfig`, `EncoderConfig`, and a
-  `HuggingFaceClient`. Ray Data reads `*.pgn` → `PGNProcessor` extracts and
-  samples positions (logistic ELO gate + ply² subsample) → one of three
-  `PositionEncoder` implementations encodes each board → `train_test_split` →
-  Parquet shards pushed to the Hub as `{train,test}/batch_{NNNN}_*.parquet`.
+  `DatasetConfig` and `PreprocessingConfig` (with a `GameSubsampling`
+  dataclass). Ray Data reads `*.pgn` → `PGNProcessor` subsamples games by
+  strength tier and extracts every mainline position → the `TokenStreamEncoder`
+  (`src/dataset/token_stream.py`) encodes each board into a variable-length
+  `int16` token segment → `train_test_split` → Parquet shards pushed to the Hub
+  as `{train,test}/batch_{NNNN}_*.parquet`.
 - **Read side** (`src/dataset/data_loader.py`) — `TrainingDataGenerator` loads
   the Hub dataset back via `datasets.load_dataset` and yields a
   `tf.data.Dataset` of `(window, target)` pairs with optional BERT-style
   masking (`mask_token_id=16`).
-- **Encoders** (`src/dataset/position_encoder.py`) — `token_sequence` `(69,)`,
-  `tensor` `(8,8,15)`, `bitboard` `(773,)`, all behind the `PositionEncoder`
-  ABC and a registry (`get_encoder`).
+- **Encoder** (`src/dataset/token_stream.py`) — `TokenStreamEncoder` is the
+  only encoder (no ABC/registry/config); it hardcodes the token stream format:
+  variable-length `int16` segments, vocab of 806 tokens.
 
 > Note: there is a known schema mismatch between what `_encode_batch` writes
-> (`encoded`, `ply`, …) and what `TrainingDataGenerator` reads (`window`,
-> `scalars`). Documented in `docs/dataset_pipeline.md`.
+> (per-game rows: `packed`, `n_positions`, `game_id`, `split`, …) and what
+> `TrainingDataGenerator` reads (`window`, `scalars`). Documented in
+> `docs/dataset_pipeline.md`.
 
 ## Development Workflow
 

@@ -14,6 +14,7 @@ class GameMetadata:
     opening: str | None = None
     event: str | None = None
     date: str | None = None
+    time_control: str | None = None
 
     def to_dict(self) -> dict:
         return {
@@ -23,6 +24,7 @@ class GameMetadata:
             "opening": self.opening,
             "event": self.event,
             "date": self.date,
+            "time_control": self.time_control,
         }
 
 
