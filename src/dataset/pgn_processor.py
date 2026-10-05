@@ -34,7 +34,7 @@ class PGNProcessor:
 
     def extract_game(self, game: chess.pgn.Game) -> GameRecord | None:
         headers = game.headers
-        metadata = self._extract_metadata(headers)
+        metadata = self.extract_metadata(headers)
 
         if not self._keep_game(metadata):
             return None
@@ -43,12 +43,7 @@ class PGNProcessor:
 
     def keep_game(self, headers: chess.pgn.Headers) -> bool:
         """Filter decision from headers only, without parsing movetext."""
-        return self._keep_game(self._extract_metadata(headers))
-
-    def extract_kept_game(self, game: chess.pgn.Game) -> GameRecord | None:
-        """Extract a record from a game that already passed keep_game()."""
-        metadata = self._extract_metadata(game.headers)
-        return self._build_record(game, metadata)
+        return self._keep_game(self.extract_metadata(headers))
 
     def _build_record(
         self, game: chess.pgn.Game, metadata: GameMetadata
@@ -59,7 +54,7 @@ class PGNProcessor:
 
         return GameRecord(positions=positions, metadata=metadata)
 
-    def _extract_metadata(self, headers: chess.pgn.Headers) -> GameMetadata:
+    def extract_metadata(self, headers: chess.pgn.Headers) -> GameMetadata:
         white_elo = self._parse_elo(headers.get("WhiteElo"))
         black_elo = self._parse_elo(headers.get("BlackElo"))
         return GameMetadata(
@@ -148,7 +143,7 @@ class PGNProcessor:
         game: chess.pgn.Game,
         window_size: int = 10,
     ) -> Generator[list[PositionRecord], None, None]:
-        metadata = self._extract_metadata(game.headers)
+        metadata = self.extract_metadata(game.headers)
         if not self._keep_game(metadata):
             return
 

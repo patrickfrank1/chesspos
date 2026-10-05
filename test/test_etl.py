@@ -17,7 +17,7 @@ from src.dataset.config import (
     TimeControlFilter,
 )
 from src.dataset.etl import ChessPositionDataset
-from src.dataset.token_stream import CLS, SEP
+from src.dataset.token_stream import CLS, SEP, TokenStreamEncoder, pack_stream
 
 
 SAMPLE_PGN = b"""[Event "Test"]
@@ -79,8 +79,11 @@ class TestChessPositionDataset:
         )
         assert len(games) == 1
         game = games[0]
-        assert len(game["fens"]) == game["n_positions"]
-        assert len(game["fens"]) > 0
+        assert game["n_positions"] > 0
+        assert game["ply"] == game["n_positions"] - 1
+        assert len(game["packed"]) >= game["n_positions"]
+        assert game["packed"][0] == CLS
+        assert SEP in game["packed"]
         assert game["ply"] == game["n_positions"] - 1
         assert game["white_elo"] == 2200
         assert game["black_elo"] == 2100
@@ -146,11 +149,12 @@ class TestChessPositionDataset:
     def _make_batch(self) -> pa.Table:
         boards = [chess.Board(), chess.Board()]
         boards[1].push_san("e4")
+        encoder = TokenStreamEncoder()
+        segments = [encoder.encode(board) for board in boards]
+        packed = pack_stream(segments, add_cls=True).tolist()
         return pa.table(
             {
-                "fens": pa.array(
-                    [[b.fen() for b in boards]], type=pa.list_(pa.string())
-                ),
+                "packed": pa.array([packed], type=pa.list_(pa.int64())),
                 "n_positions": pa.array([2], type=pa.int32()),
                 "ply": pa.array([1], type=pa.int32()),
                 "game_id": pa.array(["deadbeefdeadbeef"]),
@@ -160,8 +164,8 @@ class TestChessPositionDataset:
             }
         )
 
-    def test_encode_batch(self):
-        result = ChessPositionDataset._encode_batch(self._make_batch(), 0.8)
+    def test_finalize_batch(self):
+        result = ChessPositionDataset._finalize_batch(self._make_batch(), 0.8)
         packed = result.column("packed").to_pylist()[0]
         packed = np.asarray(packed, dtype=np.int16)
         assert packed.dtype == np.int16
@@ -172,9 +176,9 @@ class TestChessPositionDataset:
         assert result.column("game_id").to_pylist() == ["deadbeefdeadbeef"]
         assert result.column("split").to_pylist()[0] in {"train", "test"}
 
-    def test_encode_batch_split_is_deterministic(self):
-        first = ChessPositionDataset._encode_batch(self._make_batch(), 0.8)
-        second = ChessPositionDataset._encode_batch(self._make_batch(), 0.8)
+    def test_finalize_batch_split_is_deterministic(self):
+        first = ChessPositionDataset._finalize_batch(self._make_batch(), 0.8)
+        second = ChessPositionDataset._finalize_batch(self._make_batch(), 0.8)
         assert first.column("split").to_pylist() == second.column("split").to_pylist()
 
     def test_get_start_batch_default(self, dataset):

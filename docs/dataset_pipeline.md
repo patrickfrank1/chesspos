@@ -136,15 +136,21 @@ generate_hf_dataset.py
         │
         ▼  (Ray Data cluster, worker_count CPUs)
    1. READ      ray.data.read_binary_files(*.pgn)
-   2. EXTRACT   _extract_positions ── PGNProcessor.extract_game(game)
-         │         ├── _keep_game: tiered game subsampling by player strength
-         │         └── _extract_positions: every mainline position (no sampling)
+   2. EXTRACT   _extract_positions ── PGNProcessor (two-pass)
+         │         ├── pass 1: chess.pgn.read_headers scan + keep_game
+         │         │   (time-control filter + tiered strength subsampling);
+         │         │   only the offsets of kept games are recorded
+         │         └── pass 2: re-parse kept games only; every mainline
+         │             position is encoded straight from the live board
+         │             (TokenStreamEncoder().encode(board) + pack_stream,
+         │             add_cls=True) — no per-position board copies, no
+         │             FEN roundtrip
          │         emits one dict row per game:
-         │         {fens, n_positions, ply, game_id, white_elo, black_elo, result}
+         │         {packed, n_positions, ply, game_id, white_elo, black_elo, result}
    3. LIMIT     games.limit(batch_size)   (caps games, not positions)
-   4. ENCODE    _encode_batch ── TokenStreamEncoder().encode(board) per position
-         │         → pack_stream(segments, add_cls=True) → 1-D int16 per game
-         │         + split column via hash(game_id) vs train_ratio
+   4. FINALIZE  _finalize_batch ── casts packed to int16 (flat_map rows are
+         │         int64), casts scalar columns, and adds the split column
+         │         via hash(game_id) vs train_ratio
    5. SPLIT     materialize() → filter(split == "train" / "test")
    6. PUSH      _push_batch ── write_parquet(tempdir) → HfApi.upload_file
         │         path_in_repo = f"{split}/batch_{NNNN}_{name}.parquet"
@@ -239,7 +245,7 @@ Variable-length `int16` token segments:
   batch as `ray.data.Dataset`s.
 - `_process_batch` is the Ray pipeline:
   `read_binary_files → flat_map(_extract_positions) → limit(batch_size) →
-  map_batches(_encode_batch, batch_format="pyarrow") → materialize() →
+  map_batches(_finalize_batch, batch_format="pyarrow") → materialize() →
   filter(split)`. The split is decided per game by `_split_for_game`
   (`hash(game_id) < train_ratio`), so all positions of a game land in the same
   split and the row-level `train_test_split` (which caused train/test leakage
@@ -248,7 +254,7 @@ Variable-length `int16` token segments:
 - `_game_id` derives a stable id from the PGN identifying headers
   (`Event|Site|Date|Round|White|Black`, sha1, truncated to 16 hex chars) —
   deterministic across runs and workers (unlike Python's builtin `hash`).
-- `_extract_positions` and `_encode_batch` are static so Ray can pickle them as
+- `_extract_positions` and `_finalize_batch` are static so Ray can pickle them as
   plain functions; each worker reconstructs its own `PGNProcessor` /
   `TokenStreamEncoder`.
 - `_push_batch` writes Parquet to a temp dir and uploads each shard via

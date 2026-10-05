@@ -64,25 +64,34 @@ class ChessPositionDataset:
             if processor.keep_game(headers):
                 keep_offsets.append(offset)
 
-        # Pass 2: fully parse only the games that passed the filters.
+        # Pass 2: fully parse only the games that passed the filters, and
+        # encode tokens straight from the live board (no per-position board
+        # copies, no FEN roundtrip).
+        encoder = TokenStreamEncoder()
         for offset in keep_offsets:
             pgn_file.seek(offset)
             game = chess.pgn.read_game(pgn_file)
             if game is None:
                 continue
-            record = processor.extract_kept_game(game)
-            if record is not None:
-                games.append(
-                    {
-                        "fens": [pos.board.fen() for pos in record.positions],
-                        "n_positions": len(record.positions),
-                        "ply": len(record.positions) - 1,
-                        "game_id": ChessPositionDataset._game_id(game),
-                        "white_elo": int(record.metadata.white_elo or 0),
-                        "black_elo": int(record.metadata.black_elo or 0),
-                        "result": record.metadata.result or "",
-                    }
-                )
+            metadata = processor.extract_metadata(game.headers)
+            board = chess.Board()
+            segments = []
+            for move in game.mainline_moves():
+                board.push(move)
+                segments.append(encoder.encode(board))
+            if not segments:
+                continue
+            games.append(
+                {
+                    "packed": pack_stream(segments, add_cls=True).tolist(),
+                    "n_positions": len(segments),
+                    "ply": len(segments) - 1,
+                    "game_id": ChessPositionDataset._game_id(game),
+                    "white_elo": int(metadata.white_elo or 0),
+                    "black_elo": int(metadata.black_elo or 0),
+                    "result": metadata.result or "",
+                }
+            )
         return games
 
     @staticmethod
@@ -101,20 +110,14 @@ class ChessPositionDataset:
         return "train" if uniform < train_ratio else "test"
 
     @staticmethod
-    def _encode_batch(batch: pa.Table, train_ratio: float) -> pa.Table:
-        encoder = TokenStreamEncoder()
-        packed_rows = []
-        split = []
-        for fens, game_id in zip(
-            batch.column("fens").to_pylist(),
-            batch.column("game_id").to_pylist(),
-        ):
-            segments = [encoder.encode(chess.Board(fen)) for fen in fens]
-            packed_rows.append(pack_stream(segments, add_cls=True))
-            split.append(ChessPositionDataset._split_for_game(game_id, train_ratio))
+    def _finalize_batch(batch: pa.Table, train_ratio: float) -> pa.Table:
+        split = [
+            ChessPositionDataset._split_for_game(game_id, train_ratio)
+            for game_id in batch.column("game_id").to_pylist()
+        ]
         return pa.table(
             {
-                "packed": pa.array(packed_rows, type=pa.list_(pa.int16())),
+                "packed": batch.column("packed").cast(pa.list_(pa.int16())),
                 "n_positions": batch.column("n_positions").cast(pa.int32()),
                 "ply": batch.column("ply").cast(pa.int32()),
                 "game_id": batch.column("game_id"),
@@ -186,8 +189,8 @@ class ChessPositionDataset:
 
         games = dataset.flat_map(extract_fn)
         limited = games.limit(batch_size)
-        encode_fn = partial(self._encode_batch, train_ratio=train_ratio)
-        encoded = limited.map_batches(encode_fn, batch_format="pyarrow")
+        finalize_fn = partial(self._finalize_batch, train_ratio=train_ratio)
+        encoded = limited.map_batches(finalize_fn, batch_format="pyarrow")
         encoded = encoded.materialize()
         train_ds = encoded.filter(lambda row: row["split"] == "train")
         test_ds = encoded.filter(lambda row: row["split"] == "test")
