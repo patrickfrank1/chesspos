@@ -29,6 +29,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--disk", type=int, default=40)
     parser.add_argument("--image", default="pytorch/pytorch")
     parser.add_argument("--top", type=int, default=8)
+    parser.add_argument("--min-ram", type=int, default=30000, help="MB")
     parser.add_argument("--timeout", type=int, default=900)
     parser.add_argument(
         "--instance-id",
@@ -66,36 +67,44 @@ def require_api_key() -> str:
 def search_offers(args: argparse.Namespace) -> list[dict]:
     query = (
         f"gpu_name={args.gpu} num_gpus=1 verified=true rentable=true "
-        "disk_space>=40 cpu_cores>=8 ram>=32 driver_version>=580 "
-        "reliability>0.98"
+        "disk_space>=40 cpu_cores>=8 reliability>0.98"
     )
     output = vastai(
-        "search", "offers", query, "-o", "dlperf_usd-", "--raw", "--limit", "50"
+        "search", "offers", query, "-o", "dph_total", "--raw", "--limit", "100"
     )
     offers = json.loads(output)
     if isinstance(offers, dict):
         offers = offers.get("offers", [])
-    return offers
+    return [
+        offer
+        for offer in offers
+        if (offer.get("cpu_ram") or 0) >= args.min_ram
+        and int(str(offer.get("driver_version", "0")).split(".")[0]) >= 580
+    ]
 
 
 def format_offer(offer: dict) -> str:
     def get(*keys: str) -> str:
         for key in keys:
-            if offer.get(key) is not None:
-                return str(offer[key])
+            value = offer.get(key)
+            if value:
+                return str(value)
         return "?"
+
+    def num(key: str, digits: int = 0) -> str:
+        value = offer.get(key)
+        return f"{value:.{digits}f}" if isinstance(value, (int, float)) else "?"
 
     return (
         f"id={get('id')} "
         f"gpu={get('gpu_name')} "
-        f"${get('dph_total')}/h "
-        f"dlperf_usd={get('dlperf_usd')} "
-        f"cpu={get('cpu_cores')}cores "
-        f"ram={get('cpu_ram')}MB "
-        f"disk={get('disk_space')}GB "
+        f"${num('dph_total', 2)}/h "
+        f"cpu={num('cpu_cores')}cores "
+        f"ram={num('cpu_ram')}MB "
+        f"disk={num('disk_space', 1)}GB "
         f"driver={get('driver_version')} "
-        f"net={get('inet_down')}Mbit-down/{get('inet_up')}Mbit-up "
-        f"reliability={get('reliability2')} "
+        f"net={num('inet_down')}Mbit-down/{num('inet_up')}Mbit-up "
+        f"rel={num('reliability2', 4)} "
         f"location={get('geolocation')}"
     )
 
@@ -122,11 +131,16 @@ def create_instance(args: argparse.Namespace, offer_id: int) -> int:
     )
     try:
         payload = json.loads(output)
-        instance_id = int(payload["new_instance_id"])
+        if not payload.get("success", False):
+            sys.exit(
+                f"create returned success={payload.get('success')} "
+                "(verify no phantom contract exists: vastai show instances)"
+            )
+        instance_id = int(payload["new_contract"])
     except (json.JSONDecodeError, KeyError, TypeError, ValueError):
-        match = re.search(r"new_instance:\s*(\d+)", output)
+        match = re.search(r"new_(?:contract|instance_id):\s*(\d+)", output)
         if not match:
-            sys.exit(f"could not parse instance id from create output:\n{output}")
+            sys.exit("could not parse instance id from create output")
         instance_id = int(match.group(1))
     return instance_id
 
@@ -170,7 +184,7 @@ def main() -> None:
         if not offers:
             sys.exit("no offers matched the query")
         offers = offers[: args.top]
-        print("top offers (sorted by dlperf_usd):")
+        print("top offers (sorted by price, driver>=580):")
         for offer in offers:
             print(f"  {format_offer(offer)}")
 
