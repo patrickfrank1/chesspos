@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import math
 import time
 from dataclasses import asdict
@@ -9,10 +10,12 @@ from pathlib import Path
 import torch
 from torch.utils.data import DataLoader
 
+from src.evaluation.eval_suite import full_eval
 from src.modeling.transformer import MaskedStreamTransformer, TransformerConfig
 from src.training.window_dataset import (
     WindowDataset,
     WindowDatasetConfig,
+    _load_game_segments,
     collate_windows,
 )
 
@@ -41,6 +44,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--eval-every", type=int, default=1_000)
     parser.add_argument("--eval-batches", type=int, default=20)
     parser.add_argument("--save-every", type=int, default=2_000)
+    parser.add_argument(
+        "--full-eval", action=argparse.BooleanOptionalAction, default=True
+    )
+    parser.add_argument("--eval-pool-size", type=int, default=1024)
+    parser.add_argument("--eval-counterfactual", type=int, default=256)
     parser.add_argument("--bf16", action="store_true")
     parser.add_argument("--compile", action="store_true")
     parser.add_argument("--log-file", default=None)
@@ -121,6 +129,14 @@ def evaluate(
     return loss, accuracy
 
 
+def write_eval_artifacts(checkpoint_dir: Path, payload: dict) -> None:
+    (checkpoint_dir / "eval_metrics.json").write_text(
+        json.dumps(payload, indent=2, sort_keys=True)
+    )
+    with (checkpoint_dir / "eval_history.jsonl").open("a") as file:
+        file.write(json.dumps(payload, sort_keys=True) + "\n")
+
+
 def main() -> None:
     args = parse_args()
     log = make_logger(args.log_file)
@@ -168,9 +184,10 @@ def main() -> None:
             max_segments=args.max_segments,
         )
     )
+    val_games = _load_game_segments(Path(args.val_dir))
     val_dataset = WindowDataset(
         WindowDatasetConfig(
-            data_dir=args.val_dir,
+            games=val_games,
             max_seq_len=args.max_seq_len,
             max_segments=args.max_segments,
             seed=args.seed,
@@ -223,6 +240,7 @@ def main() -> None:
     model.train()
     running_loss = 0.0
     running_count = 0
+    latest_eval: dict | None = None
     start = time.time()
 
     for step in range(start_step + 1, args.steps + 1):
@@ -266,6 +284,42 @@ def main() -> None:
                 model, val_loader, device, args.eval_batches, bf16
             )
             log(f"step={step} val_loss={val_loss:.4f} val_acc={val_acc:.4f}")
+            extras = {"val_loss": val_loss, "val_acc": val_acc}
+            if args.full_eval:
+                metrics = full_eval(
+                    raw_model,
+                    val_games,
+                    device,
+                    windows=args.eval_batches,
+                    batch_size=args.batch_size,
+                    max_seq_len=args.max_seq_len,
+                    max_segments=args.max_segments,
+                    pool_size=args.eval_pool_size,
+                    counterfactual_n=args.eval_counterfactual,
+                    seed=args.seed,
+                )
+                payload = {"step": step, **metrics}
+                write_eval_artifacts(checkpoint_dir, payload)
+                latest_eval = payload
+                watch = [
+                    "board_turn_acc",
+                    "board_castle_acc",
+                    "board_piece_acc",
+                    "board_prior_baseline",
+                    "random_piece_acc",
+                    "span_piece_acc",
+                    "cos_to_move_child",
+                    "cos_to_corrupted",
+                    "test_r2_material",
+                    "pc1_piece_corr",
+                ]
+                log(
+                    f"step={step} "
+                    + " ".join(
+                        f"{key}={metrics[key]:.4f}" for key in watch if key in metrics
+                    )
+                )
+                extras["full_eval"] = metrics
             if val_loss < best_val_loss:
                 best_val_loss = val_loss
                 path = checkpoint_dir / "best.pt"
@@ -274,22 +328,27 @@ def main() -> None:
                     raw_model,
                     model_config,
                     step,
-                    {"val_loss": val_loss, "val_acc": val_acc},
+                    extras,
                 )
                 log(f"saved best checkpoint to {path} (val_loss={val_loss:.4f})")
 
         if step % args.save_every == 0 or step == args.steps:
             path = checkpoint_dir / "last.pt"
+            save_extra = {
+                "optimizer_state": optimizer.state_dict(),
+                "scheduler_state": scheduler.state_dict(),
+                "best_val_loss": best_val_loss,
+            }
+            if latest_eval is not None:
+                save_extra["full_eval"] = {
+                    key: value for key, value in latest_eval.items() if key != "step"
+                }
             save_checkpoint(
                 path,
                 raw_model,
                 model_config,
                 step,
-                {
-                    "optimizer_state": optimizer.state_dict(),
-                    "scheduler_state": scheduler.state_dict(),
-                    "best_val_loss": best_val_loss,
-                },
+                save_extra,
             )
             log(f"saved full checkpoint to {path}")
 
