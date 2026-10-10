@@ -191,13 +191,62 @@ class TestChessPositionDataset:
         assert dataset._get_start_batch(resume=True) == 5
 
     def test_generate_dry_run(self, dataset):
-        mock_train = MagicMock(spec=ray.data.Dataset)
-        mock_test = MagicMock(spec=ray.data.Dataset)
-        dataset._process_batch = MagicMock(return_value=(mock_train, mock_test))
+        chunk = self._make_batch_with_split(["deadbeefdeadbeef"])
+        mock_encoded = MagicMock(spec=ray.data.Dataset)
+        mock_encoded.iter_batches.return_value = iter([chunk])
+        dataset._build_encoded = MagicMock(return_value=mock_encoded)
 
         batches = list(dataset.generate(num_batches=1, dry_run=True))
         assert len(batches) == 1
-        assert batches[0] == (mock_train, mock_test)
+        train_ds, test_ds = batches[0]
+        assert train_ds.count() + test_ds.count() == 1
+
+    def _make_batch_with_split(self, game_ids: list[str]) -> pa.Table:
+        n = len(game_ids)
+        batch = self._make_batch()
+        columns = {}
+        for name in batch.column_names:
+            if name == "packed":
+                continue
+            columns[name] = batch.column(name).to_pylist() * n
+        packed = batch.column("packed").to_pylist()[0]
+        table = pa.table(
+            {
+                **columns,
+                "packed": pa.array([packed] * n, type=pa.list_(pa.int16())),
+                "game_id": pa.array(game_ids, type=pa.string()),
+                "split": pa.array(["train"] * n, type=pa.string()),
+            }
+        )
+        return table
+
+    def test_generate_resumes_from_start_batch(self, dataset):
+        chunks = [
+            self._make_batch_with_split([f"aaaaaaaa{i:04d}" for i in range(10)]),
+            self._make_batch_with_split([f"bbbbbbbb{i:04d}" for i in range(10)]),
+        ]
+        mock_encoded = MagicMock(spec=ray.data.Dataset)
+        mock_encoded.iter_batches.return_value = iter(chunks)
+        dataset._build_encoded = MagicMock(return_value=mock_encoded)
+
+        mock_client = MagicMock()
+        mock_client.get_next_batch_number.return_value = 2
+        dataset.hf_client = mock_client
+
+        counts = None
+        game_ids = None
+        num_yielded = 0
+        # Consume inside the loop, while the generator is paused at `yield`
+        # and the Ray session is still alive.
+        for train_ds, test_ds in dataset.generate(
+            num_batches=1, dry_run=True, resume=True
+        ):
+            num_yielded += 1
+            counts = (train_ds.count(), test_ds.count())
+            game_ids = [row["game_id"] for row in train_ds.take_all()]
+        assert num_yielded == 1
+        assert counts == (10, 0)
+        assert game_ids == [f"bbbbbbbb{i:04d}" for i in range(10)]
 
     def test_create_dataset_card(self, dataset):
         mock_client = MagicMock()

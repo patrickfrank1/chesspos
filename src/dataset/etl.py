@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import io
 import os
+import random
 from dataclasses import dataclass, field
 from functools import partial
 from typing import Iterator
@@ -10,6 +11,7 @@ from typing import Iterator
 import chess
 import chess.pgn
 import pyarrow as pa
+import pyarrow.parquet as pq
 import ray
 import ray.data
 
@@ -48,6 +50,7 @@ class ChessPositionDataset:
             time_control_filter=time_control_filter,
         )
         bytes_data = row["bytes"]
+        random.seed(int.from_bytes(hashlib.sha1(bytes_data).digest()[:8], "big"))
         games = []
 
         pgn_file = io.StringIO(bytes_data.decode("utf-8", errors="ignore"))
@@ -98,7 +101,16 @@ class ChessPositionDataset:
     def _game_id(game: chess.pgn.Game) -> str:
         parts = [
             game.headers.get(key, "?")
-            for key in ("Event", "Site", "Date", "Round", "White", "Black")
+            for key in (
+                "Event",
+                "Site",
+                "Date",
+                "Round",
+                "White",
+                "Black",
+                "WhiteElo",
+                "BlackElo",
+            )
         ]
         identity = "|".join(parts)
         return hashlib.sha1(identity.encode("utf-8")).hexdigest()[:16]
@@ -155,47 +167,99 @@ class ChessPositionDataset:
             file_paths = file_paths_from_directory(
                 self.dataset_config.data_path, ".pgn"
             )
+            encoded = self._build_encoded(file_paths)
             start_batch = self._get_start_batch(resume)
+            batch_size = self.dataset_config.batch_size
 
-            for batch_num in range(start_batch, start_batch + num_batches):
-                train_ds, test_ds = self._process_batch(file_paths, batch_num)
+            produced = 0
+            batch_num = 0
+            stream = encoded.iter_batches(batch_size=batch_size, batch_format="pyarrow")
+            for chunk in self._iter_deduped_chunks(stream, batch_size):
+                batch_num += 1
+                if batch_num < start_batch:
+                    continue
+                if produced >= num_batches:
+                    break
+
+                train_table, test_table = self._split_chunk(chunk)
+                train_ds = ray.data.from_arrow(train_table)
+                test_ds = ray.data.from_arrow(test_table)
 
                 if not dry_run:
-                    self._push_batch(train_ds, test_ds, batch_num)
+                    self._push_batch(train_table, test_table, batch_num)
                 elif output_dir:
-                    self._write_batch(train_ds, test_ds, batch_num, output_dir)
+                    self._write_batch(train_table, test_table, batch_num, output_dir)
 
+                produced += 1
                 yield train_ds, test_ds
         finally:
             ray.shutdown()
 
-    def _process_batch(
-        self,
-        file_paths: list[str],
-        batch_num: int,
-    ) -> tuple[ray.data.Dataset, ray.data.Dataset]:
+    def _build_encoded(self, file_paths: list[str]) -> ray.data.Dataset:
         subsampling = self.preprocessing_config.subsampling
         time_control_filter = self.preprocessing_config.time_control_filter
-        batch_size = self.dataset_config.batch_size
         train_ratio = self.dataset_config.train_ratio
 
         dataset = ray.data.read_binary_files(file_paths, include_paths=True)
-
         extract_fn = partial(
             self._extract_positions,
             subsampling=subsampling,
             time_control_filter=time_control_filter,
         )
-
         games = dataset.flat_map(extract_fn)
-        limited = games.limit(batch_size)
         finalize_fn = partial(self._finalize_batch, train_ratio=train_ratio)
-        encoded = limited.map_batches(finalize_fn, batch_format="pyarrow")
-        encoded = encoded.materialize()
-        train_ds = encoded.filter(lambda row: row["split"] == "train")
-        test_ds = encoded.filter(lambda row: row["split"] == "test")
+        encoded = games.map_batches(finalize_fn, batch_format="pyarrow")
+        # Global deterministic order (by game_id) so that fixed-size batch
+        # chunks contain the same games in every run.
+        return encoded.sort("game_id").materialize()
 
-        return train_ds, test_ds
+    @staticmethod
+    def _dedup_chunk(
+        chunk: pa.Table, last_game_id: str | None
+    ) -> tuple[pa.Table, str | None]:
+        """Drop consecutive duplicate games.
+
+        The dataset is globally sorted by game_id, so all copies of a
+        duplicated game are adjacent in the stream. Comparing each row to its
+        predecessor (with carry-over across chunk boundaries) therefore yields
+        an exact global dedup without an extra shuffle.
+        """
+        ids = chunk.column("game_id").to_pylist()
+        keep = [ids[0] != last_game_id]
+        keep.extend(ids[i] != ids[i - 1] for i in range(1, len(ids)))
+        deduped = chunk.filter(pa.array(keep, type=pa.bool_()))
+        return deduped, ids[-1]
+
+    @classmethod
+    def _iter_deduped_chunks(
+        cls, stream: Iterator[pa.Table], batch_size: int
+    ) -> Iterator[pa.Table]:
+        """Yield deduplicated chunks of exactly batch_size games (last may be short).
+
+        Deduplication runs across the whole stream (duplicates are adjacent in
+        the sorted order), and a rolling buffer tops each chunk back up to
+        batch_size so fixed-size batches survive row removal.
+        """
+        last_game_id: str | None = None
+        buffer: pa.Table | None = None
+        for raw in stream:
+            deduped, last_game_id = cls._dedup_chunk(raw, last_game_id)
+            if deduped.num_rows == 0:
+                continue
+            buffer = deduped if buffer is None else pa.concat_tables([buffer, deduped])
+            while buffer.num_rows >= batch_size:
+                yield buffer.slice(0, batch_size)
+                buffer = buffer.slice(batch_size)
+        if buffer is not None and buffer.num_rows > 0:
+            yield buffer
+
+    @staticmethod
+    def _split_chunk(chunk: pa.Table) -> tuple[pa.Table, pa.Table]:
+        split_col = chunk.column("split")
+        train_mask = pa.compute.equal(split_col, "train")
+        train_table = chunk.filter(train_mask)
+        test_table = chunk.filter(pa.compute.invert(train_mask))
+        return train_table, test_table
 
     def _get_start_batch(self, resume: bool) -> int:
         if not resume:
@@ -204,8 +268,8 @@ class ChessPositionDataset:
 
     def _push_batch(
         self,
-        train_ds: ray.data.Dataset,
-        test_ds: ray.data.Dataset,
+        train_table: pa.Table,
+        test_table: pa.Table,
         batch_num: int,
     ) -> None:
         import tempfile
@@ -213,72 +277,40 @@ class ChessPositionDataset:
 
         from huggingface_hub import HfApi
 
-        temp_dir = Path(tempfile.mkdtemp())
-
-        train_path = temp_dir / "train"
-        test_path = temp_dir / "test"
-        train_path.mkdir()
-        test_path.mkdir()
-
-        train_ds.write_parquet(str(train_path))
-        test_ds.write_parquet(str(test_path))
-
         api = HfApi()
 
-        for pq_file in train_path.glob("*.parquet"):
-            api.upload_file(
-                path_or_fileobj=str(pq_file),
-                path_in_repo=f"train/batch_{batch_num:04d}_{pq_file.name}",
-                repo_id=self.dataset_config.repo_name,
-                repo_type="dataset",
-                commit_message=f"Add train batch {batch_num}",
-            )
-
-        for pq_file in test_path.glob("*.parquet"):
-            api.upload_file(
-                path_or_fileobj=str(pq_file),
-                path_in_repo=f"test/batch_{batch_num:04d}_{pq_file.name}",
-                repo_id=self.dataset_config.repo_name,
-                repo_type="dataset",
-                commit_message=f"Add test batch {batch_num}",
-            )
-
-        import shutil
-
-        shutil.rmtree(temp_dir)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            for split, table in (("train", train_table), ("test", test_table)):
+                file_name = f"batch_{batch_num:04d}_000000.parquet"
+                local_path = temp_path / split / file_name
+                local_path.parent.mkdir()
+                pq.write_table(table, local_path)
+                api.upload_file(
+                    path_or_fileobj=str(local_path),
+                    path_in_repo=f"{split}/{file_name}",
+                    repo_id=self.dataset_config.repo_name,
+                    repo_type="dataset",
+                    commit_message=f"Add {split} batch {batch_num}",
+                )
 
     def _write_batch(
         self,
-        train_ds: ray.data.Dataset,
-        test_ds: ray.data.Dataset,
+        train_table: pa.Table,
+        test_table: pa.Table,
         batch_num: int,
         output_dir: str,
     ) -> None:
-        import shutil
-        import tempfile
         from pathlib import Path
 
-        temp_dir = Path(tempfile.mkdtemp())
-
-        train_path = temp_dir / "train"
-        test_path = temp_dir / "test"
-        train_path.mkdir()
-        test_path.mkdir()
-
-        train_ds.write_parquet(str(train_path))
-        test_ds.write_parquet(str(test_path))
-
         out = Path(output_dir)
-        for split, temp_split in (("train", train_path), ("test", test_path)):
+        for split, table in (("train", train_table), ("test", test_table)):
             split_dir = out / split
             split_dir.mkdir(parents=True, exist_ok=True)
-            for pq_file in temp_split.glob("*.parquet"):
-                shutil.move(
-                    str(pq_file),
-                    str(split_dir / f"batch_{batch_num:04d}_{pq_file.name}"),
-                )
-
-        shutil.rmtree(temp_dir)
+            pq.write_table(
+                table,
+                split_dir / f"batch_{batch_num:04d}_000000.parquet",
+            )
 
     def create_dataset_card(self) -> str:
         features = {
