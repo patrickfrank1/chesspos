@@ -26,10 +26,18 @@ def parse_args() -> argparse.Namespace:
         description="Provision a vast.ai instance for chesspos training"
     )
     parser.add_argument("--gpu", default="RTX_4090")
-    parser.add_argument("--disk", type=int, default=40)
+    parser.add_argument("--disk", type=int, default=20)
     parser.add_argument("--image", default="pytorch/pytorch")
     parser.add_argument("--top", type=int, default=8)
-    parser.add_argument("--min-ram", type=int, default=30000, help="MB")
+    parser.add_argument("--min-gpu-ram", type=int, default=8192, help="MB")
+    parser.add_argument("--min-ram", type=int, default=16384, help="MB")
+    parser.add_argument("--min-cores", type=int, default=4)
+    parser.add_argument("--min-disk", type=int, default=20, help="GB")
+    parser.add_argument(
+        "--comfort",
+        action="store_true",
+        help="double all minimum requirements (comfort tier)",
+    )
     parser.add_argument("--timeout", type=int, default=900)
     parser.add_argument(
         "--instance-id",
@@ -65,9 +73,11 @@ def require_api_key() -> str:
 
 
 def search_offers(args: argparse.Namespace) -> list[dict]:
+    factor = 2 if args.comfort else 1
     query = (
         f"gpu_name={args.gpu} num_gpus=1 verified=true rentable=true "
-        "disk_space>=40 cpu_cores>=8 reliability>0.98"
+        f"disk_space>={args.min_disk * factor} "
+        f"cpu_cores>={args.min_cores * factor} reliability>0.98"
     )
     output = vastai(
         "search", "offers", query, "-o", "dph_total", "--raw", "--limit", "100"
@@ -78,8 +88,9 @@ def search_offers(args: argparse.Namespace) -> list[dict]:
     return [
         offer
         for offer in offers
-        if (offer.get("cpu_ram") or 0) >= args.min_ram
-        and int(str(offer.get("driver_version", "0")).split(".")[0]) >= 580
+        if (offer.get("cpu_ram") or 0) >= args.min_ram * factor
+        and (offer.get("gpu_ram") or 0) >= args.min_gpu_ram * factor
+        and int(str(offer.get("driver_version", "0")).split(".")[0]) >= 535
     ]
 
 
@@ -99,6 +110,7 @@ def format_offer(offer: dict) -> str:
         f"id={get('id')} "
         f"gpu={get('gpu_name')} "
         f"${num('dph_total', 2)}/h "
+        f"gpu_ram={num('gpu_ram')}MB "
         f"cpu={num('cpu_cores')}cores "
         f"ram={num('cpu_ram')}MB "
         f"disk={num('disk_space', 1)}GB "

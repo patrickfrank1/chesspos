@@ -44,9 +44,10 @@ pip install vastai                    # CLI + SDK (vastai, vastai_sdk)
 vastai set api-key $VASTAI_API_KEY    # key from console.vast.ai/manage-keys/
 vastai show user                      # verify auth + balance
 
-# find a GPU (dlperf_usd = performance per dollar)
+# find a GPU (sorted by price; gpu_ram/cpu_ram filtering happens client-side
+# because vast.ai's server-side >= comparison on these fields is broken)
 vastai search offers 'gpu_name=RTX_4090 num_gpus=1 verified=true rentable=true \
-  disk_space>=40 cpu_cores>=8 ram>=32 driver_version>=580 reliability>0.98' -o 'dlperf_usd-'
+  disk_space>=20 cpu_cores>=4 reliability>0.98' -o 'dph_total'
 
 vastai create instance <OFFER_ID> --image pytorch/pytorch --disk 40 --ssh --direct
 vastai show instance <ID>             # poll until actual_status == running
@@ -78,16 +79,21 @@ script applies.
 
 ## 3. Instance sizing
 
-| Resource | Minimum | Comfortable |
-|---|---|---|
-| GPU VRAM | 8 GB | 24 GB (4090/3090) |
-| RAM | 16 GB (dataset load peaks ~9 GB) | 32 GB |
-| Disk | 20 GB | 40 GB (venv + torch ~8 GB, data 0.6 GB) |
-| CPU | 8 cores (window packing + masking run on CPU workers) | 16 |
+Requirements profiled on a real run (2026-10-10, batch 32 × 2048 tokens, bf16,
+8 workers): GPU util 97%, VRAM 5.2 GB, system RAM ~12 GB, ~3 CPU cores busy,
+~650k tokens/s (~20 min/epoch). `scripts/provision_vast.py` defaults to the
+minimum column; `--comfort` doubles all minimums.
 
-Throughput estimate on 4090 with bf16 + `torch.compile`: 50–150k tok/s →
-**1.5–4 h per epoch** (750M tokens) vs 5 days on CPU. Budget ~$5–15 for a
-multi-epoch run.
+| Resource | Minimum | Comfort (2× min) |
+|---|---|---|
+| GPU VRAM | 8 GB | 16 GB |
+| RAM | 16 GB (dataset load peaks ~9 GB) | 32 GB |
+| Disk | 20 GB (image torch; data 0.6 GB, checkpoints ~0.2 GB) | 40 GB |
+| CPU | 4 cores | 8 cores |
+
+Throughput measured on a 4090 with bf16: ~650k tok/s → **~20 min per epoch**
+(750M tokens) vs 5 days on CPU. Driver: image-bundled CUDA works on any
+driver ≥ 535; the provisioner filters client-side for that.
 
 ## 4. Pre-work (do locally, before renting anything)
 
