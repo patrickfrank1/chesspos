@@ -170,3 +170,7 @@ cython_debug/
 
 # DVC ingnore
 /model
+
+# vast.ai ssh key (never commit)
+vastai_gpu_key
+vastai_gpu_key.pub
