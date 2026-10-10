@@ -13,6 +13,7 @@ dependencies = [
     "ray[data]>=2.40.0",
     "ray[default]>=2.40.0",
     "tensorflow>=2.20.0",
+    "torch>=2.14.1",
 ]
 
 [dependency-groups]
@@ -28,3 +29,6 @@ dev = [
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
+
+[[tool.uv.index]]
+url = "https://download.pytorch.org/whl/cpu"
