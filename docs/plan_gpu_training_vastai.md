@@ -41,12 +41,12 @@ Recommended: **vast.ai**, automated via CLI/SDK, one instance at a time.
 
 ```bash
 pip install vastai                    # CLI + SDK (vastai, vastai_sdk)
-vastai set api-key $VAST_API_KEY      # key from console.vast.ai/manage-keys/
+vastai set api-key $VASTAI_API_KEY    # key from console.vast.ai/manage-keys/
 vastai show user                      # verify auth + balance
 
 # find a GPU (dlperf_usd = performance per dollar)
 vastai search offers 'gpu_name=RTX_4090 num_gpus=1 verified=true rentable=true \
-  disk_space>=40 cpu_cores>=8 ram>=32 reliability>0.98' -o 'dlperf_usd-'
+  disk_space>=40 cpu_cores>=8 ram>=32 driver_version>=580 reliability>0.98' -o 'dlperf_usd-'
 
 vastai create instance <OFFER_ID> --image pytorch/pytorch --disk 40 --ssh --direct
 vastai show instance <ID>             # poll until actual_status == running
@@ -55,10 +55,15 @@ vastai destroy instance <ID> -y       # stops billing
 ```
 
 Python equivalent (`from vastai import VastAI`): `search_offers`,
-`create_instance`, `execute(id, cmd)`, `ssh_url`, `destroy_instance` — a
-`scripts/provision_vast.py` can do the whole cycle (search → create → wait
-→ bootstrap → train → push checkpoints → destroy). Write it after the
-manual run works.
+`create_instance`, `execute(id, cmd)`, `ssh_url`, `destroy_instance` —
+`scripts/provision_vast.py` (written 2026-10-10) covers search →
+**confirmation prompt** → create → wait for running → print ssh-url,
+plus `--instance-id` (reconnect) and `--destroy` (with confirmation). It
+reads `VASTAI_API_KEY` from the environment and must never log, print, or
+persist it (see Secrets Handling in AGENTS.md); the key is passed to the
+vastai CLI per invocation via `--api-key`, so `vastai set api-key` is not
+needed. Bootstrap/launch stays in `scripts/gpu_bootstrap.sh` (run over
+SSH).
 
 ### 2.2 runpod alternative
 
@@ -87,11 +92,15 @@ multi-epoch run.
 ## 4. Pre-work (do locally, before renting anything)
 
 1. **Upload the dataset to HF** (skips re-running Ray ETL remotely; raw
-   PGNs are 4.2 GB vs 538 MB parquet):
+   PGNs are 4.2 GB vs 538 MB parquet) — done 2026-10-10, 238 train + 194
+   test shards live in `patrickfrank1/chess-positions`:
    ```bash
-   hf upload patrickfrank1/chess-position-streams data/processed/train data/train --repo-type dataset
-   hf upload patrickfrank1/chess-position-streams data/processed/test data/test --repo-type dataset
+   hf upload patrickfrank1/chess-positions data/processed/train data/train --repo-type dataset
+   hf upload patrickfrank1/chess-positions data/processed/test data/test --repo-type dataset
    ```
+   Files land under `data/{train,test}/…` in the repo; after
+   `hf download --local-dir data/processed` the training dirs are
+   `data/processed/data/train` and `data/processed/data/test`.
 2. **Training script hardening** (`src/run/train_masked_transformer.py`):
    - `--resume PATH`: restore model/optimizer/scheduler/step from a
      checkpoint (needed for spot-instance interruptions).
@@ -107,9 +116,11 @@ multi-epoch run.
    # 1. clone repo (needs a GitHub token for a private repo, or rsync src/ over)
    # 2. curl -LsSf https://astral.sh/uv/install.sh | sh
    # 3. uv sync                      # installs CPU torch from lock — then:
-   # 4. uv pip install torch --index-url https://download.pytorch.org/whl/cu126 --force-reinstall
-   #    (pyproject pins the CPU index; override on GPU boxes until we split
-   #     cpu/gpu dependency groups)
+   # 4. uv pip install "torch==2.14.1" --force-reinstall
+   #    (the PyPI linux wheel of torch 2.14.1 IS the CUDA 13 build — it pulls
+   #     nvidia-*-cu13 deps; no separate cu126 index needed. The lock pins
+   #     torch 2.14.1+cpu, so bypass `uv run` (it would re-sync CPU torch)
+   #     and invoke .venv/bin/python directly. CUDA 13 needs driver >= 580.)
    # 5. hf auth login --token $HF_TOKEN   (or: HF_TOKEN env var)
    # 6. hf download patrickfrank1/chess-position-streams --repo-type dataset --local-dir data/processed
    # 7. PYTHONPATH=. uv run python src/run/train_masked_transformer.py --steps 20 --max-seq-len 2048 --batch-size 32   # smoke test
@@ -122,14 +133,16 @@ multi-epoch run.
 ## 5. Pushing checkpoints to HF (from the GPU box)
 
 Two options; **buckets are the better fit** for mutable checkpoints (no
-git history, deduplicated, rsync-style sync):
+git history, deduplicated, rsync-style sync). Decision (2026-10-10):
+**Option A** — `hf buckets sync` runs on the GPU box every 15 min via the
+bootstrap script; a model repo for the final artifact comes later.
 
 ```bash
-# Option A (recommended): HF bucket
+# Option A (chosen): HF bucket patrickfrank1/chesspos-checkpoints
 hf buckets create chesspos-checkpoints
 hf buckets sync ./models/run_full hf://buckets/patrickfrank1/chesspos-checkpoints/run_full/
 # re-run periodically; only changed files upload
-# (a cron loop or `hf upload ... --every=10` keeps it hands-off)
+# (the bootstrap script loops this every SYNC_INTERVAL seconds, default 900)
 
 # Option B: model repo (versioned commits)
 hf upload patrickfrank1/chesspos-masked-stream-transformer ./models/run_full/best.pt checkpoints/best.pt

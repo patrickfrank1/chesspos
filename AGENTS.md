@@ -117,6 +117,19 @@ When **not** to use it: refactoring business logic, writing tests against
 internal modules, or general programming concepts — those don't need external
 docs.
 
+## Secrets Handling
+
+- **Never read environment variable values.** Agents must not run `env`,
+  `printenv`, `echo $VAR`, `set`, or any other command that exposes the
+  contents of environment variables (secrets live there, e.g.
+  `VASTAI_API_KEY`, `HF_TOKEN`, `GITHUB_TOKEN`). Referencing a variable
+  *name* in shell commands or scripts is fine; printing its *value* is not.
+- If something is stuck because a required variable is missing, empty, or
+  invalid, **stop and escalate to the human operator** — do not try to
+  read, guess, or reconstruct the value.
+- Scripts consume secrets only via environment variables at runtime and
+  must never log, echo, or persist them.
+
 ## Repository Layout
 
 ```

@@ -22,6 +22,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--train-dir", default="data/processed/train")
     parser.add_argument("--val-dir", default="data/processed/test")
     parser.add_argument("--checkpoint-dir", default="models")
+    parser.add_argument("--resume", default=None)
     parser.add_argument("--steps", type=int, default=10_000)
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--lr", type=float, default=3e-4)
@@ -39,8 +40,24 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--log-every", type=int, default=20)
     parser.add_argument("--eval-every", type=int, default=1_000)
     parser.add_argument("--eval-batches", type=int, default=20)
+    parser.add_argument("--save-every", type=int, default=2_000)
+    parser.add_argument("--bf16", action="store_true")
+    parser.add_argument("--compile", action="store_true")
+    parser.add_argument("--log-file", default=None)
     parser.add_argument("--seed", type=int, default=17)
     return parser.parse_args()
+
+
+def make_logger(path: str | None):
+    file = open(path, "a", encoding="utf-8") if path else None
+
+    def log(message: str) -> None:
+        print(message, flush=True)
+        if file is not None:
+            file.write(f"{message}\n")
+            file.flush()
+
+    return log
 
 
 def lr_lambda(step: int, warmup: int, total: int):
@@ -50,12 +67,31 @@ def lr_lambda(step: int, warmup: int, total: int):
     return 0.5 * (1.0 + math.cos(math.pi * min(progress, 1.0)))
 
 
+def save_checkpoint(
+    path: Path,
+    model: MaskedStreamTransformer,
+    model_config: TransformerConfig,
+    step: int,
+    extra: dict,
+) -> None:
+    checkpoint = {
+        "step": step,
+        "model_state": model.state_dict(),
+        "model_config": asdict(model_config),
+        **extra,
+    }
+    tmp = path.with_suffix(".pt.tmp")
+    torch.save(checkpoint, tmp)
+    tmp.replace(path)
+
+
 @torch.no_grad()
 def evaluate(
     model: MaskedStreamTransformer,
     loader: DataLoader,
     device: torch.device,
     max_batches: int,
+    bf16: bool,
 ) -> tuple[float, float]:
     model.eval()
     losses = []
@@ -65,12 +101,15 @@ def evaluate(
         if i >= max_batches:
             break
         batch = {k: v.to(device) for k, v in batch.items()}
-        output = model(
-            batch["tokens"],
-            batch["segment_ids"],
-            padding_mask=batch["padding_mask"],
-            targets=batch["targets"],
-        )
+        with torch.autocast(
+            device_type=device.type, dtype=torch.bfloat16, enabled=bf16
+        ):
+            output = model(
+                batch["tokens"],
+                batch["segment_ids"],
+                padding_mask=batch["padding_mask"],
+                targets=batch["targets"],
+            )
         losses.append(output["loss"].item())
         valid = batch["targets"].ne(-100)
         predictions = output["logits"].argmax(-1)
@@ -84,21 +123,43 @@ def evaluate(
 
 def main() -> None:
     args = parse_args()
+    log = make_logger(args.log_file)
     torch.manual_seed(args.seed)
+    if torch.cuda.is_available():
+        torch.set_float32_matmul_precision("high")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    bf16 = args.bf16 and device.type == "cuda"
 
-    model_config = TransformerConfig(
-        d_model=args.d_model,
-        n_layers=args.n_layers,
-        n_heads=args.n_heads,
-        d_ff=args.d_ff,
-        dropout=args.dropout,
-        max_seq_len=args.max_seq_len,
-        max_segments=args.max_segments,
-    )
+    start_step = 0
+    best_val_loss = float("inf")
+    if args.resume:
+        checkpoint = torch.load(args.resume, map_location="cpu", weights_only=False)
+        model_config = TransformerConfig(**checkpoint["model_config"])
+        start_step = checkpoint["step"]
+        best_val_loss = checkpoint.get("best_val_loss", float("inf"))
+        log(
+            f"resuming from {args.resume} step={start_step} "
+            f"best_val_loss={best_val_loss:.4f}"
+        )
+    else:
+        model_config = TransformerConfig(
+            d_model=args.d_model,
+            n_layers=args.n_layers,
+            n_heads=args.n_heads,
+            d_ff=args.d_ff,
+            dropout=args.dropout,
+            max_seq_len=args.max_seq_len,
+            max_segments=args.max_segments,
+        )
+
     model = MaskedStreamTransformer(model_config).to(device)
+    raw_model = model
+    if args.compile:
+        model = torch.compile(model)
     n_params = sum(p.numel() for p in model.parameters())
-    print(f"device={device} params={n_params / 1e6:.2f}M")
+    log(
+        f"device={device} params={n_params / 1e6:.2f}M bf16={bf16} compile={args.compile}"
+    )
 
     train_dataset = WindowDataset(
         WindowDatasetConfig(
@@ -115,7 +176,7 @@ def main() -> None:
             seed=args.seed,
         )
     )
-    print(f"train games={len(train_dataset)} val games={len(val_dataset)}")
+    log(f"train games={len(train_dataset)} val games={len(val_dataset)}")
 
     train_loader = DataLoader(
         train_dataset,
@@ -143,17 +204,28 @@ def main() -> None:
         lambda step: lr_lambda(step, args.warmup, args.steps),
     )
 
+    if args.resume:
+        raw_model.load_state_dict(checkpoint["model_state"])
+        if "optimizer_state" in checkpoint:
+            optimizer.load_state_dict(checkpoint["optimizer_state"])
+        if "scheduler_state" in checkpoint:
+            scheduler.load_state_dict(checkpoint["scheduler_state"])
+
     checkpoint_dir = Path(args.checkpoint_dir)
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
+
+    def autocast():
+        return torch.autocast(
+            device_type=device.type, dtype=torch.bfloat16, enabled=bf16
+        )
 
     train_iter = iter(train_loader)
     model.train()
     running_loss = 0.0
     running_count = 0
     start = time.time()
-    best_val_loss = float("inf")
 
-    for step in range(1, args.steps + 1):
+    for step in range(start_step + 1, args.steps + 1):
         try:
             batch = next(train_iter)
         except StopIteration:
@@ -161,12 +233,13 @@ def main() -> None:
             batch = next(train_iter)
 
         batch = {k: v.to(device) for k, v in batch.items()}
-        output = model(
-            batch["tokens"],
-            batch["segment_ids"],
-            padding_mask=batch["padding_mask"],
-            targets=batch["targets"],
-        )
+        with autocast():
+            output = model(
+                batch["tokens"],
+                batch["segment_ids"],
+                padding_mask=batch["padding_mask"],
+                targets=batch["targets"],
+            )
         optimizer.zero_grad()
         output["loss"].backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
@@ -179,33 +252,46 @@ def main() -> None:
         if step % args.log_every == 0:
             elapsed = time.time() - start
             tokens_per_step = args.batch_size * args.max_seq_len
-            print(
+            log(
                 f"step={step} loss={running_loss / running_count:.4f} "
                 f"lr={scheduler.get_last_lr()[0]:.2e} "
-                f"tokens/s={tokens_per_step * args.log_every / elapsed:.0f}",
-                flush=True,
+                f"tokens/s={tokens_per_step * args.log_every / elapsed:.0f}"
             )
             running_loss = 0.0
             running_count = 0
             start = time.time()
 
         if step % args.eval_every == 0 or step == args.steps:
-            val_loss, val_acc = evaluate(model, val_loader, device, args.eval_batches)
-            print(
-                f"step={step} val_loss={val_loss:.4f} val_acc={val_acc:.4f}", flush=True
+            val_loss, val_acc = evaluate(
+                model, val_loader, device, args.eval_batches, bf16
             )
+            log(f"step={step} val_loss={val_loss:.4f} val_acc={val_acc:.4f}")
             if val_loss < best_val_loss:
                 best_val_loss = val_loss
-                checkpoint = {
-                    "step": step,
-                    "model_state": model.state_dict(),
-                    "model_config": asdict(model_config),
-                    "val_loss": val_loss,
-                    "val_acc": val_acc,
-                }
-                path = checkpoint_dir / "masked_stream_transformer.pt"
-                torch.save(checkpoint, path)
-                print(f"saved checkpoint to {path}", flush=True)
+                path = checkpoint_dir / "best.pt"
+                save_checkpoint(
+                    path,
+                    raw_model,
+                    model_config,
+                    step,
+                    {"val_loss": val_loss, "val_acc": val_acc},
+                )
+                log(f"saved best checkpoint to {path} (val_loss={val_loss:.4f})")
+
+        if step % args.save_every == 0 or step == args.steps:
+            path = checkpoint_dir / "last.pt"
+            save_checkpoint(
+                path,
+                raw_model,
+                model_config,
+                step,
+                {
+                    "optimizer_state": optimizer.state_dict(),
+                    "scheduler_state": scheduler.state_dict(),
+                    "best_val_loss": best_val_loss,
+                },
+            )
+            log(f"saved full checkpoint to {path}")
 
 
 if __name__ == "__main__":
