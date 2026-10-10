@@ -55,7 +55,7 @@ class WindowDataset(Dataset):
         config = self.config
         n = len(segments)
         u = rng.random()
-        if u < config.p_single:
+        if u < config.p_single or n < config.few_min:
             start = int(rng.integers(n))
             return [segments[start]]
         if u < config.p_single + config.p_few:
