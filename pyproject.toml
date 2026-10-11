@@ -8,27 +8,44 @@ requires-python = ">=3.11.8"
 dependencies = [
     "chess>=1.11.2",
     "datasets>=4.5.0",
-    "keras-nlp>=0.26.0",
+    "matplotlib>=3.10.8",
     "numpy>=1.24,<2.4",
     "ray[data]>=2.40.0",
     "ray[default]>=2.40.0",
-    "tensorflow>=2.20.0",
-    "torch>=2.14.1",
 ]
+
+[project.optional-dependencies]
+cpu = ["torch>=2.14.1"]
+gpu = ["torch>=2.14.1"]
 
 [dependency-groups]
 dev = [
     "ipywidgets>=8.1.8",
     "jupyter>=1.1.1",
-    "matplotlib>=3.10.8",
     "mlflow>=3.9.0",
     "pytest>=9.1.1",
     "ruff>=0.15.22",
     "umap-learn>=0.5.11",
 ]
 
-[tool.pytest.ini_options]
-pythonpath = ["."]
+[tool.uv]
+conflicts = [[{ extra = "cpu" }, { extra = "gpu" }]]
+
+[tool.uv.sources]
+torch = [
+    { index = "pytorch-cpu", extra = "cpu" },
+    { index = "pytorch-gpu", extra = "gpu" },
+]
 
 [[tool.uv.index]]
+name = "pytorch-cpu"
 url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-gpu"
+url = "https://download.pytorch.org/whl/cu126"
+explicit = true
+
+[tool.pytest.ini_options]
+pythonpath = ["."]

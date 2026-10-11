@@ -18,12 +18,12 @@ downstream tasks (semantic search, evaluation, pattern classification).
   (`src/run/generate_hf_dataset.py --config …`).
 
 ### ML framework
-- **Keras 3** with **`keras-nlp`** transformer layers.
-- Backend may be **TensorFlow** *or* **PyTorch** — Keras 3 supports both. Do not
-  import `tensorflow` or `torch` directly in new code; go through `keras` /
-  `keras.backend` so the backend stays swappable. Existing modules under
-  `src/modeling/` and `src/run/train.py` still import `tensorflow` directly and
-  are pending migration.
+- **PyTorch** is the training framework (`src/run/train_masked_transformer.py`,
+  `src/modeling/transformer.py`). Torch is installed via extras:
+  `uv sync --extra cpu` (CPU builds) or `uv sync --extra gpu` (CUDA builds);
+  the two extras are mutually exclusive.
+- **TensorFlow and keras-nlp have been removed** from the dependencies, and the
+  legacy TensorFlow modules have been deleted. Do not add `tensorflow` back.
 
 ### Data processing
 - **python-chess** for PGN parsing, board manipulation, and FEN handling.
@@ -33,9 +33,10 @@ downstream tasks (semantic search, evaluation, pattern classification).
 - **NumPy** for in-memory tensors.
 
 ### Vector database
-- **Not finalized.** The current implementation in `src/search/db.py`,
-  `src/search/indexer.py`, and `src/run/build_vector_db.py` uses **Milvus** via
-  `pymilvus`. Milvus is **deprecated and will be removed** — do not extend it.
+- **Not finalized.** The current implementation in `src/search/db.py` uses
+  **Milvus** via `pymilvus` (the old indexer was deleted together with the
+  legacy TensorFlow modules). Milvus is **deprecated and will be removed** —
+  do not extend it.
 - **LanceDB** is the leading candidate replacement (offers built-in vector
   indexes and ML-framework integration). Treat the vector store layer as in
   flux; new work should be written behind an abstraction so the backend can be
@@ -56,18 +57,13 @@ entity-relationship diagram and runtime flow. Summary:
   (`src/dataset/token_stream.py`) encodes each board into a variable-length
   `int16` token segment → `train_test_split` → Parquet shards pushed to the Hub
   as `{train,test}/batch_{NNNN}_*.parquet`.
-- **Read side** (`src/dataset/data_loader.py`) — `TrainingDataGenerator` loads
-  the Hub dataset back via `datasets.load_dataset` and yields a
-  `tf.data.Dataset` of `(window, target)` pairs with optional BERT-style
-  masking (`mask_token_id=16`).
+- **Read side** (`src/training/window_dataset.py`) — `WindowDataset` loads the
+  packed token streams back from local parquet shards and yields training
+  windows with BERT-style masking (`src/modeling/masking.py`) for the PyTorch
+  training loop.
 - **Encoder** (`src/dataset/token_stream.py`) — `TokenStreamEncoder` is the
   only encoder (no ABC/registry/config); it hardcodes the token stream format:
   variable-length `int16` segments, vocab of 806 tokens.
-
-> Note: there is a known schema mismatch between what `_encode_batch` writes
-> (per-game rows: `packed`, `n_positions`, `game_id`, `split`, …) and what
-> `TrainingDataGenerator` reads (`window`, `scalars`). Documented in
-> `docs/dataset_pipeline.md`.
 
 ## Development Workflow
 
@@ -80,6 +76,7 @@ entity-relationship diagram and runtime flow. Summary:
    for config, ABC + registry for pluggable components, static methods for Ray
    callables.
 4. **Verify locally** before pushing:
+   - `uv sync --extra cpu` (torch is an extra, not a base dependency)
    - `uv run ruff format && uv run ruff check`
    - `uv run pytest`
    - If you add a new library, confirm it resolves in `uv.lock`.
@@ -137,7 +134,7 @@ src/
   dataset/        # ETL + HF dataset client + position encoders (current focus)
   modeling/       # Keras model definitions
   training/       # Data generators for training
-  search/         # Vector store (Milvus, deprecated) + indexer
+  search/         # Vector store (Milvus, deprecated)
   preprocessing/  # Legacy board representation / extraction helpers
   evaluation/     # Visualisation
   run/            # CLI entry points (generate_hf_dataset.py, train.py, …)

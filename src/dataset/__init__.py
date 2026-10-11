@@ -17,7 +17,6 @@ from src.dataset.token_stream import (
 )
 
 if TYPE_CHECKING:
-    from src.dataset.data_loader import TrainingDataGenerator
     from src.dataset.etl import ChessPositionDataset
     from src.dataset.huggingface_client import HuggingFaceClient
     from src.dataset.pgn_processor import GameRecord, PGNProcessor
@@ -27,7 +26,6 @@ _LAZY_IMPORTS = {
     "GameRecord": ("src.dataset.pgn_processor", "GameRecord"),
     "HuggingFaceClient": ("src.dataset.huggingface_client", "HuggingFaceClient"),
     "PGNProcessor": ("src.dataset.pgn_processor", "PGNProcessor"),
-    "TrainingDataGenerator": ("src.dataset.data_loader", "TrainingDataGenerator"),
 }
 
 
@@ -57,7 +55,6 @@ __all__ = [
     "TURN_BLACK",
     "TURN_WHITE",
     "TokenStreamEncoder",
-    "TrainingDataGenerator",
     "VOCAB_SIZE",
     "pack_stream",
 ]
