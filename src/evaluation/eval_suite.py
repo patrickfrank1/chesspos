@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import numpy as np
@@ -239,6 +240,78 @@ def neighbor_stats(
     }
 
 
+def neighbor_examples(
+    embeds: torch.Tensor,
+    boards: list,
+    materials: np.ndarray,
+    seed: int,
+    n_queries: int = 3,
+    k: int = 5,
+) -> list[dict]:
+    sims = (embeds @ embeds.T).numpy()
+    np.fill_diagonal(sims, -np.inf)
+    rng = np.random.default_rng(seed)
+    picks = rng.choice(len(boards), size=min(n_queries, len(boards)), replace=False)
+    examples = []
+    for q in picks:
+        top = np.argsort(-sims[q])[:k]
+        examples.append(
+            {
+                "query_fen": boards[int(q)].fen(),
+                "query_material": float(materials[q]),
+                "neighbors": [
+                    {
+                        "fen": boards[int(j)].fen(),
+                        "similarity": float(sims[q][j]),
+                        "material": float(materials[j]),
+                    }
+                    for j in top
+                ],
+            }
+        )
+    return examples
+
+
+def write_neighbor_examples(examples: list[dict], out_dir: str | Path) -> Path:
+    import chess
+    import chess.svg
+
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    parts = [
+        "<html><head><title>Neighbor examples</title>",
+        "<style>",
+        "body{font-family:sans-serif;background:#fff}",
+        "table{border-collapse:collapse}",
+        "td{padding:8px;text-align:center;vertical-align:top}",
+        ".meta{font-size:13px;color:#444}",
+        "</style></head><body>",
+    ]
+    for example in examples:
+        query = chess.Board(example["query_fen"])
+        parts.append(
+            f"<h2>query &middot; material {example['query_material']:+.0f}</h2>"
+        )
+        parts.append(chess.svg.board(query, size=280))
+        parts.append("<table><tr>")
+        for neighbor in example["neighbors"]:
+            board = chess.Board(neighbor["fen"])
+            parts.append(
+                f"<td>{chess.svg.board(board, size=200)}"
+                f"<div class='meta'>sim={neighbor['similarity']:.3f} &middot; "
+                f"material={neighbor['material']:+.0f}</div></td>"
+            )
+        parts.append("</tr></table>")
+    parts.append("</body></html>")
+
+    html_path = out_dir / "neighbor_examples.html"
+    html_path.write_text("".join(parts))
+    json_path = out_dir / "neighbor_examples.json"
+    json_path.write_text(json.dumps(examples, indent=2))
+    return html_path
+
+
 def corrupt_segment(segment: np.ndarray, rng: np.random.Generator) -> np.ndarray:
     piece_positions = np.flatnonzero(segment >= PIECE_SQUARE_BASE)
     picks = rng.choice(
@@ -385,6 +458,7 @@ def full_eval(
     counterfactual_n: int = 256,
     seed: int = 17,
     plot_dir: str | Path | None = None,
+    examples_dir: str | Path | None = None,
 ) -> dict[str, float]:
     was_training = model.training
     model.eval()
@@ -408,6 +482,9 @@ def full_eval(
         embeds = embed_segments(model, segments, device)
         boards, piece_counts, materials = board_metadata(segments)
         metrics.update(neighbor_stats(embeds, piece_counts, materials, seed))
+        if examples_dir is not None:
+            examples = neighbor_examples(embeds, boards, materials, seed)
+            write_neighbor_examples(examples, examples_dir)
         if counterfactual_n > 0:
             metrics.update(
                 counterfactual_stats(

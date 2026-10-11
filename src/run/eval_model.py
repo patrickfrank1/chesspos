@@ -12,12 +12,14 @@ from src.evaluation.eval_suite import (
     embed_segments,
     material_probe,
     mlm_breakdown,
+    neighbor_examples,
     neighbor_stats,
     phase_stats,
     piece_prior,
     plot_phase_projection,
     sample_segments,
     side_to_move_probe,
+    write_neighbor_examples,
 )
 from src.modeling.transformer import MaskedStreamTransformer, TransformerConfig
 from src.training.window_dataset import _load_game_segments
@@ -104,6 +106,11 @@ def main() -> None:
 
     print("\n-- nearest neighbours --")
     print_neighbor_queries(embeds, boards, materials, args.n_queries, args.seed)
+    examples = neighbor_examples(
+        embeds, boards, materials, args.seed, n_queries=args.n_queries
+    )
+    report_path = write_neighbor_examples(examples, args.out_dir)
+    print(f"  board report saved to {report_path}")
     for name, value in neighbor_stats(
         embeds, piece_counts, materials, args.seed
     ).items():

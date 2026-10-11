@@ -298,7 +298,26 @@ def main() -> None:
                     counterfactual_n=args.eval_counterfactual,
                     seed=args.seed,
                     plot_dir=checkpoint_dir,
+                    examples_dir=checkpoint_dir,
                 )
+                examples_path = checkpoint_dir / "neighbor_examples.json"
+                if examples_path.exists():
+                    for example in json.loads(examples_path.read_text()):
+                        top = example["neighbors"][0]
+                        log(
+                            f"step={step} neighbor query material="
+                            f"{example['query_material']:+.0f} {example['query_fen']}"
+                        )
+                        log(
+                            f"  top sim={top['similarity']:.3f} material="
+                            f"{top['material']:+.0f} {top['fen']}"
+                        )
+                    log(
+                        "step={step} neighbor board report saved to {path}".format(
+                            step=step,
+                            path=checkpoint_dir / "neighbor_examples.html",
+                        )
+                    )
                 log(
                     f"step={step} eval plot saved to {checkpoint_dir / 'pca_phase.png'}"
                 )
