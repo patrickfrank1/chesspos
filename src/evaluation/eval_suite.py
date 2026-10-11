@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 import torch
 
@@ -345,6 +347,30 @@ def phase_stats(
     return projected, corr1, corr2
 
 
+def plot_phase_projection(
+    projected: np.ndarray, piece_counts: np.ndarray, out_dir: str | Path
+) -> Path:
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    out_path = Path(out_dir) / "pca_phase.png"
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    plt.figure(figsize=(8, 6))
+    scatter = plt.scatter(
+        projected[:, 0], projected[:, 1], c=piece_counts, s=6, cmap="viridis"
+    )
+    plt.colorbar(scatter, label="pieces on board")
+    plt.xlabel("PC1")
+    plt.ylabel("PC2")
+    plt.title("Position embeddings coloured by game phase")
+    plt.tight_layout()
+    plt.savefig(out_path, dpi=150)
+    plt.close()
+    return out_path
+
+
 @torch.no_grad()
 def full_eval(
     model: MaskedStreamTransformer,
@@ -358,6 +384,7 @@ def full_eval(
     pool_size: int = 1024,
     counterfactual_n: int = 256,
     seed: int = 17,
+    plot_dir: str | Path | None = None,
 ) -> dict[str, float]:
     was_training = model.training
     model.eval()
@@ -396,9 +423,11 @@ def full_eval(
             )
         metrics.update(material_probe(embeds, materials, seed))
         metrics.update(side_to_move_probe(embeds, boards, seed))
-        _, corr1, corr2 = phase_stats(embeds, piece_counts)
+        projected, corr1, corr2 = phase_stats(embeds, piece_counts)
         metrics["pc1_piece_corr"] = corr1
         metrics["pc2_piece_corr"] = corr2
+        if plot_dir is not None:
+            plot_phase_projection(projected, piece_counts, plot_dir)
     if was_training:
         model.train()
     return metrics

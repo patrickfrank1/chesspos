@@ -297,6 +297,10 @@ def main() -> None:
                     pool_size=args.eval_pool_size,
                     counterfactual_n=args.eval_counterfactual,
                     seed=args.seed,
+                    plot_dir=checkpoint_dir,
+                )
+                log(
+                    f"step={step} eval plot saved to {checkpoint_dir / 'pca_phase.png'}"
                 )
                 payload = {"step": step, **metrics}
                 write_eval_artifacts(checkpoint_dir, payload)

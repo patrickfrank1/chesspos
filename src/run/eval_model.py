@@ -3,11 +3,6 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-import matplotlib
-
-matplotlib.use("Agg")
-
-import matplotlib.pyplot as plt
 import numpy as np
 import torch
 
@@ -20,6 +15,7 @@ from src.evaluation.eval_suite import (
     neighbor_stats,
     phase_stats,
     piece_prior,
+    plot_phase_projection,
     sample_segments,
     side_to_move_probe,
 )
@@ -129,20 +125,8 @@ def main() -> None:
     projected, corr1, corr2 = phase_stats(embeds, piece_counts)
     print(f"  pc1_piece_corr: {corr1:.4f}")
     print(f"  pc2_piece_corr: {corr2:.4f}")
-    plt.figure(figsize=(8, 6))
-    scatter = plt.scatter(
-        projected[:, 0], projected[:, 1], c=piece_counts, s=6, cmap="viridis"
-    )
-    plt.colorbar(scatter, label="pieces on board")
-    plt.xlabel("PC1")
-    plt.ylabel("PC2")
-    plt.title("Position embeddings coloured by game phase")
-    plt.tight_layout()
-    out_dir = Path(args.out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
-    plt.savefig(out_dir / "pca_phase.png", dpi=150)
-    plt.close()
-    print(f"  plot saved to {out_dir / 'pca_phase.png'}")
+    plot_path = plot_phase_projection(projected, piece_counts, args.out_dir)
+    print(f"  plot saved to {plot_path}")
 
 
 if __name__ == "__main__":
