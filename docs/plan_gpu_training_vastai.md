@@ -41,12 +41,13 @@ Recommended: **vast.ai**, automated via CLI/SDK, one instance at a time.
 
 ```bash
 pip install vastai                    # CLI + SDK (vastai, vastai_sdk)
-vastai set api-key $VAST_API_KEY      # key from console.vast.ai/manage-keys/
+vastai set api-key $VASTAI_API_KEY    # key from console.vast.ai/manage-keys/
 vastai show user                      # verify auth + balance
 
-# find a GPU (dlperf_usd = performance per dollar)
+# find a GPU (sorted by price; gpu_ram/cpu_ram filtering happens client-side
+# because vast.ai's server-side >= comparison on these fields is broken)
 vastai search offers 'gpu_name=RTX_4090 num_gpus=1 verified=true rentable=true \
-  disk_space>=40 cpu_cores>=8 ram>=32 reliability>0.98' -o 'dlperf_usd-'
+  disk_space>=20 cpu_cores>=4 reliability>0.98' -o 'dph_total'
 
 vastai create instance <OFFER_ID> --image pytorch/pytorch --disk 40 --ssh --direct
 vastai show instance <ID>             # poll until actual_status == running
@@ -55,10 +56,15 @@ vastai destroy instance <ID> -y       # stops billing
 ```
 
 Python equivalent (`from vastai import VastAI`): `search_offers`,
-`create_instance`, `execute(id, cmd)`, `ssh_url`, `destroy_instance` — a
-`scripts/provision_vast.py` can do the whole cycle (search → create → wait
-→ bootstrap → train → push checkpoints → destroy). Write it after the
-manual run works.
+`create_instance`, `execute(id, cmd)`, `ssh_url`, `destroy_instance` —
+`scripts/provision_vast.py` (written 2026-10-10) covers search →
+**confirmation prompt** → create → wait for running → print ssh-url,
+plus `--instance-id` (reconnect) and `--destroy` (with confirmation). It
+reads `VASTAI_API_KEY` from the environment and must never log, print, or
+persist it (see Secrets Handling in AGENTS.md); the key is passed to the
+vastai CLI per invocation via `--api-key`, so `vastai set api-key` is not
+needed. Bootstrap/launch stays in `scripts/gpu_bootstrap.sh` (run over
+SSH).
 
 ### 2.2 runpod alternative
 
@@ -73,25 +79,34 @@ script applies.
 
 ## 3. Instance sizing
 
-| Resource | Minimum | Comfortable |
-|---|---|---|
-| GPU VRAM | 8 GB | 24 GB (4090/3090) |
-| RAM | 16 GB (dataset load peaks ~9 GB) | 32 GB |
-| Disk | 20 GB | 40 GB (venv + torch ~8 GB, data 0.6 GB) |
-| CPU | 8 cores (window packing + masking run on CPU workers) | 16 |
+Requirements profiled on a real run (2026-10-10, batch 32 × 2048 tokens, bf16,
+8 workers): GPU util 97%, VRAM 5.2 GB, system RAM ~12 GB, ~3 CPU cores busy,
+~650k tokens/s (~20 min/epoch). `scripts/provision_vast.py` defaults to the
+minimum column; `--comfort` doubles all minimums.
 
-Throughput estimate on 4090 with bf16 + `torch.compile`: 50–150k tok/s →
-**1.5–4 h per epoch** (750M tokens) vs 5 days on CPU. Budget ~$5–15 for a
-multi-epoch run.
+| Resource | Minimum | Comfort (2× min) |
+|---|---|---|
+| GPU VRAM | 8 GB | 16 GB |
+| RAM | 16 GB (dataset load peaks ~9 GB) | 32 GB |
+| Disk | 20 GB (image torch; data 0.6 GB, checkpoints ~0.2 GB) | 40 GB |
+| CPU | 4 cores | 8 cores |
+
+Throughput measured on a 4090 with bf16: ~650k tok/s → **~20 min per epoch**
+(750M tokens) vs 5 days on CPU. Driver: image-bundled CUDA works on any
+driver ≥ 535; the provisioner filters client-side for that.
 
 ## 4. Pre-work (do locally, before renting anything)
 
 1. **Upload the dataset to HF** (skips re-running Ray ETL remotely; raw
-   PGNs are 4.2 GB vs 538 MB parquet):
+   PGNs are 4.2 GB vs 538 MB parquet) — done 2026-10-10, 238 train + 194
+   test shards live in `patrickfrank1/chess-positions`:
    ```bash
-   hf upload patrickfrank1/chess-position-streams data/processed/train data/train --repo-type dataset
-   hf upload patrickfrank1/chess-position-streams data/processed/test data/test --repo-type dataset
+   hf upload patrickfrank1/chess-positions data/processed/train data/train --repo-type dataset
+   hf upload patrickfrank1/chess-positions data/processed/test data/test --repo-type dataset
    ```
+   Files land under `data/{train,test}/…` in the repo; after
+   `hf download --local-dir data/processed` the training dirs are
+   `data/processed/data/train` and `data/processed/data/test`.
 2. **Training script hardening** (`src/run/train_masked_transformer.py`):
    - `--resume PATH`: restore model/optimizer/scheduler/step from a
      checkpoint (needed for spot-instance interruptions).
@@ -107,9 +122,11 @@ multi-epoch run.
    # 1. clone repo (needs a GitHub token for a private repo, or rsync src/ over)
    # 2. curl -LsSf https://astral.sh/uv/install.sh | sh
    # 3. uv sync                      # installs CPU torch from lock — then:
-   # 4. uv pip install torch --index-url https://download.pytorch.org/whl/cu126 --force-reinstall
-   #    (pyproject pins the CPU index; override on GPU boxes until we split
-   #     cpu/gpu dependency groups)
+   # 4. uv pip install "torch==2.14.1" --force-reinstall
+   #    (the PyPI linux wheel of torch 2.14.1 IS the CUDA 13 build — it pulls
+   #     nvidia-*-cu13 deps; no separate cu126 index needed. The lock pins
+   #     torch 2.14.1+cpu, so bypass `uv run` (it would re-sync CPU torch)
+   #     and invoke .venv/bin/python directly. CUDA 13 needs driver >= 580.)
    # 5. hf auth login --token $HF_TOKEN   (or: HF_TOKEN env var)
    # 6. hf download patrickfrank1/chess-position-streams --repo-type dataset --local-dir data/processed
    # 7. PYTHONPATH=. uv run python src/run/train_masked_transformer.py --steps 20 --max-seq-len 2048 --batch-size 32   # smoke test
@@ -122,14 +139,16 @@ multi-epoch run.
 ## 5. Pushing checkpoints to HF (from the GPU box)
 
 Two options; **buckets are the better fit** for mutable checkpoints (no
-git history, deduplicated, rsync-style sync):
+git history, deduplicated, rsync-style sync). Decision (2026-10-10):
+**Option A** — `hf buckets sync` runs on the GPU box every 15 min via the
+bootstrap script; a model repo for the final artifact comes later.
 
 ```bash
-# Option A (recommended): HF bucket
+# Option A (chosen): HF bucket patrickfrank1/chesspos-checkpoints
 hf buckets create chesspos-checkpoints
 hf buckets sync ./models/run_full hf://buckets/patrickfrank1/chesspos-checkpoints/run_full/
 # re-run periodically; only changed files upload
-# (a cron loop or `hf upload ... --every=10` keeps it hands-off)
+# (the bootstrap script loops this every SYNC_INTERVAL seconds, default 900)
 
 # Option B: model repo (versioned commits)
 hf upload patrickfrank1/chesspos-masked-stream-transformer ./models/run_full/best.pt checkpoints/best.pt

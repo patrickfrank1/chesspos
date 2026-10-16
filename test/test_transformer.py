@@ -32,7 +32,9 @@ def random_game_factory(seed):
 
 
 class TestMaskStream:
-    def test_random_mode_masks_only_piece_tokens(self):
+    def test_random_mode_masks_segment_tokens(self):
+        from src.dataset.token_stream import TURN_WHITE
+
         tokens = make_stream(random_game_factory(1))
         config = MaskingConfig(p_random=1.0, p_board=0.0, p_span=0.0, random_rate=0.3)
         rng = np.random.default_rng(0)
@@ -40,20 +42,22 @@ class TestMaskStream:
 
         changed = np.flatnonzero(targets != IGNORE_INDEX)
         assert changed.size > 0
-        assert np.all(tokens[changed] >= 38)
+        assert np.all(tokens[changed] >= TURN_WHITE)
         structural = np.flatnonzero((tokens == 3) | (tokens == 2))
         assert np.all(targets[structural] == IGNORE_INDEX)
         assert np.all(masked[structural] == tokens[structural])
         assert np.all(targets[changed] == tokens[changed])
 
     def test_random_mode_rate(self):
+        from src.dataset.token_stream import TURN_WHITE
+
         tokens = make_stream(random_game_factory(2))
         config = MaskingConfig(p_random=1.0, random_rate=0.3)
         rng = np.random.default_rng(0)
         _, targets = mask_stream(tokens, config, rng)
-        n_piece = int((tokens >= 38).sum())
+        n_maskable = int((tokens >= TURN_WHITE).sum())
         n_masked = int((targets != IGNORE_INDEX).sum())
-        assert 0.2 * n_piece <= n_masked <= 0.4 * n_piece
+        assert 0.2 * n_maskable <= n_masked <= 0.4 * n_maskable
 
     def test_board_mode_masks_exactly_one_segment(self):
         from src.dataset.token_stream import SEP
@@ -115,6 +119,34 @@ class TestMaskStream:
         assert mask_frac == pytest.approx(0.8, abs=0.1)
         assert random_frac == pytest.approx(0.1, abs=0.05)
         assert keep_frac == pytest.approx(0.1, abs=0.05)
+
+    def test_scalar_replacement_stays_in_token_class(self):
+        from src.dataset.token_stream import (
+            CASTLE_BASE,
+            EP_BASE,
+            PIECE_SQUARE_BASE,
+            TURN_WHITE,
+        )
+
+        config = MaskingConfig(p_random=1.0, p_board=0.0, p_span=0.0, random_rate=0.5)
+        replaced = {TURN_WHITE: [], CASTLE_BASE: [], EP_BASE: [], PIECE_SQUARE_BASE: []}
+        for seed in range(60):
+            tokens = make_stream(random_game_factory(seed), n_boards=8)
+            masked, targets = mask_stream(tokens, config, np.random.default_rng(seed))
+            for pos in np.flatnonzero(targets != IGNORE_INDEX):
+                low, _ = next(
+                    (lo, hi)
+                    for lo, hi in ((4, 6), (6, 22), (22, 38), (38, 806))
+                    if lo <= targets[pos] < hi
+                )
+                if masked[pos] != 1 and masked[pos] != targets[pos]:
+                    replaced[low].append(int(masked[pos]))
+        assert replaced[TURN_WHITE], "expected random-replaced turn tokens"
+        assert replaced[CASTLE_BASE], "expected random-replaced castle tokens"
+        assert all(4 <= v < 6 for v in replaced[TURN_WHITE])
+        assert all(6 <= v < 22 for v in replaced[CASTLE_BASE])
+        assert all(22 <= v < 38 for v in replaced[EP_BASE])
+        assert all(38 <= v < 806 for v in replaced[PIECE_SQUARE_BASE])
 
     def test_deterministic_with_same_seed(self):
         tokens = make_stream(random_game_factory(6))

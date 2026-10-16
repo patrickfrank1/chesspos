@@ -14,7 +14,8 @@ from src.modeling.masking import IGNORE_INDEX, MaskingConfig, mask_stream
 
 @dataclass
 class WindowDatasetConfig:
-    data_dir: str
+    data_dir: str = ""
+    games: list[list[np.ndarray]] | None = None
     max_seq_len: int = 2048
     max_segments: int = 128
     p_single: float = 0.15
@@ -29,6 +30,9 @@ class WindowDatasetConfig:
 class WindowDataset(Dataset):
     def __init__(self, config: WindowDatasetConfig):
         self.config = config
+        if config.games is not None:
+            self.games = config.games
+            return
         self.games: list[list[np.ndarray]] = []
         for path in sorted(Path(config.data_dir).glob("*.parquet")):
             self.games.extend(_load_game_segments(path))
@@ -55,7 +59,7 @@ class WindowDataset(Dataset):
         config = self.config
         n = len(segments)
         u = rng.random()
-        if u < config.p_single:
+        if u < config.p_single or n < config.few_min:
             start = int(rng.integers(n))
             return [segments[start]]
         if u < config.p_single + config.p_few:
