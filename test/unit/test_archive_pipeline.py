@@ -2,6 +2,7 @@ import hashlib
 import io
 import re
 import sys
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import zstandard
@@ -10,6 +11,7 @@ from bdd import given, then, when
 from src.dataset.archive_pipeline import (
     ArchivePipeline,
     BatchUploader,
+    _Prefetcher,
     _RayExtractor,
 )
 from src.dataset.chunker import PgnChunker
@@ -356,6 +358,106 @@ class TestRayExtractor:
 
 def _zst(payload: bytes) -> bytes:
     return zstandard.ZstdCompressor().compress(payload)
+
+
+class TestPrefetch:
+    def test_prefetcher_returns_downloaded_file(self, tmp_path):
+        with given("a prefetcher started on a URL whose download writes the archive"):
+            dest = tmp_path / "test-a.pgn.zst"
+            prefetcher = _Prefetcher()
+            with patch(
+                "src.dataset.archive_pipeline.download_file",
+                side_effect=lambda url, d: Path(d).write_bytes(b"archive-bytes"),
+            ):
+                prefetcher.start(
+                    WorkItem(
+                        archive_id="test-a",
+                        provider="lichess",
+                        url="https://x/test-a.pgn.zst",
+                    ),
+                    dest,
+                )
+
+        with when("the prefetched file is taken"):
+            path = prefetcher.take()
+
+        with then("the completed download is returned"):
+            assert path == str(dest)
+            assert Path(path).read_bytes() == b"archive-bytes"
+        return
+
+    def test_prefetcher_failure_yields_none_for_streaming_fallback(self, tmp_path):
+        with given("a prefetcher whose background download fails"):
+            prefetcher = _Prefetcher()
+            with patch(
+                "src.dataset.archive_pipeline.download_file",
+                side_effect=OSError("connection reset"),
+            ):
+                prefetcher.start(
+                    WorkItem(
+                        archive_id="test-a",
+                        provider="lichess",
+                        url="https://x/test-a.pgn.zst",
+                    ),
+                    tmp_path / "test-a.pgn.zst",
+                )
+
+        with when("the prefetched file is taken"):
+            path = prefetcher.take()
+
+        with then("no file is returned and the caller can fall back to streaming"):
+            assert path is None
+        return
+
+    def test_run_downloads_next_archive_while_processing_current(self, tmp_path):
+        with given(
+            "a pipeline over two archive URLs and a fake downloader recording events"
+        ):
+            events: list[str] = []
+            payloads = {
+                "test-a": _zst(
+                    b'[Event "A"]\n[Site "s"]\n[Result "1-0"]\n\n1. e4 *\n\n'
+                ),
+                "test-b": _zst(
+                    b'[Event "B"]\n[Site "s"]\n[Result "1-0"]\n\n1. d4 *\n\n'
+                ),
+            }
+
+            def fake_download(url, dest):
+                archive_id = "test-a" if "test-a" in url else "test-b"
+                events.append(f"download:{archive_id}")
+                Path(dest).write_bytes(payloads[archive_id])
+                return
+
+            pipeline = make_pipeline(
+                data_path=None,
+                archive_urls=[
+                    "https://x/test-a.pgn.zst",
+                    "https://x/test-b.pgn.zst",
+                ],
+            )
+            original_process = pipeline._process
+
+            def spy_process(item, *args, **kwargs):
+                events.append(f"process:{item.archive_id}")
+                return original_process(item, *args, **kwargs)
+
+            pipeline._process = spy_process
+
+        with when("the pipeline runs in dry-run mode"):
+            with patch(
+                "src.dataset.archive_pipeline.download_file",
+                side_effect=fake_download,
+            ):
+                result = pipeline.run(dry_run=True, output_dir=str(tmp_path))
+
+        with then(
+            "each archive's download starts before the current archive finishes processing"
+        ):
+            assert result.processed == ["test-a", "test-b"]
+            assert events.index("download:test-a") < events.index("process:test-a")
+            assert events.index("download:test-b") < events.index("process:test-a")
+        return
 
 
 class TestOpenPgnStream:

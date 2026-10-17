@@ -16,12 +16,13 @@ from __future__ import annotations
 import json
 import shutil
 import tempfile
+import threading
 import urllib.request
 from collections import deque
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import BinaryIO
 
@@ -33,6 +34,7 @@ from huggingface_hub import CommitOperationAdd, HfApi, hf_hub_download
 from src.dataset.batch_meta import BatchMeta, build_batch_meta, config_fingerprint
 from src.dataset.chunker import PgnChunker
 from src.dataset.config import DatasetConfig, PreprocessingConfig, SourceConfig
+from src.dataset.download import download_file
 from src.dataset.etl import ChessPositionDataset
 from src.dataset.source import ArchivePlanner, WorkItem, completed_archives
 
@@ -107,6 +109,43 @@ class Batch:
 class RunResult:
     processed: list[str] = field(default_factory=list)
     skipped: list[str] = field(default_factory=list)
+
+
+class _Prefetcher:
+    """Download the next archive in the background while the current one processes.
+
+    Downloads are link-bound (~10s per monthly archive), so prefetching
+    hides them behind the (much slower) extraction work entirely. If the
+    background download fails, ``take`` returns ``None`` and the caller
+    falls back to streaming the URL directly.
+    """
+
+    def __init__(self):
+        self._thread: threading.Thread | None = None
+        self._dest: Path | None = None
+        return
+
+    def start(self, item: WorkItem, dest: Path) -> None:
+        if item.provider != "lichess" or not item.url:
+            return
+        self._dest = Path(dest)
+        self._thread = threading.Thread(
+            target=download_file,
+            args=(item.url, self._dest),
+            daemon=True,
+        )
+        self._thread.start()
+        return
+
+    def take(self) -> str | None:
+        """Wait for the background download; return its path, or None on failure."""
+        if self._thread is None:
+            return None
+        self._thread.join()
+        self._thread = None
+        if self._dest is not None and self._dest.exists():
+            return str(self._dest)
+        return None
 
 
 class BatchUploader:
@@ -296,12 +335,31 @@ class ArchivePipeline:
         uploader = BatchUploader(repo_id=self.dataset_config.repo_name)
 
         result = RunResult()
-        for item in all_items:
-            if item.archive_id in completed:
-                result.skipped.append(item.archive_id)
-                continue
-            self._process(item, uploader, dry_run=dry_run, output_dir=output_dir)
-            result.processed.append(item.archive_id)
+        pending = [item for item in all_items if item.archive_id not in completed]
+        result.skipped = [
+            item.archive_id for item in all_items if item.archive_id in completed
+        ]
+        with tempfile.TemporaryDirectory(prefix="chesspos-prefetch-") as prefetch_dir:
+            prefetcher = _Prefetcher()
+            if pending:
+                prefetcher.start(
+                    pending[0], Path(prefetch_dir) / f"{pending[0].archive_id}.pgn.zst"
+                )
+            for index, item in enumerate(pending):
+                local_path = prefetcher.take()
+                if index + 1 < len(pending):
+                    nxt = pending[index + 1]
+                    prefetcher.start(
+                        nxt, Path(prefetch_dir) / f"{nxt.archive_id}.pgn.zst"
+                    )
+                self._process(
+                    item,
+                    uploader,
+                    dry_run=dry_run,
+                    output_dir=output_dir,
+                    local_path=local_path,
+                )
+                result.processed.append(item.archive_id)
         return result
 
     def _completed(self, dry_run: bool, output_dir: str | None) -> set[str]:
@@ -328,6 +386,7 @@ class ArchivePipeline:
         uploader: BatchUploader,
         dry_run: bool,
         output_dir: str | None,
+        local_path: str | None = None,
     ) -> None:
         fingerprint = config_fingerprint(
             self.preprocessing_config.subsampling,
@@ -356,7 +415,10 @@ class ArchivePipeline:
                         batch_files.append(repo_parquet)
                 return
 
-            with self._open_pgn_stream(item) as pgn:
+            stream_item = item
+            if local_path:
+                stream_item = replace(item, path=local_path)
+            with self._open_pgn_stream(stream_item) as pgn:
                 with self._extractor() as extractor:
 
                     def on_chunk(chunk_index: int, rows: list[dict]) -> None:
@@ -397,11 +459,12 @@ class ArchivePipeline:
     def _open_pgn_stream(self, item: WorkItem) -> Iterator[BinaryIO]:
         """Yield a decompressed PGN byte stream for the work item.
 
-        Nothing is materialised on disk: remote archives are streamed over
-        HTTP and ``.zst`` sources (local or remote) are decompressed on the
-        fly while the stream is consumed.
+        A prefetched local copy (``item.path`` set by ``_process``) is read
+        from disk; otherwise remote archives are streamed over HTTP and
+        ``.zst`` sources (local or remote) are decompressed on the fly
+        while the stream is consumed.
         """
-        if item.provider == "lichess":
+        if item.provider == "lichess" and not item.path:
             raw: BinaryIO = urllib.request.urlopen(item.url)
             name = item.url or ""
         else:
