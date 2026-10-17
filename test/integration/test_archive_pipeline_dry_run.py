@@ -60,9 +60,8 @@ class TestArchivePipelineDryRun:
             assert result.processed == ["test"]
             assert result.skipped == []
 
-            archive_dir = output_dir / "test"
-            parquet_files = sorted(archive_dir.glob("*/*.parquet"))
-            meta_files = sorted(archive_dir.glob("*/*.meta.json"))
+            parquet_files = sorted(output_dir.glob("*/*/*.parquet"))
+            meta_files = sorted(output_dir.glob("*/*/*.meta.json"))
             assert len(parquet_files) >= 1
             assert len(parquet_files) == len(meta_files)
             assert (output_dir / "archives" / "test" / "_COMPLETE.json").exists()

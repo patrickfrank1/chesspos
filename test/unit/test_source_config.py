@@ -32,12 +32,11 @@ class TestSourceConfig:
 
     def test_no_source_rejected(self):
         with given("a source with neither data_path nor archive_urls"):
-            config = SourceConfig()
+            error = None
 
-        with when("the config is validated"):
+        with when("the config is constructed"):
             try:
-                config.__post_init__()
-                error = None
+                SourceConfig()
             except ValueError as exc:
                 error = exc
 
@@ -46,17 +45,16 @@ class TestSourceConfig:
 
     def test_both_sources_rejected(self):
         with given("a source with both data_path and archive_urls"):
-            config = SourceConfig(
-                data_path="/data/raw",
-                archive_urls=[
-                    "https://database.lichess.org/standard/lichess_db_standard_rated_2023-01.pgn.zst"
-                ],
-            )
+            error = None
 
-        with when("the config is validated"):
+        with when("the config is constructed"):
             try:
-                config.__post_init__()
-                error = None
+                SourceConfig(
+                    data_path="/data/raw",
+                    archive_urls=[
+                        "https://database.lichess.org/standard/lichess_db_standard_rated_2023-01.pgn.zst"
+                    ],
+                )
             except ValueError as exc:
                 error = exc
 
@@ -65,12 +63,11 @@ class TestSourceConfig:
 
     def test_empty_url_rejected(self):
         with given("a source whose archive_urls contains an empty string"):
-            config = SourceConfig(archive_urls=[""])
+            error = None
 
-        with when("the config is validated"):
+        with when("the config is constructed"):
             try:
-                config.__post_init__()
-                error = None
+                SourceConfig(archive_urls=[""])
             except ValueError as exc:
                 error = exc
 
@@ -79,12 +76,11 @@ class TestSourceConfig:
 
     def test_chunk_target_mb_must_be_positive(self):
         with given("a source with a non-positive chunk target"):
-            config = SourceConfig(data_path="/data/raw", chunk_target_mb=0)
+            error = None
 
-        with when("the config is validated"):
+        with when("the config is constructed"):
             try:
-                config.__post_init__()
-                error = None
+                SourceConfig(data_path="/data/raw", chunk_target_mb=0)
             except ValueError as exc:
                 error = exc
 
@@ -95,8 +91,8 @@ class TestSourceConfig:
         with given("a source without an explicit chunk target"):
             config = SourceConfig(data_path="/data/raw")
 
-        with when("the config is validated"):
-            config.__post_init__()
+        with when("the config is inspected"):
+            target = config.chunk_target_mb
 
         with then("a positive default chunk target is used"):
-            assert config.chunk_target_mb > 0
+            assert target > 0

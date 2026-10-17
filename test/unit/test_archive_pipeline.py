@@ -150,6 +150,7 @@ class TestBatchUploader:
             meta = MagicMock()
             meta.repo_parquet_path.return_value = "train/arch/batch_0000_0000.parquet"
             meta.repo_meta_path.return_value = "train/arch/batch_0000_0000.meta.json"
+            meta.to_json.return_value = existing_meta
             meta.file_sha256 = sha
             uploader, api, patcher = self._uploader_with_existing(existing_meta)
 
@@ -165,6 +166,7 @@ class TestBatchUploader:
         with given("a batch on the hub with a different content hash"):
             parquet_path = tmp_path / "batch_0000_0000.parquet"
             parquet_path.write_bytes(b"new-bytes")
+            sha = hashlib.sha256(b"new-bytes").hexdigest()
             existing_meta = (
                 '{"schema_version": 1, "file_sha256": "%s"}'
                 % hashlib.sha256(b"old-bytes").hexdigest()
@@ -172,7 +174,10 @@ class TestBatchUploader:
             meta = MagicMock()
             meta.repo_parquet_path.return_value = "train/arch/batch_0000_0000.parquet"
             meta.repo_meta_path.return_value = "train/arch/batch_0000_0000.meta.json"
-            meta.file_sha256 = hashlib.sha256(b"new-bytes").hexdigest()
+            meta.to_json.return_value = (
+                '{"schema_version": 1, "file_sha256": "%s"}' % sha
+            )
+            meta.file_sha256 = sha
             uploader, api, patcher = self._uploader_with_existing(existing_meta)
 
         with when("the batch is uploaded"):

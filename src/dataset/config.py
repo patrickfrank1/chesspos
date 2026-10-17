@@ -146,3 +146,44 @@ class PreprocessingConfig:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "PreprocessingConfig":
         return cls(**data)
+
+
+@dataclass
+class SourceConfig:
+    """Where raw PGN data comes from and how archives are chunked.
+
+    Exactly one of ``data_path`` (a local directory of ``.pgn`` /
+    ``.pgn.zst`` files) or ``archive_urls`` (remote archive URLs, e.g.
+    lichess database monthly dumps) must be set; they are mutually
+    exclusive.
+    """
+
+    data_path: str | None = None
+    archive_urls: list[str] | None = None
+    chunk_target_mb: int = 256
+
+    def __post_init__(self):
+        has_path = self.data_path is not None
+        has_urls = self.archive_urls is not None
+        if has_path == has_urls:
+            raise ValueError("exactly one of data_path or archive_urls must be set")
+        if has_urls:
+            for url in self.archive_urls:
+                if not isinstance(url, str) or not url:
+                    raise ValueError("archive_urls must contain non-empty strings")
+        if self.chunk_target_mb <= 0:
+            raise ValueError("chunk_target_mb must be positive")
+
+    def to_json(self) -> str:
+        return json.dumps(asdict(self))
+
+    @classmethod
+    def from_json(cls, json_str: str) -> "SourceConfig":
+        return cls(**json.loads(json_str))
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "SourceConfig":
+        return cls(**data)

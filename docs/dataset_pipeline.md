@@ -167,6 +167,61 @@ generate_hf_dataset.py
 
 ---
 
+## Scaled Archive Pipeline (`source.py`, `chunker.py`, `batch_meta.py`, `download.py`, `archive_pipeline.py`)
+
+For large sources (multi-GB lichess monthly dumps) `generate_hf_dataset.py
+--archive-urls …` routes through a second, archive-oriented pipeline that
+never holds more than one chunk of decompressed data in memory and is fully
+idempotent on ephemeral disks:
+
+- **Planning** (`source.py`) — `SourceConfig` points at either a local
+  directory or a list of remote archive URLs (mutually exclusive).
+  `ArchivePlanner.plan(completed)` turns that into `WorkItem`s
+  (`archive_id` = file/URL stem without `.pgn.zst`/`.pgn`), skipping
+  archives that have a completion marker on the hub.
+- **Download** (`download.py`) — streams a remote archive to scratch disk.
+- **Chunking** (`chunker.py`) — `decompress_zst` stream-decompresses
+  `.pgn.zst`; `PgnChunker.iter_chunks` cuts the stream into game-aligned
+  chunk files of ≈ `chunk_target_mb` at `\n\n[Event` boundaries and yields
+  them lazily, so processing overlaps with decompression. Chunks are cut
+  byte-exactly (`b"".join(chunks) == original`), and a single oversized
+  game becomes one oversized chunk.
+- **Extraction** — each chunk goes through the same two-pass
+  `ChessPositionDataset._extract_positions` as the legacy ETL (now also
+  recording `utc_date` per game); in `debug` mode inline, otherwise as a
+  Ray remote task per chunk.
+- **Batching** (`archive_pipeline.py`) — `ArchivePipeline.build_batches`
+  sorts rows by `game_id`, drops adjacent duplicates (the sorted order
+  makes all copies of a duplicated game adjacent), assigns the hash-based
+  train/test split, and slices both splits into `batch_size` batches with
+  per-split sequence numbers. Deterministic by construction: the same
+  chunk always produces byte-identical parquet.
+- **Metadata** (`batch_meta.py`) — every parquet shard gets a
+  `batch_{chunk}_{seq}.meta.json` sidecar (source, stats incl.
+  `file_sha256`, date range from `UTCDate` headers, provenance incl. a
+  `config_fingerprint` of the subsampling + time-control config). The
+  sidecars are the source of truth for resume.
+- **Upload** — `BatchUploader.upload_batch` commits parquet + sidecar in a
+  single atomic `create_commit`; it skips when a sidecar with the same
+  `file_sha256` already exists and overwrites when content differs.
+  After the last chunk, `mark_complete` writes
+  `archives/{archive_id}/_COMPLETE.json` — the marker that makes future
+  runs skip the archive entirely.
+
+Repo layout on the hub:
+
+```
+{split}/{archive_id}/batch_{chunk:04d}_{seq:04d}.parquet
+{split}/{archive_id}/batch_{chunk:04d}_{seq:04d}.meta.json
+archives/{archive_id}/_COMPLETE.json
+```
+
+In `--dry-run` the same layout is written under `--output-dir`
+(including the completion marker), so a dry run can be inspected and
+re-run safely.
+
+---
+
 ## Component Responsibilities
 
 ### Configuration (`config.py`)

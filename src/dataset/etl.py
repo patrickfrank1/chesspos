@@ -5,6 +5,7 @@ import io
 import os
 import random
 from dataclasses import dataclass, field
+from datetime import datetime
 from functools import partial
 from typing import Iterator
 
@@ -93,9 +94,19 @@ class ChessPositionDataset:
                     "white_elo": int(metadata.white_elo or 0),
                     "black_elo": int(metadata.black_elo or 0),
                     "result": metadata.result or "",
+                    "utc_date": ChessPositionDataset._utc_date(game.headers),
                 }
             )
         return games
+
+    @staticmethod
+    def _utc_date(headers: chess.pgn.Headers) -> str:
+        """Convert a PGN UTCDate header (``YYYY.MM.DD``) to ISO format."""
+        raw = headers.get("UTCDate", "")
+        try:
+            return datetime.strptime(raw, "%Y.%m.%d").date().isoformat()
+        except ValueError:
+            return ""
 
     @staticmethod
     def _game_id(game: chess.pgn.Game) -> str:
