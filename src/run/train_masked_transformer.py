@@ -24,7 +24,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train masked stream transformer")
     parser.add_argument("--train-dir", default="data/processed/train")
     parser.add_argument("--val-dir", default="data/processed/test")
-    parser.add_argument("--checkpoint-dir", default="models")
+    parser.add_argument("--checkpoint-dir", default="data/models")
     parser.add_argument("--resume", default=None)
     parser.add_argument("--steps", type=int, default=10_000)
     parser.add_argument("--batch-size", type=int, default=8)

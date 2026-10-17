@@ -128,7 +128,7 @@ driver ≥ 535; the provisioner filters client-side for that.
    #     torch 2.14.1+cpu, so bypass `uv run` (it would re-sync CPU torch)
    #     and invoke .venv/bin/python directly. CUDA 13 needs driver >= 580.)
    # 5. hf auth login --token $HF_TOKEN   (or: HF_TOKEN env var)
-   # 6. hf download patrickfrank1/chess-position-streams --repo-type dataset --local-dir data/processed
+    # 6. hf download patrickfrank1/chess-positions --repo-type dataset --local-dir data/processed
    # 7. PYTHONPATH=. uv run python src/run/train_masked_transformer.py --steps 20 --max-seq-len 2048 --batch-size 32   # smoke test
    # 8. nohup uv run python src/run/train_masked_transformer.py ... > train.log 2>&1 &
    ```
@@ -146,12 +146,12 @@ bootstrap script; a model repo for the final artifact comes later.
 ```bash
 # Option A (chosen): HF bucket patrickfrank1/chesspos-checkpoints
 hf buckets create chesspos-checkpoints
-hf buckets sync ./models/run_full hf://buckets/patrickfrank1/chesspos-checkpoints/run_full/
+hf buckets sync ./data/models/run_full hf://buckets/patrickfrank1/chesspos-checkpoints/run_full/
 # re-run periodically; only changed files upload
 # (the bootstrap script loops this every SYNC_INTERVAL seconds, default 900)
 
 # Option B: model repo (versioned commits)
-hf upload patrickfrank1/chesspos-masked-stream-transformer ./models/run_full/best.pt checkpoints/best.pt
+hf upload patrickfrank1/chesspos-masked-stream-transformer ./data/models/run_full/best.pt checkpoints/best.pt
 ```
 
 Note: `hf upload --every=10` (minutes) can tail the checkpoint dir during
@@ -160,7 +160,7 @@ training as a poor-man's autosync.
 ## 6. Testing checkpoints locally (after the run)
 
 ```bash
-hf buckets sync hf://buckets/patrickfrank1/chesspos-checkpoints/run_full/ ./models/run_full/
+hf buckets sync hf://buckets/patrickfrank1/chesspos-checkpoints/run_full/ ./data/models/run_full/
 ```
 
 Then:

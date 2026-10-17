@@ -168,8 +168,9 @@ cython_debug/
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
 
-# DVC ingnore
-/model
+# Pipeline products (raw data, processed shards, checkpoints, eval outputs)
+/data/*
+!/data/README.md
 
 # vast.ai ssh key (never commit)
 vastai_gpu_key

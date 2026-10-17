@@ -61,23 +61,23 @@ PYTHONPATH=. .venv/bin/python src/run/train_masked_transformer.py \
     --log-every 10 --bf16 --compile
 
 if [ "${LAUNCH_TRAINING:-0}" = "1" ]; then
-    mkdir -p models/run_full
+    mkdir -p data/models/run_full
     nohup env PYTHONPATH=. .venv/bin/python src/run/train_masked_transformer.py \
         --steps "$TRAIN_STEPS" --batch-size 32 --max-seq-len 2048 \
         --train-dir "$TRAIN_DIR" --val-dir "$VAL_DIR" \
         --num-workers 8 --log-every 50 --eval-every 1000 \
         --save-every 2000 --bf16 --compile \
-        --checkpoint-dir models/run_full --log-file models/run_full/train.log \
-        > models/run_full/nohup.out 2>&1 &
-    echo "training launched (pid $!), log: models/run_full/train.log"
+        --checkpoint-dir data/models/run_full --log-file data/models/run_full/train.log \
+        > data/models/run_full/nohup.out 2>&1 &
+    echo "training launched (pid $!), log: data/models/run_full/train.log"
 
     if [ "$SYNC_INTERVAL" != "0" ]; then
         .venv/bin/hf buckets create chesspos-checkpoints 2>/dev/null || true
         nohup sh -c "while true; do
-            .venv/bin/hf buckets sync ./models/run_full '$BUCKET' \
+            .venv/bin/hf buckets sync ./data/models/run_full '$BUCKET' \
                 --exclude nohup.out || true
             sleep $SYNC_INTERVAL
-        done" > models/run_full/sync.log 2>&1 &
-        echo "bucket sync launched (every ${SYNC_INTERVAL}s), log: models/run_full/sync.log"
+        done" > data/models/run_full/sync.log 2>&1 &
+        echo "bucket sync launched (every ${SYNC_INTERVAL}s), log: data/models/run_full/sync.log"
     fi
 fi

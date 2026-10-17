@@ -27,7 +27,7 @@ from src.training.window_dataset import _load_game_segments
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Evaluate masked stream transformer")
-    parser.add_argument("--checkpoint", default="models/run_full/best.pt")
+    parser.add_argument("--checkpoint", default="data/models/run_full/best.pt")
     parser.add_argument("--data-dir", default="data/processed/test")
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--windows", type=int, default=24)
@@ -38,7 +38,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--n-queries", type=int, default=3)
     parser.add_argument("--n-counterfactual", type=int, default=300)
     parser.add_argument("--seed", type=int, default=17)
-    parser.add_argument("--out-dir", default="eval_out")
+    parser.add_argument("--out-dir", default="data/eval")
     return parser.parse_args()
 
 

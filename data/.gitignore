@@ -1,4 +1,4 @@
-/raw
-/train
-/test
-/processed
+# Ignore everything; only the README is tracked (see root .gitignore).
+*
+!.gitignore
+!README.md
