@@ -5,7 +5,7 @@ import chess
 import numpy as np
 
 from bdd import given, then, when
-from etl_support import SAMPLE_PGN, make_batch
+from etl_support import SAMPLE_PGN, make_batch, make_lichess_pgn
 from src.dataset.config import GameSubsampling, GameSubsampleTier, TimeControlFilter
 from src.dataset.etl import ChessPositionDataset
 from src.dataset.token_stream import CLS, SEP
@@ -122,6 +122,25 @@ class TestChessPositionDataset:
             assert len(games) == 1
             assert games[0]["white_elo"] == 0
             assert games[0]["black_elo"] == 0
+
+    def test_extract_positions_captures_utc_date(self):
+        with given("a lichess-style PGN row with UTCDate headers"):
+            row = {
+                "bytes": make_lichess_pgn("Test", date="2023.01.15"),
+                "path": "/fake/x.pgn",
+            }
+            subsampling = GameSubsampling(
+                tiers=[GameSubsampleTier(min_elo=0, rate=1.0)]
+            )
+
+        with when("positions are extracted"):
+            games = ChessPositionDataset._extract_positions(
+                row, subsampling, TimeControlFilter()
+            )
+
+        with then("each game record carries its UTCDate as an ISO date"):
+            assert len(games) == 1
+            assert games[0]["utc_date"] == "2023-01-15"
 
     def test_split_for_game_is_deterministic(self):
         with when("the split is computed twice for a fixed game id and ratio"):
