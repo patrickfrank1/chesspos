@@ -327,7 +327,7 @@ class ArchivePipeline:
 
         remote = ray.remote(ChessPositionDataset._extract_positions)
         if not ray.is_initialized():
-            ray.init(ignore_reinit_error=True)
+            ray.init(address="local", ignore_reinit_error=True)
         return ray.get(
             remote.remote(
                 {"bytes": data, "path": ""},

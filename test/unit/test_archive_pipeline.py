@@ -1,9 +1,35 @@
 import hashlib
+import sys
 from unittest.mock import MagicMock, patch
 
 
 from bdd import given, then, when
 from src.dataset.archive_pipeline import ArchivePipeline, BatchUploader
+from src.dataset.config import (
+    DatasetConfig,
+    GameSubsampling,
+    GameSubsampleTier,
+    PreprocessingConfig,
+    SourceConfig,
+)
+
+
+def make_pipeline(debug: bool = False) -> ArchivePipeline:
+    return ArchivePipeline(
+        dataset_config=DatasetConfig(
+            repo_name="test/chesspos-test",
+            batch_size=10,
+            train_ratio=0.8,
+            data_path="/tmp",
+        ),
+        preprocessing_config=PreprocessingConfig(
+            worker_count=1,
+            memory_limit_mb=1024,
+            debug=debug,
+            subsampling=GameSubsampling(tiers=[GameSubsampleTier(min_elo=0, rate=1.0)]),
+        ),
+        source_config=SourceConfig(data_path="/tmp"),
+    )
 
 
 def make_rows(num_games=5, game_ids=None):
@@ -206,3 +232,40 @@ class TestBatchUploader:
             kwargs = api.create_commit.call_args.kwargs
             ops = kwargs["operations"]
             assert [op.path_in_repo for op in ops] == ["archives/arch/_COMPLETE.json"]
+
+
+class TestExtractRowsRemote:
+    def test_ray_initialized_as_fresh_local_cluster(self, monkeypatch):
+        # Given a pipeline in non-debug mode and a stubbed ray module
+        pipeline = make_pipeline(debug=False)
+        init_kwargs = {}
+
+        class FakeRemote:
+            def remote(self, *args, **kwargs):
+                return ("object-ref", args, kwargs)
+
+        class FakeRay:
+            @staticmethod
+            def remote(fn):
+                return FakeRemote()
+
+            @staticmethod
+            def is_initialized():
+                return False
+
+            @staticmethod
+            def init(**kwargs):
+                init_kwargs.update(kwargs)
+
+            @staticmethod
+            def get(obj):
+                return ["row"]
+
+        monkeypatch.setitem(sys.modules, "ray", FakeRay)
+
+        # When a chunk is extracted remotely
+        rows = pipeline._extract_rows_remote(b"pgn-bytes")
+
+        # Then ray joins no ambient cluster and starts a fresh local one
+        assert init_kwargs.get("address") == "local"
+        assert rows == ["row"]
