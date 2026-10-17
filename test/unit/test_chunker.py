@@ -1,7 +1,6 @@
 import io
 
 import chess.pgn
-import pytest
 
 from bdd import given, then, when
 from etl_support import SAMPLE_PGN, make_lichess_pgn
@@ -143,20 +142,3 @@ class TestPgnChunker:
             assert first_chunk is not None
             assert len(remaining) >= 1
             assert stream.consumed_while_yielding[0] < len(payload)
-
-
-class TestZstdDecompression:
-    def test_decompress_zst_roundtrip(self, tmp_path):
-        with given("a zstd-compressed PGN file"):
-            zstandard = pytest.importorskip("zstandard")
-            payload = GAME_A + GAME_B
-            zst_path = tmp_path / "archive.pgn.zst"
-            zst_path.write_bytes(zstandard.ZstdCompressor().compress(payload))
-
-        with when("the archive is streamed back through decompression"):
-            from src.dataset.chunker import decompress_zst
-
-            decompressed = b"".join(decompress_zst(zst_path))
-
-        with then("the original PGN bytes are recovered"):
-            assert decompressed == payload

@@ -16,17 +16,23 @@ from __future__ import annotations
 import json
 import shutil
 import tempfile
+import urllib.request
+from collections import deque
+from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import BinaryIO
 
 import pyarrow as pa
 import pyarrow.parquet as pq
+import zstandard
 from huggingface_hub import CommitOperationAdd, HfApi, hf_hub_download
 
 from src.dataset.batch_meta import BatchMeta, build_batch_meta, config_fingerprint
-from src.dataset.chunker import PgnChunker, decompress_zst
+from src.dataset.chunker import PgnChunker
 from src.dataset.config import DatasetConfig, PreprocessingConfig, SourceConfig
-from src.dataset.download import download_archive
 from src.dataset.etl import ChessPositionDataset
 from src.dataset.source import ArchivePlanner, WorkItem, completed_archives
 
@@ -35,6 +41,46 @@ def _utcnow() -> str:
     from datetime import datetime, timezone
 
     return datetime.now(timezone.utc).isoformat()
+
+
+class _InlineExtractor:
+    """Extract chunks on a single background thread (debug mode)."""
+
+    def __init__(self, pool: ThreadPoolExecutor, fn):
+        self._pool = pool
+        self._fn = fn
+
+    def submit(self, data: bytes):
+        return self._pool.submit(self._fn, data)
+
+    def result(self, handle) -> list[dict]:
+        return handle.result()
+
+
+class _RayExtractor:
+    """Extract chunks as Ray tasks on the local cluster."""
+
+    def __init__(self, subsampling, time_control_filter):
+        import ray
+
+        if not ray.is_initialized():
+            ray.init(address="local", ignore_reinit_error=True)
+        remote = ray.remote(ChessPositionDataset._extract_positions)
+        self._remote = remote
+        self._subsampling = subsampling
+        self._time_control_filter = time_control_filter
+
+    def submit(self, data: bytes):
+        return self._remote.remote(
+            {"bytes": data, "path": ""},
+            self._subsampling,
+            self._time_control_filter,
+        )
+
+    def result(self, handle) -> list[dict]:
+        import ray
+
+        return ray.get(handle)
 
 
 @dataclass
@@ -265,76 +311,118 @@ class ArchivePipeline:
         )
         scratch = Path(tempfile.mkdtemp(prefix="chesspos-"))
         try:
-            archive_path = self._materialize(item, scratch)
-            chunk_dir = scratch / "chunks"
             batch_files: list[str] = []
             chunker = PgnChunker(self.source_config.chunk_target_mb * 1024 * 1024)
-            with open(archive_path, "rb") as stream:
-                for chunk_index, chunk_path in enumerate(
-                    chunker.iter_chunks(stream, out_dir=str(chunk_dir))
-                ):
-                    rows = self._extract_rows(chunk_path)
-                    batches = self.build_batches(
-                        rows=rows,
-                        batch_size=self.dataset_config.batch_size,
-                        train_ratio=self.dataset_config.train_ratio,
-                        chunk_index=chunk_index,
-                    )
-                    for batch in batches:
-                        repo_parquet = self._emit_batch(
-                            batch,
-                            item,
-                            fingerprint,
-                            uploader,
-                            dry_run=dry_run,
-                            output_dir=output_dir,
-                            scratch=scratch,
+            max_inflight = max(1, self.preprocessing_config.worker_count)
+            with self._open_pgn_stream(item) as pgn:
+                with self._extractor() as extractor:
+
+                    def on_chunk(chunk_index: int, rows: list[dict]) -> None:
+                        batches = self.build_batches(
+                            rows=rows,
+                            batch_size=self.dataset_config.batch_size,
+                            train_ratio=self.dataset_config.train_ratio,
+                            chunk_index=chunk_index,
                         )
-                        if repo_parquet:
-                            batch_files.append(repo_parquet)
+                        for batch in batches:
+                            repo_parquet = self._emit_batch(
+                                batch,
+                                item,
+                                fingerprint,
+                                uploader,
+                                dry_run=dry_run,
+                                output_dir=output_dir,
+                                scratch=scratch,
+                            )
+                            if repo_parquet:
+                                batch_files.append(repo_parquet)
+
+                    self._run_chunk_loop(
+                        pgn,
+                        chunker,
+                        extractor,
+                        max_inflight=max_inflight,
+                        on_chunk=on_chunk,
+                    )
             self._mark_complete(item, batch_files, uploader, dry_run, output_dir)
         finally:
             shutil.rmtree(scratch, ignore_errors=True)
 
-    @staticmethod
-    def _materialize(item: WorkItem, scratch: Path) -> Path:
-        """Return a local, decompressed PGN path for the work item."""
+    @contextmanager
+    def _open_pgn_stream(self, item: WorkItem) -> Iterator[BinaryIO]:
+        """Yield a decompressed PGN byte stream for the work item.
+
+        Nothing is materialised on disk: remote archives are streamed over
+        HTTP and ``.zst`` sources (local or remote) are decompressed on the
+        fly while the stream is consumed.
+        """
         if item.provider == "lichess":
-            local = download_archive(item.url, str(scratch))
+            raw: BinaryIO = urllib.request.urlopen(item.url)
+            name = item.url or ""
         else:
-            local = Path(item.path)
-        if local.suffix == ".zst":
-            decompressed = scratch / (local.name[: -len(".zst")])
-            with open(decompressed, "wb") as out:
-                for block in decompress_zst(local):
-                    out.write(block)
-            return decompressed
-        return local
+            raw = open(item.path, "rb")  # noqa: SIM115 - closed in finally
+            name = item.path or ""
+        try:
+            if name.endswith(".zst"):
+                yield zstandard.ZstdDecompressor().stream_reader(raw)
+            else:
+                yield raw
+        finally:
+            raw.close()
 
-    def _extract_rows(self, chunk_path: Path) -> list[dict]:
-        data = chunk_path.read_bytes()
-        row = {"bytes": data, "path": str(chunk_path)}
+    def _run_chunk_loop(
+        self,
+        pgn: BinaryIO,
+        chunker: PgnChunker,
+        extractor,
+        max_inflight: int,
+        on_chunk,
+    ) -> None:
+        """Cut ``pgn`` into chunks and consume extractions in chunk order.
+
+        Each chunk is submitted for extraction as soon as it is cut, so
+        extraction of chunk N+1 overlaps with emission of chunk N. At most
+        ``max_inflight`` extractions are outstanding at any time;
+        ``on_chunk(chunk_index, rows)`` is called strictly in chunk order.
+        """
+        max_inflight = max(1, max_inflight)
+        pending: deque[tuple[int, object]] = deque()
+        with tempfile.TemporaryDirectory(prefix="chesspos-chunks-") as chunk_dir:
+            for chunk_index, chunk_path in enumerate(
+                chunker.iter_chunks(pgn, out_dir=chunk_dir)
+            ):
+                handle = extractor.submit(chunk_path.read_bytes())
+                pending.append((chunk_index, handle))
+                while len(pending) >= max_inflight:
+                    index, done = pending.popleft()
+                    on_chunk(index, extractor.result(done))
+            while pending:
+                index, done = pending.popleft()
+                on_chunk(index, extractor.result(done))
+
+    @contextmanager
+    def _extractor(self):
+        """Yield an extractor with ``submit(data)`` / ``result(handle)``.
+
+        Debug mode extracts inline on a single background thread; otherwise
+        extraction runs as Ray tasks on the local cluster.
+        """
         if self.preprocessing_config.debug:
-            return ChessPositionDataset._extract_positions(
-                row,
+
+            def extract(data: bytes) -> list[dict]:
+                return ChessPositionDataset._extract_positions(
+                    {"bytes": data, "path": ""},
+                    self.preprocessing_config.subsampling,
+                    self.preprocessing_config.time_control_filter,
+                )
+
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                yield _InlineExtractor(pool, extract)
+        else:
+            yield _RayExtractor(
                 self.preprocessing_config.subsampling,
                 self.preprocessing_config.time_control_filter,
             )
-        return self._extract_rows_remote(data)
-
-    def _extract_rows_remote(self, data: bytes) -> list[dict]:
-        import ray
-
-        remote = ray.remote(ChessPositionDataset._extract_positions)
-        if not ray.is_initialized():
-            ray.init(address="local", ignore_reinit_error=True)
-        return ray.get(
-            remote.remote(
-                {"bytes": data, "path": ""},
-                self.preprocessing_config.subsampling,
-                self.preprocessing_config.time_control_filter,
-            )
-        )
 
     def _emit_batch(
         self,

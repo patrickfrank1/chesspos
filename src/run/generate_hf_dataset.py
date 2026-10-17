@@ -253,6 +253,8 @@ def main() -> int:
     )
 
     if archive_urls:
+        if not output_dir:
+            output_dir = "data/processed"
         source_config = SourceConfig(
             archive_urls=archive_urls, chunk_target_mb=chunk_target_mb
         )

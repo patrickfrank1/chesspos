@@ -74,17 +74,3 @@ class PgnChunker:
             path = out / f"chunk_{index:04d}.pgn"
             path.write_bytes(bytes(buf))
             yield path
-
-
-def decompress_zst(path: str | Path) -> Iterator[bytes]:
-    """Stream-decompress a ``.pgn.zst`` archive, yielding byte blocks."""
-    import zstandard
-
-    dctx = zstandard.ZstdDecompressor()
-    with open(path, "rb") as fh:
-        reader = dctx.stream_reader(fh)
-        while True:
-            block = reader.read(_MIN_READ_BLOCK * 1024)
-            if not block:
-                break
-            yield block

@@ -115,3 +115,36 @@ class TestArchivePipelineDryRun:
         with then("the parquet bytes are identical"):
             assert set(files_a) == set(files_b)
             assert files_a == files_b
+
+    def test_end_to_end_zst_dry_run(self, tmp_path):
+        # Given a local .pgn.zst archive containing two distinct games and one duplicate
+        import zstandard
+
+        data_dir = tmp_path / "data"
+        data_dir.mkdir()
+        games = (
+            make_lichess_pgn("Game One", date="2023.01.15")
+            + make_lichess_pgn("Game Two", date="2023.01.16")
+            + make_lichess_pgn("Game One", date="2023.01.15")
+        )
+        (data_dir / "test.pgn.zst").write_bytes(
+            zstandard.ZstdCompressor().compress(games)
+        )
+        output_dir = tmp_path / "out"
+        pipeline = make_pipeline(str(data_dir))
+
+        # When the pipeline runs in dry-run mode
+        result = pipeline.run(dry_run=True, output_dir=str(output_dir))
+
+        # Then batches are produced exactly as with a plain .pgn and no
+        # decompressed copy of the archive exists anywhere in the output
+        assert result.processed == ["test"]
+        parquet_files = sorted(output_dir.glob("*/*/*.parquet"))
+        meta_files = sorted(output_dir.glob("*/*/*.meta.json"))
+        assert len(parquet_files) >= 1
+        assert len(parquet_files) == len(meta_files)
+        assert (output_dir / "archives" / "test" / "_COMPLETE.json").exists()
+        metas = [json.loads(p.read_text()) for p in meta_files]
+        assert sum(m["stats"]["num_games"] for m in metas) == 2
+        assert sum(m["stats"]["duplicates_dropped"] for m in metas) == 1
+        assert not list(output_dir.rglob("*.pgn"))
