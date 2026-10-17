@@ -55,6 +55,7 @@ class ArchivePlanner:
 
     def __init__(self, config: SourceConfig):
         self.config = config
+        return
 
     def plan(self, completed: set[str]) -> list[WorkItem]:
         if self.config.archive_urls is not None:

@@ -56,6 +56,7 @@ class TestVocabulary:
             assert EP_BASE == 22
             assert pawn_id == 38
             assert king_id == VOCAB_SIZE - 1
+        return
 
     def test_dtype_and_value_range(self, encoder):
         with given("an encoder and boards from random games"):
@@ -70,6 +71,7 @@ class TestVocabulary:
                 assert segment.dtype == np.int16
                 assert np.all(segment >= 0)
                 assert np.all(segment < VOCAB_SIZE)
+        return
 
 
 class TestRoundTrip:
@@ -85,6 +87,7 @@ class TestRoundTrip:
             for original, rebuilt in zip(boards, decoded):
                 assert rebuilt.epd() == original.epd()
             assert len(boards) >= 100
+        return
 
     def test_promotions(self, encoder):
         with given("boards one move before a promotion on each wing"):
@@ -108,6 +111,7 @@ class TestRoundTrip:
         with then("every decoded board matches the original"):
             for original, rebuilt in zip(white_boards + black_boards, decoded):
                 assert rebuilt.epd() == original.epd()
+        return
 
     def test_en_passant_capture(self, encoder):
         with given("a board with a legal en passant capture"):
@@ -120,6 +124,7 @@ class TestRoundTrip:
             assert board.has_legal_en_passant()
             assert decoded.epd() == board.epd()
             assert decoded.ep_square == board.ep_square
+        return
 
     def test_turn(self, encoder):
         with given("boards with white and black to move"):
@@ -135,6 +140,7 @@ class TestRoundTrip:
         with then("the first token encodes the side to move"):
             assert white_to_move[0] == TURN_WHITE
             assert black_to_move[0] == TURN_BLACK
+        return
 
 
 class TestEnPassantToken:
@@ -147,6 +153,7 @@ class TestEnPassantToken:
 
         with then("the en passant target token is emitted"):
             assert segment[2] == EP_BASE + (chess.E3 - chess.A3)
+        return
 
     def test_pseudo_legal_ep_emits_no_token(self, encoder):
         with given("a board whose en passant square is only pseudo-legal"):
@@ -160,6 +167,7 @@ class TestEnPassantToken:
             assert not board.has_legal_en_passant()
             assert len(segment) == 2 + 32
             assert np.all(segment[:2] != EP_BASE)
+        return
 
 
 class TestCanonicalOrder:
@@ -179,6 +187,7 @@ class TestCanonicalOrder:
                 piece_tokens = first[first >= 38]
                 squares = (piece_tokens.astype(int) - 38) % 64
                 assert np.all(np.diff(squares) > 0)
+        return
 
 
 class TestCastling:
@@ -204,6 +213,7 @@ class TestCastling:
         with then("the token encodes the rights and the decoded board matches"):
             assert token == CASTLE_BASE + mask
             assert decoded.epd() == board.epd()
+        return
 
 
 class TestDecodeValidation:
@@ -219,6 +229,7 @@ class TestDecodeValidation:
         with then("a ValueError is raised and nothing is decoded"):
             assert decoded is None
             assert isinstance(excinfo.value, ValueError)
+        return
 
     def test_rejects_missing_castle_token(self, encoder):
         with given("a segment without a castle token"):
@@ -232,6 +243,7 @@ class TestDecodeValidation:
         with then("a ValueError mentioning CASTLE is raised"):
             assert error is None
             assert "CASTLE" in str(excinfo.value)
+        return
 
     def test_rejects_unknown_token(self, encoder):
         with given("a valid segment with a stray SEP inserted"):
@@ -245,6 +257,7 @@ class TestDecodeValidation:
 
         with then("a ValueError is raised and nothing is decoded"):
             assert decoded is None
+        return
 
     def test_rejects_duplicate_square(self, encoder):
         with given("a hand-built segment with two pieces on the same square"):
@@ -263,6 +276,7 @@ class TestDecodeValidation:
         with then("a ValueError mentioning Duplicate is raised"):
             assert error is None
             assert "Duplicate" in str(excinfo.value)
+        return
 
     def test_rejects_padding(self, encoder):
         with given("a valid segment padded with a PAD token"):
@@ -276,6 +290,7 @@ class TestDecodeValidation:
 
         with then("a ValueError is raised and nothing is decoded"):
             assert decoded is None
+        return
 
 
 class TestBatch:
@@ -294,6 +309,7 @@ class TestBatch:
             assert encoded.shape == (2, 34)
             np.testing.assert_array_equal(lengths, [34, 4])
             assert np.all(encoded[1, 4:] == PAD)
+        return
 
     def test_encode_batch_empty(self, encoder):
         with when("an empty list of boards is batch-encoded"):
@@ -302,6 +318,7 @@ class TestBatch:
         with then("empty arrays are returned"):
             assert encoded.shape == (0, 0)
             assert lengths.shape == (0,)
+        return
 
     def test_decode_batch_with_lengths(self, encoder):
         with given("boards from a random game"):
@@ -315,6 +332,7 @@ class TestBatch:
         with then("every decoded board matches the original"):
             for original, rebuilt in zip(boards, decoded):
                 assert rebuilt.epd() == original.epd()
+        return
 
 
 class TestPackStream:
@@ -330,6 +348,7 @@ class TestPackStream:
             assert stream[35] == SEP
             assert stream[-1] == SEP
             assert len(stream) == 1 + 34 + 1 + 34 + 1
+        return
 
     def test_structure_without_cls(self, encoder):
         with given("one encoded board segment"):
@@ -341,6 +360,7 @@ class TestPackStream:
         with then("the stream starts with a content token and ends with SEP"):
             assert stream[0] != CLS
             assert stream[-1] == SEP
+        return
 
     def test_rejects_empty_input(self):
         with when("an empty list of segments is packed"):
@@ -350,6 +370,7 @@ class TestPackStream:
 
         with then("a ValueError is raised and nothing is packed"):
             assert stream is None
+        return
 
     def test_decode_of_packed_stream_rejected(self, encoder):
         with given("a packed stream of multiple segments"):
@@ -362,3 +383,4 @@ class TestPackStream:
 
         with then("a ValueError is raised and nothing is decoded"):
             assert decoded is None
+        return

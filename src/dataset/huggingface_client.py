@@ -19,6 +19,7 @@ class HuggingFaceClient:
     def __post_init__(self):
         self._api = HfApi()
         self._check_authentication()
+        return
 
     def _check_authentication(self) -> None:
         try:
@@ -28,6 +29,7 @@ class HuggingFaceClient:
                 "Not authenticated with HuggingFace Hub. "
                 "Run 'huggingface-cli login' first."
             ) from e
+        return
 
     def push_batch(
         self,
@@ -126,3 +128,4 @@ license: mit
             repo_type="dataset",
             commit_message="Update dataset card",
         )
+        return

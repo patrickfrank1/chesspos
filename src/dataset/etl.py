@@ -39,6 +39,7 @@ class ChessPositionDataset:
     def __post_init__(self):
         if self.hf_client is None:
             self.hf_client = HuggingFaceClient(repo_name=self.dataset_config.repo_name)
+        return
 
     @staticmethod
     def _extract_positions(
@@ -205,6 +206,7 @@ class ChessPositionDataset:
                 yield train_ds, test_ds
         finally:
             ray.shutdown()
+        return
 
     def _build_encoded(self, file_paths: list[str]) -> ray.data.Dataset:
         subsampling = self.preprocessing_config.subsampling
@@ -263,6 +265,7 @@ class ChessPositionDataset:
                 buffer = buffer.slice(batch_size)
         if buffer is not None and buffer.num_rows > 0:
             yield buffer
+        return
 
     @staticmethod
     def _split_chunk(chunk: pa.Table) -> tuple[pa.Table, pa.Table]:
@@ -304,6 +307,7 @@ class ChessPositionDataset:
                     repo_type="dataset",
                     commit_message=f"Add {split} batch {batch_num}",
                 )
+        return
 
     def _write_batch(
         self,
@@ -322,6 +326,7 @@ class ChessPositionDataset:
                 table,
                 split_dir / f"batch_{batch_num:04d}_000000.parquet",
             )
+        return
 
     def create_dataset_card(self) -> str:
         features = {

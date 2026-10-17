@@ -13,6 +13,7 @@ class TestSourceConfig:
         with then("the local source is accepted"):
             assert config.data_path == "/data/raw"
             assert config.archive_urls is None
+        return
 
     def test_archive_urls_source(self):
         with given("a source pointing to one or more lichess archive URLs"):
@@ -29,6 +30,7 @@ class TestSourceConfig:
         with then("the url source is accepted"):
             assert len(config.archive_urls) == 2
             assert config.data_path is None
+        return
 
     def test_no_source_rejected(self):
         with given("a source with neither data_path nor archive_urls"):
@@ -42,6 +44,7 @@ class TestSourceConfig:
 
         with then("validation fails"):
             assert error is not None
+        return
 
     def test_both_sources_rejected(self):
         with given("a source with both data_path and archive_urls"):
@@ -60,6 +63,7 @@ class TestSourceConfig:
 
         with then("validation fails because sources are mutually exclusive"):
             assert error is not None
+        return
 
     def test_empty_url_rejected(self):
         with given("a source whose archive_urls contains an empty string"):
@@ -73,6 +77,7 @@ class TestSourceConfig:
 
         with then("validation fails"):
             assert error is not None
+        return
 
     def test_chunk_target_mb_must_be_positive(self):
         with given("a source with a non-positive chunk target"):
@@ -86,6 +91,7 @@ class TestSourceConfig:
 
         with then("validation fails"):
             assert error is not None
+        return
 
     def test_default_chunk_target_mb(self):
         with given("a source without an explicit chunk target"):
@@ -96,3 +102,4 @@ class TestSourceConfig:
 
         with then("a positive default chunk target is used"):
             assert target > 0
+        return

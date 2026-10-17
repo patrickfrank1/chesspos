@@ -64,6 +64,7 @@ def make_logger(path: str | None):
         if file is not None:
             file.write(f"{message}\n")
             file.flush()
+        return
 
     return log
 
@@ -91,6 +92,7 @@ def save_checkpoint(
     tmp = path.with_suffix(".pt.tmp")
     torch.save(checkpoint, tmp)
     tmp.replace(path)
+    return
 
 
 @torch.no_grad()
@@ -135,6 +137,7 @@ def write_eval_artifacts(checkpoint_dir: Path, payload: dict) -> None:
     )
     with (checkpoint_dir / "eval_history.jsonl").open("a") as file:
         file.write(json.dumps(payload, sort_keys=True) + "\n")
+    return
 
 
 def main() -> None:

@@ -17,6 +17,7 @@ class TestArchivePlanner:
             assert items[0].provider == "local"
             assert items[0].path == temp_pgn_dir + "/test.pgn"
             assert items[0].archive_id == "test"
+        return
 
     def test_plan_from_local_directory_ignores_other_files(self, tmp_path):
         with given("a local directory containing pgn, zstd and unrelated files"):
@@ -31,6 +32,7 @@ class TestArchivePlanner:
         with then("only .pgn and .pgn.zst files become work items"):
             assert [item.archive_id for item in items] == ["a", "b"]
             assert items[1].path.endswith("b.pgn.zst")
+        return
 
     def test_plan_from_urls(self):
         with given("a source with two lichess archive URLs"):
@@ -51,6 +53,7 @@ class TestArchivePlanner:
             assert all(item.provider == "lichess" for item in items)
             assert items[0].url == urls[0]
             assert all(item.path is None for item in items)
+        return
 
     def test_plan_skips_completed_archives(self, temp_pgn_dir):
         with given("a plan where one archive is already complete on the hub"):
@@ -70,6 +73,7 @@ class TestArchivePlanner:
             assert [item.archive_id for item in items] == [
                 "lichess_db_standard_rated_2023-02"
             ]
+        return
 
     def test_completed_archives_from_repo_listing(self):
         with given("a hub repo file listing with one complete and one partial archive"):
@@ -86,6 +90,7 @@ class TestArchivePlanner:
 
         with then("only the archive with a completion marker is reported"):
             assert completed == {"arch-01"}
+        return
 
 
 class TestWorkItem:
@@ -102,3 +107,4 @@ class TestWorkItem:
 
         with then("the archive id equals the URL stem without extension"):
             assert item.archive_id == "lichess_db_standard_rated_2023-01"
+        return

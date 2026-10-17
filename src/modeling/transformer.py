@@ -34,6 +34,7 @@ class FactorizedTokenEmbedding(nn.Module):
         self.piece = nn.Embedding(config.n_pieces, config.d_model)
         self.square = nn.Embedding(config.n_squares, config.d_model)
         self.state = nn.Embedding(config.piece_square_base, config.d_model)
+        return
 
     def forward(self, tokens: torch.Tensor) -> torch.Tensor:
         is_piece = tokens >= self.piece_square_base
@@ -57,6 +58,7 @@ class TransformerBlock(nn.Module):
         self.ln_ffn = nn.LayerNorm(config.d_model)
         self.fc_in = nn.Linear(config.d_model, config.d_ff)
         self.fc_out = nn.Linear(config.d_ff, config.d_model)
+        return
 
     def forward(self, x: torch.Tensor, attn_mask: torch.Tensor) -> torch.Tensor:
         batch, length, d_model = x.shape
@@ -87,6 +89,7 @@ class MaskedStreamTransformer(nn.Module):
         )
         self.ln_final = nn.LayerNorm(config.d_model)
         self.head = nn.Linear(config.d_model, config.vocab_size)
+        return
 
     def forward(
         self,

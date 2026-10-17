@@ -20,6 +20,7 @@ def temp_pgn_dir():
         pgn_path = Path(tmpdir) / "test.pgn"
         pgn_path.write_bytes(SAMPLE_PGN)
         yield str(tmpdir)
+    return
 
 
 @pytest.fixture

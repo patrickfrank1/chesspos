@@ -21,6 +21,7 @@ class PGNProcessor:
         pgn_files = file_paths_from_directory(directory, ".pgn")
         for file_path in pgn_files:
             yield from self.process_file(file_path)
+        return
 
     def process_file(self, file_path: str) -> Generator[GameRecord, None, None]:
         with open(file_path) as f:
@@ -31,6 +32,7 @@ class PGNProcessor:
                 record = self.extract_game(game)
                 if record is not None and len(record.positions) > 0:
                     yield record
+        return
 
     def extract_game(self, game: chess.pgn.Game) -> GameRecord | None:
         headers = game.headers
@@ -137,6 +139,7 @@ class PGNProcessor:
                 metadata=metadata,
                 move_sequence=list(moves[: ply + 1]),
             )
+        return
 
     def extract_temporal_windows(
         self,
@@ -167,3 +170,4 @@ class PGNProcessor:
 
             if len(window) == window_size:
                 yield list(window)
+        return

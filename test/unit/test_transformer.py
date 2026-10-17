@@ -64,6 +64,7 @@ class TestMaskStream:
             assert np.all(targets[structural] == IGNORE_INDEX)
             assert np.all(masked[structural] == tokens[structural])
             assert np.all(targets[changed] == tokens[changed])
+        return
 
     def test_random_mode_rate(self):
         from src.dataset.token_stream import TURN_WHITE
@@ -79,6 +80,7 @@ class TestMaskStream:
             n_maskable = int((tokens >= TURN_WHITE).sum())
             n_masked = int((targets != IGNORE_INDEX).sum())
             assert 0.2 * n_maskable <= n_masked <= 0.4 * n_maskable
+        return
 
     def test_board_mode_masks_exactly_one_segment(self):
         with given("a packed token stream and board-only masking"):
@@ -96,6 +98,7 @@ class TestMaskStream:
             assert fully_masked == 1
             assert untouched == len(flags) - 1
             assert np.all(masked[np.flatnonzero(tokens == SEP)] == SEP)
+        return
 
     def test_span_mode_masks_contiguous_segments(self):
         with given("a packed token stream and span masking of 2 to 3 segments"):
@@ -114,6 +117,7 @@ class TestMaskStream:
             flagged = np.flatnonzero(flags)
             assert len(flagged) == flagged[-1] - flagged[0] + 1
             assert 2 <= len(flagged) <= 3
+        return
 
     def test_bert_replacement_distribution(self):
         with given("a long packed token stream and random masking at rate 0.5"):
@@ -134,6 +138,7 @@ class TestMaskStream:
             assert mask_frac == pytest.approx(0.8, abs=0.1)
             assert random_frac == pytest.approx(0.1, abs=0.05)
             assert keep_frac == pytest.approx(0.1, abs=0.05)
+        return
 
     def test_scalar_replacement_stays_in_token_class(self):
         from src.dataset.token_stream import (
@@ -176,6 +181,7 @@ class TestMaskStream:
             assert all(6 <= v < 22 for v in replaced[CASTLE_BASE])
             assert all(22 <= v < 38 for v in replaced[EP_BASE])
             assert all(38 <= v < 806 for v in replaced[PIECE_SQUARE_BASE])
+        return
 
     def test_deterministic_with_same_seed(self):
         with given("a packed token stream and default masking"):
@@ -189,6 +195,7 @@ class TestMaskStream:
         with then("both runs produce identical masks and targets"):
             assert np.array_equal(a[0], b[0])
             assert np.array_equal(a[1], b[1])
+        return
 
 
 TINY_CONFIG = TransformerConfig(
@@ -232,6 +239,7 @@ class TestTransformer:
         with then("logits span the vocabulary and the loss is finite"):
             assert output["logits"].shape == (*batch["tokens"].shape, 806)
             assert torch.isfinite(output["loss"])
+        return
 
     def test_padding_does_not_change_real_outputs(self):
         with given("a tiny model in eval mode and a padded batch"):
@@ -259,6 +267,7 @@ class TestTransformer:
             for row, single in enumerate(singles):
                 length = int(batch["padding_mask"][row].sum())
                 assert torch.allclose(out_full[row, :length], single, atol=1e-5)
+        return
 
     def test_loss_ignores_unmasked_and_pad(self):
         with given("a tiny model in eval mode and a batch with no supervised targets"):
@@ -278,6 +287,7 @@ class TestTransformer:
 
         with then("the loss is zero"):
             assert loss.item() == 0.0
+        return
 
     def test_segment_embedding_has_effect(self):
         with given("a tiny model in eval mode and a batch"):
@@ -297,6 +307,7 @@ class TestTransformer:
 
         with then("the hidden states differ"):
             assert not torch.allclose(base, other)
+        return
 
     def test_embed_pools_segments_correctly(self):
         with given("a tiny model in eval mode and a four-segment batch"):
@@ -323,3 +334,4 @@ class TestTransformer:
                 assert torch.allclose(pooled[row, s], expected, atol=1e-6)
             assert mask[row, : len(real_segments)].all()
             assert not mask[row, len(real_segments) :].any()
+        return

@@ -25,6 +25,7 @@ def local_ray():
                 yield
         finally:
             ray.shutdown()
+    return
 
 
 class TestGenerate:
@@ -42,6 +43,7 @@ class TestGenerate:
             assert len(batches) == 1
             train_ds, test_ds = batches[0]
             assert train_ds.count() + test_ds.count() == 1
+        return
 
     def test_generate_resumes_from_start_batch(self, dataset, local_ray):
         with given("a dataset backed by two mocked batches and a resume point of 2"):
@@ -74,3 +76,4 @@ class TestGenerate:
             assert num_yielded == 1
             assert counts == (10, 0)
             assert game_ids == [f"bbbbbbbb{i:04d}" for i in range(10)]
+        return

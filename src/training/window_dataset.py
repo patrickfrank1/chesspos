@@ -36,6 +36,7 @@ class WindowDataset(Dataset):
         self.games: list[list[np.ndarray]] = []
         for path in sorted(Path(config.data_dir).glob("*.parquet")):
             self.games.extend(_load_game_segments(path))
+        return
 
     def __len__(self) -> int:
         return len(self.games)

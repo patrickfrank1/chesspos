@@ -28,6 +28,7 @@ def save_train_test(path: str, train_split: np.ndarray, test_split: np.ndarray) 
     postfix = max(train_postfix, test_postfix)
     np.savez_compressed(f"{train_path}/position_tensor_{postfix}.npz", data=train_split)
     np.savez_compressed(f"{test_path}/position_tensor_{postfix}.npz", data=test_split)
+    return
 
 
 def load_train_test(path: str, filename: str) -> Tuple[np.ndarray, np.ndarray]:

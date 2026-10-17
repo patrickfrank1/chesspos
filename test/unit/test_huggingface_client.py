@@ -14,18 +14,21 @@ def mock_hf_api():
         mock_instance.whoami.return_value = {"name": "test_user"}
         mock_api.return_value = mock_instance
         yield mock_instance
+    return
 
 
 @pytest.fixture
 def mock_repo_exists():
     with patch("src.dataset.huggingface_client.repo_exists", return_value=True):
         yield
+    return
 
 
 @pytest.fixture
 def mock_create_repo():
     with patch("src.dataset.huggingface_client.create_repo") as mock:
         yield mock
+    return
 
 
 class TestHuggingFaceClient:
@@ -35,6 +38,7 @@ class TestHuggingFaceClient:
 
         with then("authentication is checked with the HF API"):
             mock_hf_api.whoami.assert_called_once()
+        return
 
     def test_init_raises_on_auth_failure(self):
         with given("an HF API that fails authentication"):
@@ -51,6 +55,7 @@ class TestHuggingFaceClient:
         with then("a RuntimeError is raised and no client is created"):
             assert client is None
             assert "Not authenticated" in str(excinfo.value)
+        return
 
     def test_get_existing_batches(self, mock_hf_api):
         with given("a repo containing two train batches and unrelated files"):
@@ -67,6 +72,7 @@ class TestHuggingFaceClient:
 
         with then("only the train batch numbers are returned"):
             assert batches == [1, 2]
+        return
 
     def test_get_existing_batches_empty(self, mock_hf_api):
         with given("a repo containing no batch files"):
@@ -78,6 +84,7 @@ class TestHuggingFaceClient:
 
         with then("an empty list is returned"):
             assert batches == []
+        return
 
     def test_get_next_batch_number(self, mock_hf_api):
         with given("a repo containing train batches 1 and 2"):
@@ -92,6 +99,7 @@ class TestHuggingFaceClient:
 
         with then("the number after the highest existing batch is returned"):
             assert next_batch == 3
+        return
 
     def test_get_next_batch_number_empty_repo(self, mock_hf_api):
         with given("an empty repo"):
@@ -103,6 +111,7 @@ class TestHuggingFaceClient:
 
         with then("the first batch number is returned"):
             assert next_batch == 1
+        return
 
     def test_create_version_tag(self, mock_hf_api):
         with given("a client backed by the mocked HF API"):
@@ -120,6 +129,7 @@ class TestHuggingFaceClient:
                 exist_ok=True,
             )
             assert "v1.0.0" in url
+        return
 
     def test_create_dataset_card(self, mock_hf_api):
         with given("a client and feature descriptions to document"):
@@ -148,6 +158,7 @@ class TestHuggingFaceClient:
             assert "Test dataset" in card
             assert "window" in card
             assert "(10, 69)" in card
+        return
 
     def test_push_batch(self, mock_hf_api):
         with given("a client and a mocked HF Dataset factory"):
@@ -171,3 +182,4 @@ class TestHuggingFaceClient:
             mock_dataset.from_dict.assert_called_once()
             mock_ds_instance.push_to_hub.assert_called_once()
             assert url == "https://huggingface.co/datasets/test/repo"
+        return

@@ -85,6 +85,7 @@ class TestBuildBatches:
                 assert batch.table.num_rows <= 100
                 ids = batch.table.column("game_id").to_pylist()
                 assert ids == sorted(ids)
+        return
 
     def test_batch_file_names_are_numbered_per_chunk_and_split(self):
         with given("260 game rows and a batch size of 100"):
@@ -102,6 +103,7 @@ class TestBuildBatches:
             assert train_seqs == sorted(train_seqs)
             assert test_seqs == sorted(test_seqs)
             assert 2 in train_seqs or 2 in test_seqs  # seq 2 exists for a 3-file split
+        return
 
     def test_duplicate_games_are_dropped_within_chunk(self):
         with given("rows containing an exact duplicate game"):
@@ -118,6 +120,7 @@ class TestBuildBatches:
             duplicates = sum(b.duplicates_dropped for b in batches)
             assert total == 4
             assert duplicates == 1
+        return
 
     def test_batches_are_deterministic(self):
         with given("the same rows built twice"):
@@ -139,6 +142,7 @@ class TestBuildBatches:
                     b1.table.column("game_id").to_pylist()
                     == b2.table.column("game_id").to_pylist()
                 )
+        return
 
 
 class TestBatchUploader:
@@ -180,6 +184,7 @@ class TestBatchUploader:
                 "train/arch/batch_0000_0000.meta.json",
                 "train/arch/batch_0000_0000.parquet",
             ]
+        return
 
     def test_upload_skipped_when_identical_batch_exists(self, tmp_path):
         with given("a batch already on the hub with the same content hash"):
@@ -201,6 +206,7 @@ class TestBatchUploader:
         with then("no commit is made"):
             assert uploaded is False
             api.create_commit.assert_not_called()
+        return
 
     def test_upload_overwrites_when_content_differs(self, tmp_path):
         with given("a batch on the hub with a different content hash"):
@@ -227,6 +233,7 @@ class TestBatchUploader:
         with then("the batch is re-uploaded"):
             assert uploaded is True
             api.create_commit.assert_called_once()
+        return
 
     def test_mark_complete_uploads_completion_marker(self):
         with given("an uploader and the list of uploaded batch files"):
@@ -246,43 +253,46 @@ class TestBatchUploader:
             kwargs = api.create_commit.call_args.kwargs
             ops = kwargs["operations"]
             assert [op.path_in_repo for op in ops] == ["archives/arch/_COMPLETE.json"]
+        return
 
 
 class TestRayExtractor:
     def test_ray_initialized_as_fresh_local_cluster(self, monkeypatch):
-        # Given a stubbed ray module that records init kwargs
-        init_kwargs = {}
+        with given("a stubbed ray module that records init kwargs"):
+            init_kwargs = {}
 
-        class FakeRemote:
-            def remote(self, *args, **kwargs):
-                return ("object-ref", args, kwargs)
+            class FakeRemote:
+                def remote(self, *args, **kwargs):
+                    return ("object-ref", args, kwargs)
 
-        class FakeRay:
-            @staticmethod
-            def remote(fn):
-                return FakeRemote()
+            class FakeRay:
+                @staticmethod
+                def remote(fn):
+                    return FakeRemote()
 
-            @staticmethod
-            def is_initialized():
-                return False
+                @staticmethod
+                def is_initialized():
+                    return False
 
-            @staticmethod
-            def init(**kwargs):
-                init_kwargs.update(kwargs)
+                @staticmethod
+                def init(**kwargs):
+                    init_kwargs.update(kwargs)
+                    return
 
-            @staticmethod
-            def get(obj):
-                return ["row"]
+                @staticmethod
+                def get(obj):
+                    return ["row"]
 
-        monkeypatch.setitem(sys.modules, "ray", FakeRay)
+            monkeypatch.setitem(sys.modules, "ray", FakeRay)
 
-        # When a ray extractor is created
-        extractor = _RayExtractor(None, None)
+        with when("a ray extractor is created and used"):
+            extractor = _RayExtractor(None, None)
+            handle = extractor.submit(b"chunk")
+            rows = extractor.result(handle)
 
-        # Then ray joins no ambient cluster and starts a fresh local one
-        assert init_kwargs.get("address") == "local"
-        handle = extractor.submit(b"chunk")
-        assert extractor.result(handle) == ["row"]
+        with then("ray joins no ambient cluster and starts a fresh local one"):
+            assert init_kwargs.get("address") == "local"
+            assert rows == ["row"]
 
 
 def _zst(payload: bytes) -> bytes:
@@ -291,52 +301,59 @@ def _zst(payload: bytes) -> bytes:
 
 class TestOpenPgnStream:
     def test_local_pgn_is_passed_through_unmodified(self, tmp_path):
-        # Given a local .pgn work item with known bytes
-        pgn = tmp_path / "a.pgn"
-        pgn.write_bytes(b"[Event x]\n\n1. e4 *")
-        pipeline = make_pipeline(data_path=str(tmp_path))
-        item = WorkItem(archive_id="a", provider="local", path=str(pgn))
+        with given("a local .pgn work item with known bytes"):
+            pgn = tmp_path / "a.pgn"
+            pgn.write_bytes(b"[Event x]\n\n1. e4 *")
+            pipeline = make_pipeline(data_path=str(tmp_path))
+            item = WorkItem(archive_id="a", provider="local", path=str(pgn))
 
-        # When the pgn stream is opened
-        with pipeline._open_pgn_stream(item) as stream:
-            data = stream.read()
-
-        # Then the raw bytes are returned as-is
-        assert data == b"[Event x]\n\n1. e4 *"
-
-    def test_local_zst_is_stream_decompressed_without_intermediate_file(self, tmp_path):
-        # Given a local .zst archive containing a PGN
-        raw = b"[Event y]\n\n1. d4 *"
-        zst = tmp_path / "a.pgn.zst"
-        zst.write_bytes(_zst(raw))
-        pipeline = make_pipeline(data_path=str(tmp_path))
-        item = WorkItem(archive_id="a", provider="local", path=str(zst))
-
-        # When the pgn stream is opened
-        with pipeline._open_pgn_stream(item) as stream:
-            data = stream.read()
-
-        # Then the decompressed PGN is returned and no decompressed copy exists
-        assert data == raw
-        assert not list(tmp_path.glob("*.pgn"))
-
-    def test_url_zst_stream_is_decompressed_and_never_written_to_disk(self):
-        # Given a URL work item whose response body is zstd-compressed PGN
-        raw = b"[Event z]\n\n1. c4 *"
-        pipeline = make_pipeline(data_path=None, archive_urls=["https://x/r.pgn.zst"])
-        item = WorkItem(archive_id="r", provider="lichess", url="https://x/r.pgn.zst")
-
-        # When the pgn stream is opened over a mocked HTTP response
-        response = io.BytesIO(_zst(raw))
-        with patch(
-            "src.dataset.archive_pipeline.urllib.request.urlopen",
-            return_value=response,
-        ):
+        with when("the pgn stream is opened"):
             with pipeline._open_pgn_stream(item) as stream:
                 data = stream.read()
 
-        # Then the stream yields the decompressed PGN
-        assert data == raw
+        with then("the raw bytes are returned as-is"):
+            assert data == b"[Event x]\n\n1. e4 *"
+        return
+
+    def test_local_zst_is_stream_decompressed_without_intermediate_file(self, tmp_path):
+        with given("a local .zst archive containing a PGN"):
+            raw = b"[Event y]\n\n1. d4 *"
+            zst = tmp_path / "a.pgn.zst"
+            zst.write_bytes(_zst(raw))
+            pipeline = make_pipeline(data_path=str(tmp_path))
+            item = WorkItem(archive_id="a", provider="local", path=str(zst))
+
+        with when("the pgn stream is opened"):
+            with pipeline._open_pgn_stream(item) as stream:
+                data = stream.read()
+
+        with then("the decompressed PGN is returned and no decompressed copy exists"):
+            assert data == raw
+            assert not list(tmp_path.glob("*.pgn"))
+        return
+
+    def test_url_zst_stream_is_decompressed_and_never_written_to_disk(self):
+        with given("a URL work item whose response body is zstd-compressed PGN"):
+            raw = b"[Event z]\n\n1. c4 *"
+            pipeline = make_pipeline(
+                data_path=None, archive_urls=["https://x/r.pgn.zst"]
+            )
+            item = WorkItem(
+                archive_id="r", provider="lichess", url="https://x/r.pgn.zst"
+            )
+
+        with when("the pgn stream is opened over a mocked HTTP response"):
+            response = io.BytesIO(_zst(raw))
+            with patch(
+                "src.dataset.archive_pipeline.urllib.request.urlopen",
+                return_value=response,
+            ):
+                with pipeline._open_pgn_stream(item) as stream:
+                    data = stream.read()
+
+        with then("the stream yields the decompressed PGN"):
+            assert data == raw
+        return
 
 
 class _FakeExtractor:
@@ -347,6 +364,7 @@ class _FakeExtractor:
         self.resolve_order: list[bytes] = []
         self.max_outstanding = 0
         self._outstanding = 0
+        return
 
     def __enter__(self):
         return self
@@ -376,50 +394,53 @@ def _three_game_stream() -> io.BytesIO:
 
 class TestChunkPipeline:
     def test_chunks_are_consumed_in_production_order(self):
-        # Given a chunker that cuts a 3-game stream into 3 chunks
-        # and an extractor whose results are resolved in call order
-        pipeline = make_pipeline()
-        chunker = PgnChunker(10)
-        extractor = _FakeExtractor()
-        consumed = []
+        with given(
+            "a chunker that cuts a 3-game stream into 3 chunks "
+            "and an extractor whose results are resolved in call order"
+        ):
+            pipeline = make_pipeline()
+            chunker = PgnChunker(10)
+            extractor = _FakeExtractor()
+            consumed = []
 
-        # When the chunk loop runs
-        pipeline._run_chunk_loop(
-            _three_game_stream(),
-            chunker,
-            extractor,
-            max_inflight=3,
-            on_chunk=lambda i, rows: consumed.append((i, rows)),
-        )
+        with when("the chunk loop runs"):
+            pipeline._run_chunk_loop(
+                _three_game_stream(),
+                chunker,
+                extractor,
+                max_inflight=3,
+                on_chunk=lambda i, rows: consumed.append((i, rows)),
+            )
 
-        # Then chunks are submitted and consumed in production order
-        # with rows matching their own chunk
-        events = [
-            re.search(rb'\[Event "(G\d)"\]', data).group(1)
-            for data in extractor.submit_order
-        ]
-        assert events == [b"G0", b"G1", b"G2"]
-        assert [i for i, _ in consumed] == [0, 1, 2]
-        assert [rows[0]["game_id"] for _, rows in consumed] == [
-            "gid-G0",
-            "gid-G1",
-            "gid-G2",
-        ]
+        with then("chunks are submitted and consumed in production order"):
+            events = [
+                re.search(rb'\[Event "(G\d)"\]', data).group(1)
+                for data in extractor.submit_order
+            ]
+            assert events == [b"G0", b"G1", b"G2"]
+            assert [i for i, _ in consumed] == [0, 1, 2]
+            assert [rows[0]["game_id"] for _, rows in consumed] == [
+                "gid-G0",
+                "gid-G1",
+                "gid-G2",
+            ]
+        return
 
     def test_in_flight_extractions_are_bounded(self):
-        # Given a pipeline loop with a max of 2 in-flight extractions
-        pipeline = make_pipeline()
-        chunker = PgnChunker(10)
-        extractor = _FakeExtractor()
+        with given("a pipeline loop with a max of 2 in-flight extractions"):
+            pipeline = make_pipeline()
+            chunker = PgnChunker(10)
+            extractor = _FakeExtractor()
 
-        # When the chunk loop runs over 3 chunks
-        pipeline._run_chunk_loop(
-            _three_game_stream(),
-            chunker,
-            extractor,
-            max_inflight=2,
-            on_chunk=lambda i, rows: None,
-        )
+        with when("the chunk loop runs over 3 chunks"):
+            pipeline._run_chunk_loop(
+                _three_game_stream(),
+                chunker,
+                extractor,
+                max_inflight=2,
+                on_chunk=lambda i, rows: None,
+            )
 
-        # Then no more than 2 extractions are ever outstanding at once
-        assert extractor.max_outstanding <= 2
+        with then("no more than 2 extractions are ever outstanding at once"):
+            assert extractor.max_outstanding <= 2
+        return

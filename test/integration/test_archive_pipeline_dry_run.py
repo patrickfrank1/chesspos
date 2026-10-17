@@ -1,6 +1,8 @@
 import json
 from pathlib import Path
 
+import zstandard
+
 from bdd import given, then, when
 from etl_support import make_lichess_pgn
 from src.dataset.archive_pipeline import ArchivePipeline
@@ -74,6 +76,7 @@ class TestArchivePipelineDryRun:
             ]
             assert "2023-01-15" in dates
             assert "2023-01-16" in dates
+        return
 
     def test_rerun_skips_completed_archive(self, tmp_path):
         with given("a pipeline that has already processed its archive in dry-run mode"):
@@ -97,6 +100,7 @@ class TestArchivePipelineDryRun:
                 p.relative_to(output_dir) for p in output_dir.rglob("*")
             )
             assert files_after_second_run == files_after_first_run
+        return
 
     def test_parquet_output_is_deterministic(self, tmp_path):
         with given("the same input processed into two different output directories"):
@@ -115,36 +119,40 @@ class TestArchivePipelineDryRun:
         with then("the parquet bytes are identical"):
             assert set(files_a) == set(files_b)
             assert files_a == files_b
+        return
 
     def test_end_to_end_zst_dry_run(self, tmp_path):
-        # Given a local .pgn.zst archive containing two distinct games and one duplicate
-        import zstandard
+        with given(
+            "a local .pgn.zst archive containing two distinct games and one duplicate"
+        ):
+            games = (
+                make_lichess_pgn("Game One", date="2023.01.15")
+                + make_lichess_pgn("Game Two", date="2023.01.16")
+                + make_lichess_pgn("Game One", date="2023.01.15")
+            )
+            data_dir = tmp_path / "data"
+            data_dir.mkdir()
+            (data_dir / "test.pgn.zst").write_bytes(
+                zstandard.ZstdCompressor().compress(games)
+            )
+            output_dir = tmp_path / "out"
+            pipeline = make_pipeline(str(data_dir))
 
-        data_dir = tmp_path / "data"
-        data_dir.mkdir()
-        games = (
-            make_lichess_pgn("Game One", date="2023.01.15")
-            + make_lichess_pgn("Game Two", date="2023.01.16")
-            + make_lichess_pgn("Game One", date="2023.01.15")
-        )
-        (data_dir / "test.pgn.zst").write_bytes(
-            zstandard.ZstdCompressor().compress(games)
-        )
-        output_dir = tmp_path / "out"
-        pipeline = make_pipeline(str(data_dir))
+        with when("the pipeline runs in dry-run mode"):
+            result = pipeline.run(dry_run=True, output_dir=str(output_dir))
 
-        # When the pipeline runs in dry-run mode
-        result = pipeline.run(dry_run=True, output_dir=str(output_dir))
-
-        # Then batches are produced exactly as with a plain .pgn and no
-        # decompressed copy of the archive exists anywhere in the output
-        assert result.processed == ["test"]
-        parquet_files = sorted(output_dir.glob("*/*/*.parquet"))
-        meta_files = sorted(output_dir.glob("*/*/*.meta.json"))
-        assert len(parquet_files) >= 1
-        assert len(parquet_files) == len(meta_files)
-        assert (output_dir / "archives" / "test" / "_COMPLETE.json").exists()
-        metas = [json.loads(p.read_text()) for p in meta_files]
-        assert sum(m["stats"]["num_games"] for m in metas) == 2
-        assert sum(m["stats"]["duplicates_dropped"] for m in metas) == 1
-        assert not list(output_dir.rglob("*.pgn"))
+        with then(
+            "batches are produced exactly as with a plain .pgn and no "
+            "decompressed copy of the archive exists anywhere in the output"
+        ):
+            assert result.processed == ["test"]
+            parquet_files = sorted(output_dir.glob("*/*/*.parquet"))
+            meta_files = sorted(output_dir.glob("*/*/*.meta.json"))
+            assert len(parquet_files) >= 1
+            assert len(parquet_files) == len(meta_files)
+            assert (output_dir / "archives" / "test" / "_COMPLETE.json").exists()
+            metas = [json.loads(p.read_text()) for p in meta_files]
+            assert sum(m["stats"]["num_games"] for m in metas) == 2
+            assert sum(m["stats"]["duplicates_dropped"] for m in metas) == 1
+            assert not list(output_dir.rglob("*.pgn"))
+        return

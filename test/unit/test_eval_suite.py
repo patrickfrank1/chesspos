@@ -71,6 +71,7 @@ class TestFullEval:
             for key in expected:
                 assert key in metrics
             assert all(np.isfinite(value) for value in metrics.values())
+        return
 
     def test_restores_training_mode(self):
         with given("a tiny model left in training mode"):
@@ -94,3 +95,4 @@ class TestFullEval:
 
         with then("the model is returned to training mode"):
             assert model.training
+        return

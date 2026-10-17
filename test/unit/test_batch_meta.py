@@ -48,6 +48,7 @@ class TestConfigFingerprint:
         with then("both computations agree"):
             assert first == second
             assert len(first) == 40  # sha1 hex
+        return
 
     def test_fingerprint_changes_with_subsampling(self):
         with given("two different subsampling configurations"):
@@ -60,6 +61,7 @@ class TestConfigFingerprint:
 
         with then("the fingerprints differ"):
             assert fp_lenient != fp_strict
+        return
 
     def test_fingerprint_changes_with_time_control_filter(self):
         with given("two different time control filters"):
@@ -77,6 +79,7 @@ class TestConfigFingerprint:
 
         with then("the fingerprints differ"):
             assert fp_default != fp_disabled
+        return
 
 
 class TestBuildBatchMeta:
@@ -109,6 +112,7 @@ class TestBuildBatchMeta:
             assert meta.date_max == "2023-01-31"
             assert meta.split == "train"
             assert meta.archive_id == "lichess_db_standard_rated_2023-01"
+        return
 
     def test_missing_dates_yield_none(self):
         with given("a batch whose games have no UTCDate headers"):
@@ -132,6 +136,7 @@ class TestBuildBatchMeta:
         with then("the date range is None"):
             assert meta.date_min is None
             assert meta.date_max is None
+        return
 
     def test_json_roundtrip(self):
         with given("a built batch meta"):
@@ -155,6 +160,7 @@ class TestBuildBatchMeta:
 
         with then("the restored meta equals the original"):
             assert restored == meta
+        return
 
     def test_batch_file_name(self):
         with given("a batch meta for chunk 3, sequence 1 of the train split"):
@@ -180,3 +186,4 @@ class TestBuildBatchMeta:
         with then("both files live under split/archive with matching stems"):
             assert parquet_path == "train/arch/batch_0003_0001.parquet"
             assert meta_path == "train/arch/batch_0003_0001.meta.json"
+        return

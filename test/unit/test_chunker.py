@@ -56,6 +56,7 @@ class TestPgnChunker:
             assert len(chunk_paths) >= 2
             assert len(parsed_games) == 3
             assert b"".join(chunk_bytes) == GAME_A + GAME_B + GAME_C
+        return
 
     def test_no_game_spans_two_chunks(self):
         with given("a PGN stream of three games and a small chunk target"):
@@ -77,6 +78,7 @@ class TestPgnChunker:
             for events in chunk_events:
                 assert 1 <= len(events) <= 3
                 assert all(e in {"Test", "Game B", "Game C"} for e in events)
+        return
 
     def test_split_is_deterministic(self):
         with given("the same PGN stream split twice"):
@@ -98,6 +100,7 @@ class TestPgnChunker:
 
         with then("chunk boundaries and contents are identical"):
             assert first == second
+        return
 
     def test_oversized_game_gets_own_chunk(self):
         with given("a single game larger than the chunk target"):
@@ -115,6 +118,7 @@ class TestPgnChunker:
         with then("the game is emitted as one complete oversized chunk"):
             assert len(chunk_paths) == 1
             assert game_counts == [1]
+        return
 
     def test_chunks_are_yielded_lazily(self):
         with given("a stream that tracks how much has been consumed"):

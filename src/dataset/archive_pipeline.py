@@ -49,6 +49,7 @@ class _InlineExtractor:
     def __init__(self, pool: ThreadPoolExecutor, fn):
         self._pool = pool
         self._fn = fn
+        return
 
     def submit(self, data: bytes):
         return self._pool.submit(self._fn, data)
@@ -69,6 +70,7 @@ class _RayExtractor:
         self._remote = remote
         self._subsampling = subsampling
         self._time_control_filter = time_control_filter
+        return
 
     def submit(self, data: bytes):
         return self._remote.remote(
@@ -113,6 +115,7 @@ class BatchUploader:
     def __init__(self, hf_api: HfApi | None = None, repo_id: str = ""):
         self.hf_api = hf_api or HfApi()
         self.repo_id = repo_id
+        return
 
     def _existing_meta_json(self, path_in_repo: str) -> str | None:
         try:
@@ -186,6 +189,7 @@ class BatchUploader:
             operations=operations,
             commit_message=f"Mark archive {archive_id} complete",
         )
+        return
 
 
 @dataclass
@@ -336,6 +340,7 @@ class ArchivePipeline:
                             )
                             if repo_parquet:
                                 batch_files.append(repo_parquet)
+                        return
 
                     self._run_chunk_loop(
                         pgn,
@@ -347,6 +352,7 @@ class ArchivePipeline:
             self._mark_complete(item, batch_files, uploader, dry_run, output_dir)
         finally:
             shutil.rmtree(scratch, ignore_errors=True)
+        return
 
     @contextmanager
     def _open_pgn_stream(self, item: WorkItem) -> Iterator[BinaryIO]:
@@ -369,6 +375,7 @@ class ArchivePipeline:
                 yield raw
         finally:
             raw.close()
+        return
 
     def _run_chunk_loop(
         self,
@@ -399,6 +406,7 @@ class ArchivePipeline:
             while pending:
                 index, done = pending.popleft()
                 on_chunk(index, extractor.result(done))
+        return
 
     @contextmanager
     def _extractor(self):
@@ -487,3 +495,4 @@ class ArchivePipeline:
             (marker_dir / "_COMPLETE.json").write_text(payload)
         else:
             uploader.mark_complete(item.archive_id, batch_files)
+        return

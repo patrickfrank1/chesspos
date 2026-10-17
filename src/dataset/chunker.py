@@ -32,6 +32,7 @@ class PgnChunker:
         if chunk_target_bytes <= 0:
             raise ValueError("chunk_target_bytes must be positive")
         self.chunk_target_bytes = chunk_target_bytes
+        return
 
     @property
     def read_block_bytes(self) -> int:
@@ -74,3 +75,4 @@ class PgnChunker:
             path = out / f"chunk_{index:04d}.pgn"
             path.write_bytes(bytes(buf))
             yield path
+        return

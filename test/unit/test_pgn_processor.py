@@ -61,6 +61,7 @@ class TestPGNProcessor:
     @pytest.fixture(autouse=True)
     def _seed_random(self):
         random.seed(42)
+        return
 
     def test_process_file_returns_game_records(self, temp_pgn_file):
         with given("a processor and a PGN file"):
@@ -72,6 +73,7 @@ class TestPGNProcessor:
         with then("at least one GameRecord is returned"):
             assert len(games) >= 1
             assert all(isinstance(g, GameRecord) for g in games)
+        return
 
     def test_extract_game_returns_positions(self, temp_pgn_file):
         with given("a processor and a PGN file"):
@@ -82,6 +84,7 @@ class TestPGNProcessor:
 
         with then("every game carries at least one position"):
             assert all(len(g.positions) > 0 for g in games)
+        return
 
     def test_extract_game_metadata(self, temp_pgn_file):
         with given("a processor and a PGN file"):
@@ -96,6 +99,7 @@ class TestPGNProcessor:
             assert first_game.metadata.black_elo == 2100
             assert first_game.metadata.result == "1-0"
             assert first_game.metadata.opening == "Italian Game"
+        return
 
     def test_subsampling_drops_weak_games(self, temp_pgn_file):
         with given("a processor with a 2500+ Elo tier"):
@@ -107,6 +111,7 @@ class TestPGNProcessor:
 
         with then("the game is dropped"):
             assert len(games) == 0
+        return
 
     def test_subsampling_allows_games(self, temp_pgn_file):
         with given("a processor with a keep-all tier"):
@@ -117,6 +122,7 @@ class TestPGNProcessor:
 
         with then("the game is kept"):
             assert len(games) >= 1
+        return
 
     def test_position_records_have_ply(self, temp_pgn_file):
         with given("a processor and a PGN file"):
@@ -130,6 +136,7 @@ class TestPGNProcessor:
                 for pos in game.positions:
                     assert isinstance(pos.ply, int)
                     assert pos.ply >= 0
+        return
 
     def test_position_records_have_board(self, temp_pgn_file):
         with given("a processor and a PGN file"):
@@ -142,6 +149,7 @@ class TestPGNProcessor:
             for game in games:
                 for pos in game.positions:
                     assert isinstance(pos.board, chess.Board)
+        return
 
     def test_process_directory(self, temp_pgn_directory):
         with given("a processor and a directory with one PGN file"):
@@ -152,6 +160,7 @@ class TestPGNProcessor:
 
         with then("exactly one game is returned"):
             assert len(games) == 1
+        return
 
     def test_temporal_window_extraction(self, temp_pgn_file):
         with given("a processor and a parsed PGN game"):
@@ -165,6 +174,7 @@ class TestPGNProcessor:
         with then("every window has exactly 5 positions"):
             assert game is not None
             assert all(len(w) == 5 for w in windows)
+        return
 
     def test_game_record_iteration(self, temp_pgn_file):
         with given("games processed from a PGN file"):
@@ -177,6 +187,7 @@ class TestPGNProcessor:
         with then("iteration yields the same positions as the record holds"):
             for game, positions in zip(games, iterated):
                 assert len(positions) == len(game.positions)
+        return
 
 
 class TestGameSubsampling:
@@ -197,6 +208,7 @@ class TestGameSubsampling:
 
         with then("the strictest qualifying tier wins each match"):
             assert matched == [2400, 2000, 0, 0]
+        return
 
     def test_match_tier_missing_ratings_fall_to_catch_all(self):
         with given("a game with a missing white rating"):
@@ -209,6 +221,7 @@ class TestGameSubsampling:
         with then("the catch-all tier applies"):
             assert tier is not None
             assert tier.min_elo == 0
+        return
 
     def test_no_matching_tier_drops_game(self):
         with given("a processor with only a 2500+ Elo tier"):
@@ -221,6 +234,7 @@ class TestGameSubsampling:
 
         with then("the game is dropped"):
             assert keep is False
+        return
 
     def test_keep_game_respects_rate(self):
         with given("a processor with a keep-all tier at rate 0.5"):
@@ -241,6 +255,7 @@ class TestGameSubsampling:
         with then("the game is kept below the rate and dropped above it"):
             assert kept
             assert not dropped
+        return
 
     def test_all_positions_extracted_without_subsampling(self, temp_pgn_file):
         with given("a processor with a keep-all tier and a parsed game"):
@@ -255,6 +270,7 @@ class TestGameSubsampling:
             assert record is not None
             assert len(record.positions) == len(list(game.mainline_moves()))
             assert len(record.positions) > 0
+        return
 
     def test_tier_validation(self):
         with given("invalid tier parameters"):
@@ -270,6 +286,7 @@ class TestGameSubsampling:
         with then("every construction raises a ValueError"):
             assert len(caught) == len(invalid)
             assert all(isinstance(e, ValueError) for e in caught)
+        return
 
     def test_subsampling_round_trip(self):
         with given("a subsampling config"):
@@ -282,6 +299,7 @@ class TestGameSubsampling:
 
         with then("the restored config equals the original"):
             assert restored == subsampling
+        return
 
 
 class TestTimeControlFilter:
@@ -308,6 +326,7 @@ class TestTimeControlFilter:
 
         with then("the base seconds or None is returned"):
             assert parsed == expected
+        return
 
     def test_bullet_game_dropped(self, temp_pgn_file):
         with given("a processor with a 300s minimum time control"):
@@ -323,6 +342,7 @@ class TestTimeControlFilter:
 
         with then("the game is dropped"):
             assert len(games) == 0
+        return
 
     def test_rapid_game_kept(self, temp_pgn_file):
         with given("a processor with a 300s minimum time control"):
@@ -338,6 +358,7 @@ class TestTimeControlFilter:
 
         with then("the game is kept"):
             assert len(games) == 1
+        return
 
     def test_five_minute_boundary_kept(self, temp_pgn_file):
         with given("a processor with a 300s minimum time control"):
@@ -353,6 +374,7 @@ class TestTimeControlFilter:
 
         with then("the game is kept at the boundary"):
             assert len(games) == 1
+        return
 
     def test_unknown_time_control_kept(self, temp_pgn_file):
         with given("a processor with a 300s minimum time control"):
@@ -363,6 +385,7 @@ class TestTimeControlFilter:
 
         with then("the game is kept"):
             assert len(games) == 1
+        return
 
     def test_disabled_filter_keeps_bullet(self, temp_pgn_file):
         with given("a processor with the time control filter disabled"):
@@ -381,6 +404,7 @@ class TestTimeControlFilter:
 
         with then("the game is kept"):
             assert len(games) == 1
+        return
 
     def test_metadata_records_time_control(self, temp_pgn_file):
         with given("a processor with the time control filter disabled"):
@@ -399,6 +423,7 @@ class TestTimeControlFilter:
 
         with then("the metadata records the time control"):
             assert games[0].metadata.time_control == "180+2"
+        return
 
     def test_filter_validation(self):
         with given("an invalid minimum of -1 seconds"):
@@ -410,6 +435,7 @@ class TestTimeControlFilter:
 
         with then("a ValueError is raised"):
             assert isinstance(excinfo.value, ValueError)
+        return
 
     def test_filter_round_trip(self):
         with given("a time control filter"):
@@ -420,6 +446,7 @@ class TestTimeControlFilter:
 
         with then("the restored filter equals the original"):
             assert restored == f
+        return
 
     def test_preprocessing_config_round_trip(self):
         with given("a preprocessing config with a time control filter"):
@@ -432,3 +459,4 @@ class TestTimeControlFilter:
 
         with then("the restored config keeps the time control filter"):
             assert restored.time_control_filter == cfg.time_control_filter
+        return

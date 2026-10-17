@@ -19,6 +19,7 @@ class DatasetConfig:
             raise ValueError("batch_size must be positive")
         if not 0 < self.train_ratio < 1:
             raise ValueError("train_ratio must be between 0 and 1")
+        return
 
     def to_json(self) -> str:
         return json.dumps(asdict(self))
@@ -54,6 +55,7 @@ class GameSubsampleTier:
             raise ValueError("min_elo cannot be negative")
         if not 0 < self.rate <= 1:
             raise ValueError("rate must be between 0 and 1")
+        return
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -105,6 +107,7 @@ class TimeControlFilter:
     def __post_init__(self):
         if self.min_seconds is not None and self.min_seconds < 0:
             raise ValueError("min_seconds cannot be negative")
+        return
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -127,6 +130,7 @@ class PreprocessingConfig:
             raise ValueError("worker_count must be positive")
         if self.memory_limit_mb <= 0:
             raise ValueError("memory_limit_mb must be positive")
+        return
 
     def to_json(self) -> str:
         return json.dumps(asdict(self))
@@ -173,6 +177,7 @@ class SourceConfig:
                     raise ValueError("archive_urls must contain non-empty strings")
         if self.chunk_target_mb <= 0:
             raise ValueError("chunk_target_mb must be positive")
+        return
 
     def to_json(self) -> str:
         return json.dumps(asdict(self))
