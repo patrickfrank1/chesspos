@@ -1,74 +1,14 @@
 import io
-import tempfile
-from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import chess
 import numpy as np
-import pyarrow as pa
-import pytest
-import ray.data
 
 from bdd import given, then, when
-from src.dataset.config import (
-    DatasetConfig,
-    GameSubsampling,
-    GameSubsampleTier,
-    PreprocessingConfig,
-    TimeControlFilter,
-)
+from etl_support import SAMPLE_PGN, make_batch
+from src.dataset.config import GameSubsampling, GameSubsampleTier, TimeControlFilter
 from src.dataset.etl import ChessPositionDataset
-from src.dataset.token_stream import CLS, SEP, TokenStreamEncoder, pack_stream
-
-
-SAMPLE_PGN = b"""[Event "Test"]
-[White "Player1"]
-[Black "Player2"]
-[Result "1-0"]
-[WhiteElo "2200"]
-[BlackElo "2100"]
-
-1. e4 e5 2. Nf3 Nc6 3. Bb5 a6 4. Ba4 Nf6 5. O-O Be7 6. Re1 b5 7. Bb3 d6 8. c3 O-O 9. h3 Na5 10. Bc2 c5 11. d4 Qc7 1-0
-"""
-
-
-@pytest.fixture
-def temp_pgn_dir():
-    with tempfile.TemporaryDirectory() as tmpdir:
-        pgn_path = Path(tmpdir) / "test.pgn"
-        pgn_path.write_bytes(SAMPLE_PGN)
-        yield str(tmpdir)
-
-
-@pytest.fixture
-def dataset_config(temp_pgn_dir):
-    return DatasetConfig(
-        repo_name="test/chesspos-test",
-        batch_size=10,
-        train_ratio=0.8,
-        data_path=temp_pgn_dir,
-    )
-
-
-@pytest.fixture
-def preprocessing_config():
-    return PreprocessingConfig(
-        worker_count=1,
-        memory_limit_mb=1024,
-        subsampling=GameSubsampling(tiers=[GameSubsampleTier(min_elo=0, rate=1.0)]),
-    )
-
-
-@pytest.fixture
-def dataset(dataset_config, preprocessing_config, monkeypatch):
-    # Force a fresh local Ray instance instead of autodetecting a running
-    # cluster (RAY_ADDRESS or /tmp/ray leftovers) during tests.
-    monkeypatch.setenv("RAY_ADDRESS", "local")
-    with patch.object(ChessPositionDataset, "__post_init__", lambda self: None):
-        return ChessPositionDataset(
-            dataset_config=dataset_config,
-            preprocessing_config=preprocessing_config,
-        )
+from src.dataset.token_stream import CLS, SEP
 
 
 class TestChessPositionDataset:
@@ -201,27 +141,9 @@ class TestChessPositionDataset:
             assert all_train == "train"
             assert all_test == "test"
 
-    def _make_batch(self) -> pa.Table:
-        boards = [chess.Board(), chess.Board()]
-        boards[1].push_san("e4")
-        encoder = TokenStreamEncoder()
-        segments = [encoder.encode(board) for board in boards]
-        packed = pack_stream(segments, add_cls=True).tolist()
-        return pa.table(
-            {
-                "packed": pa.array([packed], type=pa.list_(pa.int64())),
-                "n_positions": pa.array([2], type=pa.int32()),
-                "ply": pa.array([1], type=pa.int32()),
-                "game_id": pa.array(["deadbeefdeadbeef"]),
-                "white_elo": pa.array([2000], type=pa.int32()),
-                "black_elo": pa.array([2000], type=pa.int32()),
-                "result": pa.array(["1-0"]),
-            }
-        )
-
     def test_finalize_batch(self):
         with given("an un-finalized batch of one game"):
-            batch = self._make_batch()
+            batch = make_batch()
 
         with when("the batch is finalized with train ratio 0.8"):
             result = ChessPositionDataset._finalize_batch(batch, 0.8)
@@ -239,7 +161,7 @@ class TestChessPositionDataset:
 
     def test_finalize_batch_split_is_deterministic(self):
         with given("the same un-finalized batch twice"):
-            batch = self._make_batch()
+            batch = make_batch()
 
         with when("each copy is finalized with the same train ratio"):
             first = ChessPositionDataset._finalize_batch(batch, 0.8)
@@ -268,72 +190,6 @@ class TestChessPositionDataset:
 
         with then("generation resumes at batch 5"):
             assert start_batch == 5
-
-    def test_generate_dry_run(self, dataset):
-        with given("a dataset backed by one mocked encoded batch"):
-            chunk = self._make_batch_with_split(["deadbeefdeadbeef"])
-            mock_encoded = MagicMock(spec=ray.data.Dataset)
-            mock_encoded.iter_batches.return_value = iter([chunk])
-            dataset._build_encoded = MagicMock(return_value=mock_encoded)
-
-        with when("one batch is generated in dry-run mode"):
-            batches = list(dataset.generate(num_batches=1, dry_run=True))
-
-        with then("exactly one batch is yielded with all games split across splits"):
-            assert len(batches) == 1
-            train_ds, test_ds = batches[0]
-            assert train_ds.count() + test_ds.count() == 1
-
-    def _make_batch_with_split(self, game_ids: list[str]) -> pa.Table:
-        n = len(game_ids)
-        batch = self._make_batch()
-        columns = {}
-        for name in batch.column_names:
-            if name == "packed":
-                continue
-            columns[name] = batch.column(name).to_pylist() * n
-        packed = batch.column("packed").to_pylist()[0]
-        table = pa.table(
-            {
-                **columns,
-                "packed": pa.array([packed] * n, type=pa.list_(pa.int16())),
-                "game_id": pa.array(game_ids, type=pa.string()),
-                "split": pa.array(["train"] * n, type=pa.string()),
-            }
-        )
-        return table
-
-    def test_generate_resumes_from_start_batch(self, dataset):
-        with given("a dataset backed by two mocked batches and a resume point of 2"):
-            chunks = [
-                self._make_batch_with_split([f"aaaaaaaa{i:04d}" for i in range(10)]),
-                self._make_batch_with_split([f"bbbbbbbb{i:04d}" for i in range(10)]),
-            ]
-            mock_encoded = MagicMock(spec=ray.data.Dataset)
-            mock_encoded.iter_batches.return_value = iter(chunks)
-            dataset._build_encoded = MagicMock(return_value=mock_encoded)
-
-            mock_client = MagicMock()
-            mock_client.get_next_batch_number.return_value = 2
-            dataset.hf_client = mock_client
-
-        with when("generation is resumed inside the yield loop"):
-            counts = None
-            game_ids = None
-            num_yielded = 0
-            # Consume inside the loop, while the generator is paused at `yield`
-            # and the Ray session is still alive.
-            for train_ds, test_ds in dataset.generate(
-                num_batches=1, dry_run=True, resume=True
-            ):
-                num_yielded += 1
-                counts = (train_ds.count(), test_ds.count())
-                game_ids = [row["game_id"] for row in train_ds.take_all()]
-
-        with then("only the second batch is yielded, entirely in the train split"):
-            assert num_yielded == 1
-            assert counts == (10, 0)
-            assert game_ids == [f"bbbbbbbb{i:04d}" for i in range(10)]
 
     def test_create_dataset_card(self, dataset):
         with given("a mocked HF client returning a fixed dataset card"):
