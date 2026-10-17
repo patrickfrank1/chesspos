@@ -1,4 +1,6 @@
 import io
+import time
+from pathlib import Path
 
 import chess.pgn
 
@@ -146,3 +148,32 @@ class TestPgnChunker:
             assert first_chunk is not None
             assert len(remaining) >= 1
             assert stream.consumed_while_yielding[0] < len(payload)
+        return
+
+    def test_many_boundaries_cut_in_linear_time(self):
+        # Regression guard: the scan position must persist across block
+        # reads. Re-scanning the whole buffer for every boundary on every
+        # block makes chunking quadratic (an archive that cuts in ~3s
+        # took ~5 minutes) and starves the parallel extractors.
+        with given("a stream of 400k tiny games and a small chunk target"):
+            mini_game = (
+                b'[Event "x"]\n[Site "?"]\n[Date "????.??.??"]'
+                b'[Result "*"]\n\n1. e4 e5 *\n\n'
+            )
+            payload = mini_game * 400_000
+            stream = io.BytesIO(payload)
+            chunker = PgnChunker(chunk_target_bytes=4 * 1024 * 1024)
+
+        with when("the stream is split into game-aligned chunks"):
+            import tempfile
+
+            start = time.perf_counter()
+            with tempfile.TemporaryDirectory() as tmpdir:
+                chunk_paths = list(chunker.iter_chunks(stream, out_dir=tmpdir))
+                chunk_bytes = [Path(p).read_bytes() for p in chunk_paths]
+            elapsed = time.perf_counter() - start
+
+        with then("all bytes are preserved and cutting stays well under 10s"):
+            assert b"".join(chunk_bytes) == payload
+            assert elapsed < 10.0
+        return

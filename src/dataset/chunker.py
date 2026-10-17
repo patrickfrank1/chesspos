@@ -45,22 +45,29 @@ class PgnChunker:
         and the next game boundary is seen; the final partial chunk is
         emitted at end of stream. An oversized single game becomes one
         complete oversized chunk.
+
+        The scan position persists across block reads (resuming just
+        before the buffer tail where a separator could straddle a block
+        boundary), so total scanning work stays linear in stream size.
         """
         out = Path(out_dir)
         out.mkdir(parents=True, exist_ok=True)
         index = 0
         buf = bytearray()
         block = self.read_block_bytes
+        search_from = 0
         while True:
             data = stream.read(block)
             if not data:
                 break
             buf.extend(data)
             # Cut at every boundary that closes a >= target chunk.
-            search_from = 0
             while True:
                 pos = buf.find(SEPARATOR, search_from)
                 if pos == -1:
+                    # Resume just before the buffer tail so a separator
+                    # straddling the block boundary is still found.
+                    search_from = max(0, len(buf) - len(SEPARATOR) + 1)
                     break
                 search_from = pos + 1
                 cut = pos + 2  # keep the blank line with the previous chunk
@@ -70,7 +77,9 @@ class PgnChunker:
                     yield path
                     index += 1
                     del buf[:cut]
-                    search_from = 0
+                    # Clamp to 0: a negative start would wrap around and
+                    # skip separators near the start of the remainder.
+                    search_from = max(0, search_from - cut)
         if buf:
             path = out / f"chunk_{index:04d}.pgn"
             path.write_bytes(bytes(buf))
