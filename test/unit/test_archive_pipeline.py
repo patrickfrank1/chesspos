@@ -7,7 +7,6 @@ from unittest.mock import MagicMock, patch
 import zstandard
 
 from bdd import given, then, when
-from http_support import RangedHttpServer
 from src.dataset.archive_pipeline import (
     ArchivePipeline,
     BatchUploader,
@@ -392,32 +391,27 @@ class TestOpenPgnStream:
             assert not list(tmp_path.glob("*.pgn"))
         return
 
-    def test_url_archive_downloaded_to_scratch_then_processed_and_removed(
-        self, tmp_path
-    ):
-        with given(
-            "an HTTP server serving a zstd PGN archive and a pipeline over its URL"
-        ):
-            games = b"".join(_three_game_stream())
-            server = RangedHttpServer(_zst(games))
-            server.start()
-            pipeline = make_pipeline(data_path=None, archive_urls=[server.url])
-            output_dir = tmp_path / "out"
+    def test_url_zst_stream_is_decompressed_and_never_written_to_disk(self):
+        with given("a URL work item whose response body is zstd-compressed PGN"):
+            raw = b"[Event z]\n\n1. c4 *"
+            pipeline = make_pipeline(
+                data_path=None, archive_urls=["https://x/r.pgn.zst"]
+            )
+            item = WorkItem(
+                archive_id="r", provider="lichess", url="https://x/r.pgn.zst"
+            )
 
-        with when("the pipeline runs in dry-run mode"):
-            try:
-                result = pipeline.run(dry_run=True, output_dir=str(output_dir))
-            finally:
-                server.stop()
+        with when("the pgn stream is opened over a mocked HTTP response"):
+            response = io.BytesIO(_zst(raw))
+            with patch(
+                "src.dataset.archive_pipeline.urllib.request.urlopen",
+                return_value=response,
+            ):
+                with pipeline._open_pgn_stream(item) as stream:
+                    data = stream.read()
 
-        with then(
-            "the archive was downloaded via ranged requests, processed, and the scratch file is gone"
-        ):
-            assert result.processed == ["test-archive"]
-            assert server.range_requests
-            meta_files = list(output_dir.glob("*/*/*.meta.json"))
-            assert meta_files
-            assert not list(output_dir.rglob("*.pgn.zst"))
+        with then("the stream yields the decompressed PGN"):
+            assert data == raw
         return
 
 

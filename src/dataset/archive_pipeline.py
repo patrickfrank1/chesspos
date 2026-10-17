@@ -21,7 +21,7 @@ from collections import deque
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import BinaryIO
 
@@ -33,7 +33,6 @@ from huggingface_hub import CommitOperationAdd, HfApi, hf_hub_download
 from src.dataset.batch_meta import BatchMeta, build_batch_meta, config_fingerprint
 from src.dataset.chunker import PgnChunker
 from src.dataset.config import DatasetConfig, PreprocessingConfig, SourceConfig
-from src.dataset.download import download_ranged
 from src.dataset.etl import ChessPositionDataset
 from src.dataset.source import ArchivePlanner, WorkItem, completed_archives
 
@@ -337,14 +336,6 @@ class ArchivePipeline:
         scratch = Path(tempfile.mkdtemp(prefix="chesspos-"))
         try:
             batch_files: list[str] = []
-            if item.provider == "lichess":
-                archive_file = scratch / f"{item.archive_id}.pgn.zst"
-                download_ranged(
-                    item.url,
-                    archive_file,
-                    num_connections=self.source_config.download_workers,
-                )
-                item = replace(item, path=str(archive_file))
             chunker = PgnChunker(self.source_config.chunk_target_mb * 1024 * 1024)
             max_inflight = max(1, self.preprocessing_config.worker_count)
             carry: dict = {"train": [], "test": [], "duplicates": 0}
@@ -406,13 +397,11 @@ class ArchivePipeline:
     def _open_pgn_stream(self, item: WorkItem) -> Iterator[BinaryIO]:
         """Yield a decompressed PGN byte stream for the work item.
 
-        Remote archives are downloaded to a scratch file by ``_process``
-        first, so in practice this opens local paths only. A bare URL item
-        (no ``path``) is still streamed over HTTP and ``.zst`` sources
-        (local or remote) are decompressed on the fly while the stream is
-        consumed.
+        Nothing is materialised on disk: remote archives are streamed over
+        HTTP and ``.zst`` sources (local or remote) are decompressed on the
+        fly while the stream is consumed.
         """
-        if item.provider == "lichess" and not item.path:
+        if item.provider == "lichess":
             raw: BinaryIO = urllib.request.urlopen(item.url)
             name = item.url or ""
         else:
