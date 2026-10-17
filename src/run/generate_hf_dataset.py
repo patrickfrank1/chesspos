@@ -86,7 +86,7 @@ def parse_args() -> argparse.Namespace:
         "--batch-size",
         type=int,
         default=None,
-        help="Number of positions per batch",
+        help="Number of games per batch",
     )
     parser.add_argument(
         "--train-ratio",

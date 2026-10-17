@@ -21,7 +21,7 @@ from collections import deque
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import BinaryIO
 
@@ -33,6 +33,7 @@ from huggingface_hub import CommitOperationAdd, HfApi, hf_hub_download
 from src.dataset.batch_meta import BatchMeta, build_batch_meta, config_fingerprint
 from src.dataset.chunker import PgnChunker
 from src.dataset.config import DatasetConfig, PreprocessingConfig, SourceConfig
+from src.dataset.download import download_ranged
 from src.dataset.etl import ChessPositionDataset
 from src.dataset.source import ArchivePlanner, WorkItem, completed_archives
 
@@ -205,33 +206,51 @@ class ArchivePipeline:
         batch_size: int,
         train_ratio: float,
         chunk_index: int,
-    ) -> list[Batch]:
+        carry: dict | None = None,
+        flush: bool = False,
+    ) -> tuple[list[Batch], dict]:
         """Sort, deduplicate, split and batch extracted game rows.
+
+        ``carry`` holds the not-yet-emitted remainder from previous chunks
+        (per split) plus a pending duplicates count. Only full
+        ``batch_size`` batches are emitted; the remainder is returned as
+        the new carry. An archive's final partial batch is produced by
+        calling this with ``rows=[]`` and ``flush=True`` at the end of the
+        stream.
 
         Rows are sorted by ``game_id`` so that duplicates are adjacent
         and every run produces identical batches. The ``utc_date`` key is
         carried into the batch metadata, not into the parquet schema.
         """
-        rows = sorted(rows, key=lambda r: r["game_id"])
-        deduped: list[dict] = []
-        duplicates = 0
-        last_id: str | None = None
+        carry = carry or {"train": [], "test": [], "duplicates": 0}
+        groups: dict[str, list[dict]] = {
+            "train": list(carry.get("train", [])),
+            "test": list(carry.get("test", [])),
+        }
         for row in rows:
-            if row["game_id"] == last_id:
-                duplicates += 1
-                continue
-            deduped.append(row)
-            last_id = row["game_id"]
-
-        groups: dict[str, list[dict]] = {"train": [], "test": []}
-        for row in deduped:
             split = ChessPositionDataset._split_for_game(row["game_id"], train_ratio)
             groups[split].append(row)
 
+        duplicates_total = int(carry.get("duplicates", 0))
         batches: list[Batch] = []
+        new_carry: dict = {"train": [], "test": [], "duplicates": 0}
         for split in ("train", "test"):
-            for seq, start in enumerate(range(0, len(groups[split]), batch_size)):
-                part = groups[split][start : start + batch_size]
+            rows_split = sorted(groups[split], key=lambda r: r["game_id"])
+            deduped: list[dict] = []
+            last_id: str | None = None
+            for row in rows_split:
+                if row["game_id"] == last_id:
+                    duplicates_total += 1
+                    continue
+                deduped.append(row)
+                last_id = row["game_id"]
+
+            emit_up_to = (
+                len(deduped) if flush else (len(deduped) // batch_size) * batch_size
+            )
+            emit_rows, new_carry[split] = deduped[:emit_up_to], deduped[emit_up_to:]
+            for seq, start in enumerate(range(0, len(emit_rows), batch_size)):
+                part = emit_rows[start : start + batch_size]
                 table = pa.table(
                     {
                         "packed": pa.array(
@@ -266,8 +285,10 @@ class ArchivePipeline:
                     )
                 )
         if batches:
-            batches[0].duplicates_dropped = duplicates
-        return batches
+            batches[0].duplicates_dropped = duplicates_total
+        else:
+            new_carry["duplicates"] = duplicates_total
+        return batches, new_carry
 
     def run(self, dry_run: bool = False, output_dir: str | None = None) -> RunResult:
         completed = self._completed(dry_run, output_dir)
@@ -316,30 +337,48 @@ class ArchivePipeline:
         scratch = Path(tempfile.mkdtemp(prefix="chesspos-"))
         try:
             batch_files: list[str] = []
+            if item.provider == "lichess":
+                archive_file = scratch / f"{item.archive_id}.pgn.zst"
+                download_ranged(
+                    item.url,
+                    archive_file,
+                    num_connections=self.source_config.download_workers,
+                )
+                item = replace(item, path=str(archive_file))
             chunker = PgnChunker(self.source_config.chunk_target_mb * 1024 * 1024)
             max_inflight = max(1, self.preprocessing_config.worker_count)
+            carry: dict = {"train": [], "test": [], "duplicates": 0}
+            last_chunk_index = -1
+
+            def emit(batches: list[Batch]) -> None:
+                for batch in batches:
+                    repo_parquet = self._emit_batch(
+                        batch,
+                        item,
+                        fingerprint,
+                        uploader,
+                        dry_run=dry_run,
+                        output_dir=output_dir,
+                        scratch=scratch,
+                    )
+                    if repo_parquet:
+                        batch_files.append(repo_parquet)
+                return
+
             with self._open_pgn_stream(item) as pgn:
                 with self._extractor() as extractor:
 
                     def on_chunk(chunk_index: int, rows: list[dict]) -> None:
-                        batches = self.build_batches(
+                        nonlocal carry, last_chunk_index
+                        last_chunk_index = chunk_index
+                        batches, carry = self.build_batches(
                             rows=rows,
                             batch_size=self.dataset_config.batch_size,
                             train_ratio=self.dataset_config.train_ratio,
                             chunk_index=chunk_index,
+                            carry=carry,
                         )
-                        for batch in batches:
-                            repo_parquet = self._emit_batch(
-                                batch,
-                                item,
-                                fingerprint,
-                                uploader,
-                                dry_run=dry_run,
-                                output_dir=output_dir,
-                                scratch=scratch,
-                            )
-                            if repo_parquet:
-                                batch_files.append(repo_parquet)
+                        emit(batches)
                         return
 
                     self._run_chunk_loop(
@@ -349,6 +388,15 @@ class ArchivePipeline:
                         max_inflight=max_inflight,
                         on_chunk=on_chunk,
                     )
+            final_batches, _ = self.build_batches(
+                rows=[],
+                batch_size=self.dataset_config.batch_size,
+                train_ratio=self.dataset_config.train_ratio,
+                chunk_index=last_chunk_index + 1,
+                carry=carry,
+                flush=True,
+            )
+            emit(final_batches)
             self._mark_complete(item, batch_files, uploader, dry_run, output_dir)
         finally:
             shutil.rmtree(scratch, ignore_errors=True)
@@ -358,11 +406,13 @@ class ArchivePipeline:
     def _open_pgn_stream(self, item: WorkItem) -> Iterator[BinaryIO]:
         """Yield a decompressed PGN byte stream for the work item.
 
-        Nothing is materialised on disk: remote archives are streamed over
-        HTTP and ``.zst`` sources (local or remote) are decompressed on the
-        fly while the stream is consumed.
+        Remote archives are downloaded to a scratch file by ``_process``
+        first, so in practice this opens local paths only. A bare URL item
+        (no ``path``) is still streamed over HTTP and ``.zst`` sources
+        (local or remote) are decompressed on the fly while the stream is
+        consumed.
         """
-        if item.provider == "lichess":
+        if item.provider == "lichess" and not item.path:
             raw: BinaryIO = urllib.request.urlopen(item.url)
             name = item.url or ""
         else:

@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 import zstandard
 
 from bdd import given, then, when
+from http_support import RangedHttpServer
 from src.dataset.archive_pipeline import (
     ArchivePipeline,
     BatchUploader,
@@ -71,77 +72,136 @@ class TestBuildBatches:
             rows = make_rows(250)
 
         with when("the rows are built into batches for chunk 0"):
-            batches = ArchivePipeline.build_batches(
+            batches, carry = ArchivePipeline.build_batches(
                 rows=rows, batch_size=100, train_ratio=0.8, chunk_index=0
             )
 
-        with then("each split produces bounded, game_id-sorted batches"):
-            by_split = {}
+        with then(
+            "only full 100-game batches are emitted and the remainder is carried"
+        ):
+            emitted = sum(b.table.num_rows for b in batches)
+            assert emitted + len(carry["train"]) + len(carry["test"]) == 250
+            assert all(b.table.num_rows == 100 for b in batches)
+            assert set(b.split for b in batches) <= {"train", "test"}
             for batch in batches:
-                by_split.setdefault(batch.split, []).extend(batch)
-            assert set(by_split) == {"train", "test"}
-            assert sum(len(b) for b in batches) == 250
-            for batch in batches:
-                assert batch.table.num_rows <= 100
                 ids = batch.table.column("game_id").to_pylist()
                 assert ids == sorted(ids)
         return
 
-    def test_batch_file_names_are_numbered_per_chunk_and_split(self):
+    def test_carry_combines_with_next_chunk_rows_to_fill_a_batch(self):
+        with given(
+            "a chunk 0 with 6 games carried over and a chunk 1 with 8 new games"
+        ):
+            carry = {"train": make_rows(6), "test": []}
+            rows = make_rows(8, game_ids=[f"{i:016x}" for i in range(100, 108)])
+
+        with when("chunk 1 is built with batch size 10"):
+            batches, new_carry = ArchivePipeline.build_batches(
+                rows=rows, batch_size=10, train_ratio=1.0, chunk_index=1, carry=carry
+            )
+
+        with then(
+            "one full batch is emitted from both chunks' games and 4 are carried"
+        ):
+            assert len(batches) == 1
+            ids = batches[0].table.column("game_id").to_pylist()
+            assert len(ids) == 10
+            assert set(ids) == {f"{i:016x}" for i in range(6)} | {
+                f"{i:016x}" for i in range(100, 104)
+            }
+            assert len(new_carry["train"]) == 4
+            assert new_carry["duplicates"] == 0
+        return
+
+    def test_final_flush_emits_the_remaining_partial_batch(self):
+        with given("7 carried games and no further rows"):
+            carry = {"train": make_rows(7), "test": []}
+
+        with when("the archive end flushes the accumulator"):
+            batches, new_carry = ArchivePipeline.build_batches(
+                rows=[],
+                batch_size=10,
+                train_ratio=1.0,
+                chunk_index=5,
+                carry=carry,
+                flush=True,
+            )
+
+        with then("a single partial batch is emitted and the carry is empty"):
+            assert len(batches) == 1
+            assert batches[0].table.num_rows == 7
+            assert batches[0].chunk_index == 5
+            assert new_carry == {"train": [], "test": [], "duplicates": 0}
+        return
+
+    def test_duplicate_games_are_dropped_across_chunks(self):
+        with given("a game that appears in two different chunks"):
+            rows_a = make_rows(game_ids=["a" * 16, "b" * 16])
+            rows_b = make_rows(game_ids=["b" * 16, "c" * 16])
+
+        with when("both chunks are built with carry-over and flushed"):
+            _, carry = ArchivePipeline.build_batches(
+                rows=rows_a, batch_size=10, train_ratio=1.0, chunk_index=0
+            )
+            batches, carry = ArchivePipeline.build_batches(
+                rows=rows_b, batch_size=10, train_ratio=1.0, chunk_index=1, carry=carry
+            )
+            emitted, carry = ArchivePipeline.build_batches(
+                rows=[],
+                batch_size=10,
+                train_ratio=1.0,
+                chunk_index=2,
+                carry=carry,
+                flush=True,
+            )
+
+        with then("the duplicate is dropped once and counted on the emitted batch"):
+            all_batches = batches + emitted
+            assert len(all_batches) == 1
+            ids = all_batches[0].table.column("game_id").to_pylist()
+            assert ids == sorted(["a" * 16, "b" * 16, "c" * 16])
+            assert all_batches[0].duplicates_dropped == 1
+        return
+
+    def test_batch_naming_uses_completion_chunk_and_per_call_seq(self):
         with given("260 game rows and a batch size of 100"):
             rows = make_rows(260)
 
         with when("the rows are built into batches for chunk 2"):
-            batches = ArchivePipeline.build_batches(
+            batches, _ = ArchivePipeline.build_batches(
                 rows=rows, batch_size=100, train_ratio=0.8, chunk_index=2
             )
 
-        with then("sequences restart per split and encode the chunk index"):
-            train_seqs = [b.seq for b in batches if b.split == "train"]
-            test_seqs = [b.seq for b in batches if b.split == "test"]
+        with then("each batch records the chunk that completed it, seq in call order"):
             assert all(b.chunk_index == 2 for b in batches)
+            train_seqs = [b.seq for b in batches if b.split == "train"]
             assert train_seqs == sorted(train_seqs)
-            assert test_seqs == sorted(test_seqs)
-            assert 2 in train_seqs or 2 in test_seqs  # seq 2 exists for a 3-file split
-        return
-
-    def test_duplicate_games_are_dropped_within_chunk(self):
-        with given("rows containing an exact duplicate game"):
-            ids = [f"{i:016x}" for i in range(4)]
-            rows = make_rows(game_ids=ids + [ids[0]])
-
-        with when("the rows are built into batches"):
-            batches = ArchivePipeline.build_batches(
-                rows=rows, batch_size=100, train_ratio=0.8, chunk_index=0
-            )
-
-        with then("the duplicate is dropped and counted"):
-            total = sum(len(b) for b in batches)
-            duplicates = sum(b.duplicates_dropped for b in batches)
-            assert total == 4
-            assert duplicates == 1
         return
 
     def test_batches_are_deterministic(self):
-        with given("the same rows built twice"):
+        with given("the same rows and carry built twice"):
             rows = make_rows(50)
+            carry = {"train": make_rows(game_ids=["d" * 16]), "test": []}
 
         with when("build_batches runs twice"):
-            first = ArchivePipeline.build_batches(
-                rows=rows, batch_size=10, train_ratio=0.8, chunk_index=0
+            first_batches, first_carry = ArchivePipeline.build_batches(
+                rows=rows, batch_size=10, train_ratio=0.8, chunk_index=0, carry=carry
             )
-            second = ArchivePipeline.build_batches(
-                rows=rows, batch_size=10, train_ratio=0.8, chunk_index=0
+            second_batches, second_carry = ArchivePipeline.build_batches(
+                rows=rows, batch_size=10, train_ratio=0.8, chunk_index=0, carry=carry
             )
 
-        with then("identical splits and game ids are produced"):
-            for b1, b2 in zip(first, second):
+        with then("identical splits, game ids and carries are produced"):
+            for b1, b2 in zip(first_batches, second_batches):
                 assert b1.split == b2.split
                 assert b1.seq == b2.seq
                 assert (
                     b1.table.column("game_id").to_pylist()
                     == b2.table.column("game_id").to_pylist()
                 )
+            assert [r["game_id"] for r in first_carry["train"]] == [
+                r["game_id"] for r in second_carry["train"]
+            ]
         return
 
 
@@ -332,27 +392,32 @@ class TestOpenPgnStream:
             assert not list(tmp_path.glob("*.pgn"))
         return
 
-    def test_url_zst_stream_is_decompressed_and_never_written_to_disk(self):
-        with given("a URL work item whose response body is zstd-compressed PGN"):
-            raw = b"[Event z]\n\n1. c4 *"
-            pipeline = make_pipeline(
-                data_path=None, archive_urls=["https://x/r.pgn.zst"]
-            )
-            item = WorkItem(
-                archive_id="r", provider="lichess", url="https://x/r.pgn.zst"
-            )
+    def test_url_archive_downloaded_to_scratch_then_processed_and_removed(
+        self, tmp_path
+    ):
+        with given(
+            "an HTTP server serving a zstd PGN archive and a pipeline over its URL"
+        ):
+            games = b"".join(_three_game_stream())
+            server = RangedHttpServer(_zst(games))
+            server.start()
+            pipeline = make_pipeline(data_path=None, archive_urls=[server.url])
+            output_dir = tmp_path / "out"
 
-        with when("the pgn stream is opened over a mocked HTTP response"):
-            response = io.BytesIO(_zst(raw))
-            with patch(
-                "src.dataset.archive_pipeline.urllib.request.urlopen",
-                return_value=response,
-            ):
-                with pipeline._open_pgn_stream(item) as stream:
-                    data = stream.read()
+        with when("the pipeline runs in dry-run mode"):
+            try:
+                result = pipeline.run(dry_run=True, output_dir=str(output_dir))
+            finally:
+                server.stop()
 
-        with then("the stream yields the decompressed PGN"):
-            assert data == raw
+        with then(
+            "the archive was downloaded via ranged requests, processed, and the scratch file is gone"
+        ):
+            assert result.processed == ["test-archive"]
+            assert server.range_requests
+            meta_files = list(output_dir.glob("*/*/*.meta.json"))
+            assert meta_files
+            assert not list(output_dir.rglob("*.pgn.zst"))
         return
 
 

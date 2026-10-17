@@ -103,3 +103,18 @@ class TestSourceConfig:
         with then("a positive default chunk target is used"):
             assert target > 0
         return
+
+    def test_download_workers_default(self):
+        with given("a url source without an explicit download worker count"):
+            config = SourceConfig(
+                archive_urls=[
+                    "https://database.lichess.org/standard/lichess_db_standard_rated_2023-01.pgn.zst"
+                ]
+            )
+
+        with when("the download worker count is inspected"):
+            workers = config.download_workers
+
+        with then("it defaults to 8 parallel connections"):
+            assert workers == 8
+        return

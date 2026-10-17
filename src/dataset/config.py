@@ -165,6 +165,7 @@ class SourceConfig:
     data_path: str | None = None
     archive_urls: list[str] | None = None
     chunk_target_mb: int = 256
+    download_workers: int = 8
 
     def __post_init__(self):
         has_path = self.data_path is not None
@@ -177,6 +178,8 @@ class SourceConfig:
                     raise ValueError("archive_urls must contain non-empty strings")
         if self.chunk_target_mb <= 0:
             raise ValueError("chunk_target_mb must be positive")
+        if self.download_workers <= 0:
+            raise ValueError("download_workers must be positive")
         return
 
     def to_json(self) -> str:
