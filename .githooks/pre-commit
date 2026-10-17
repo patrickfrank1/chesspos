@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Pre-commit hook: run ruff format + lint before a commit is created.
+set -e
+
+uv run ruff format .
+git add -u
+uv run ruff check .

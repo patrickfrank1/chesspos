@@ -6,7 +6,7 @@ Guidance for AI agents (and humans) working in this repository.
 
 `chesspos` learns an embedding for chess positions. PGN games are parsed into
 positions, encoded, published to a HuggingFace dataset repo, and consumed by a
-Keras model for self-supervised training. The resulting embeddings feed
+PyTorch model for self-supervised training. The resulting embeddings feed
 downstream tasks (semantic search, evaluation, pattern classification).
 
 ## Tech Stack
@@ -22,8 +22,6 @@ downstream tasks (semantic search, evaluation, pattern classification).
   `src/modeling/transformer.py`). Torch is installed via extras:
   `uv sync --extra cpu` (CPU builds) or `uv sync --extra gpu` (CUDA builds);
   the two extras are mutually exclusive.
-- **TensorFlow and keras-nlp have been removed** from the dependencies, and the
-  legacy TensorFlow modules have been deleted. Do not add `tensorflow` back.
 
 ### Data processing
 - **python-chess** for PGN parsing, board manipulation, and FEN handling.
@@ -33,14 +31,10 @@ downstream tasks (semantic search, evaluation, pattern classification).
 - **NumPy** for in-memory tensors.
 
 ### Vector database
-- **Not finalized.** The current implementation in `src/search/db.py` uses
-  **Milvus** via `pymilvus` (the old indexer was deleted together with the
-  legacy TensorFlow modules). Milvus is **deprecated and will be removed** —
-  do not extend it.
-- **LanceDB** is the leading candidate replacement (offers built-in vector
-  indexes and ML-framework integration). Treat the vector store layer as in
-  flux; new work should be written behind an abstraction so the backend can be
-  swapped once a decision is made.
+- **Not finalized.** Treat the vector store layer as in flux; new work should
+  be written behind an abstraction so the backend can be swapped once a
+  decision is made. **LanceDB** is the leading candidate (offers built-in
+  vector indexes and ML-framework integration).
 
 ### Experiment tracking
 - **MLflow** (`mlflow ui` to view runs).
@@ -65,31 +59,76 @@ entity-relationship diagram and runtime flow. Summary:
   only encoder (no ABC/registry/config); it hardcodes the token stream format:
   variable-length `int16` segments, vocab of 806 tokens.
 
+## Development Paradigms
+
+1. **BDD-style testing (mandatory).** Every piece of code is tested. Use the
+   Gherkin Given/When/Then structure with plain **pytest** — no pytest-bdd or
+   other extra dependency. Structure each test as:
+
+   ```python
+   def test_token_stream_encoder_roundtrip():
+       # Given a board and an encoder
+       board = chess.Board()
+       encoder = TokenStreamEncoder()
+
+       # When the board is encoded and decoded
+       segment = encoder.encode(board)
+       decoded = encoder.decode(segment)
+
+       # Then the decoded board matches the original
+       assert decoded == board
+   ```
+
+   For a **new feature**, follow this order strictly:
+   1. Write the failing test(s) in Gherkin Given/When/Then format.
+   2. Let the user review and correct the tests.
+   3. Only then implement the feature until the tests pass.
+
+   Writing the tests first is also a requirements-clarification step: it forces
+   the feature to be understood before it is implemented. Do not skip or invert
+   this order without asking the user.
+
+2. **Defer to the user when blocked.** If unsure, stuck, or lacking
+   permissions, stop and ask the user. Never circumvent a blocker in a hacky
+   or insecure way, and never escalate privileges to get around one.
+
+3. **Never handle secrets.** Never read secrets from `.env` or any other
+   source (see Secrets Handling below), and never write secrets to a
+   potentially public channel (terminal, logs, issues, PRs, commits, chats). Code may
+   read environment variables at runtime (e.g. to authenticate with an API) —
+   values must simply never be exposed.
+
+4. **Python style.** Follow PEP 8 and the Google Python Style Guide where they
+   agree; ruff is the single source of truth for formatting and linting and is
+   enforced by the pre-commit hook and CI. The hook lives in
+   [`.githooks/pre-commit`](.githooks/pre-commit); enable it with
+   `git config core.hooksPath .githooks`.
+
 ## Development Workflow
 
 1. **Branch from `main`** for every feature: `feature/<short-description>`.
-2. **Optionally link to a GitHub issue** and/or an **OpenSpec** change
-   (`.opencode/skills/openspec-*` and `openspec/` directory). Use the
-   `openspec-new-change` / `openspec-apply-change` skills when working through
-   an OpenSpec change.
-3. **Implement** following existing conventions in `src/dataset/` — dataclasses
+2. **Optionally link to a GitHub issue.**
+3. **Write failing BDD tests first** (see Development Paradigms #1) and let
+   the user review them before any implementation.
+4. **Implement** following existing conventions in `src/dataset/` — dataclasses
    for config, ABC + registry for pluggable components, static methods for Ray
-   callables.
-4. **Verify locally** before pushing:
+   callables — until the tests pass.
+5. **Verify locally** before pushing:
    - `uv sync --extra cpu` (torch is an extra, not a base dependency)
    - `uv run ruff format && uv run ruff check`
    - `uv run pytest`
    - If you add a new library, confirm it resolves in `uv.lock`.
-5. **Open a PR** into `main`. A CI pipeline runs the test suite on every merge
-   to `main`; PRs are expected to be green before merge.
-6. **Squash-merge** completed features into `main`.
+6. **Open a PR** into `main`. A CI pipeline lints (ruff format + check) and
+   runs pytest on every PR into `main` and on every push to `main`; PRs are
+   expected to be green before merge.
+7. **Squash-merge** completed features into `main`.
 
 ## Using Context7 for Dependency Documentation
 
 This repo has the **Context7** MCP server configured in `opencode.json`. Use it
 to fetch current documentation for any dependency instead of guessing from
 training data — especially for libraries with evolving APIs like
-`python-chess`, `lancedb`, `keras-nlp`, `ray`, or `datasets`.
+`python-chess`, `lancedb`, `ray`, or `datasets`.
 
 How to use it:
 
@@ -108,7 +147,6 @@ When to use Context7:
 - Adding or upgrading a dependency.
 - Touching an unfamiliar library (e.g. the first time you write LanceDB code).
 - Debugging a library-specific error.
-- Migrating between backends (e.g. TensorFlow ↔ PyTorch via Keras 3).
 
 When **not** to use it: refactoring business logic, writing tests against
 internal modules, or general programming concepts — those don't need external
@@ -132,14 +170,13 @@ docs.
 ```
 src/
   dataset/        # ETL + HF dataset client + position encoders (current focus)
-  modeling/       # Keras model definitions
-  training/       # Data generators for training
-  search/         # Vector store (Milvus, deprecated)
+  modeling/       # PyTorch model definitions
+  training/       # Data pipeline for training
+  search/         # Vector store (legacy, pending replacement)
   preprocessing/  # Legacy board representation / extraction helpers
   evaluation/     # Visualisation
   run/            # CLI entry points (generate_hf_dataset.py, train.py, …)
   utils/          # fileops, legacy data_loader
 docs/             # Pipeline docs, research notes, framework evaluations
-openspec/         # OpenSpec change specs
 test/             # pytest suite
 ```

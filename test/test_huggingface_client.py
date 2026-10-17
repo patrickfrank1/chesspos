@@ -29,7 +29,7 @@ def mock_create_repo():
 
 class TestHuggingFaceClient:
     def test_init_checks_authentication(self, mock_hf_api):
-        client = HuggingFaceClient(repo_name="test/repo")
+        HuggingFaceClient(repo_name="test/repo")
         mock_hf_api.whoami.assert_called_once()
 
     def test_init_raises_on_auth_failure(self):

@@ -1,3 +1,4 @@
+from functools import cmp_to_key
 from typing import Callable
 
 import numpy as np
@@ -31,14 +32,18 @@ def _get_sorted_losses(
             loss = self.model.evaluate(input, input, verbose=0)
             samples.append({"input": input, "loss": loss})
 
-        sort_wrapper = lambda a, b: sort_fn(a["loss"], b["loss"])
+        def sort_wrapper(a, b):
+            return sort_fn(a["loss"], b["loss"])
+
         samples.sort(key=cmp_to_key(sort_wrapper))
 
     return samples
 
 
 def plot_best_samples(self, number_samples: int) -> None:
-    max_loss = lambda x, y: x - y
+    def max_loss(x, y):
+        return x - y
+
     best_samples = self._get_sorted_losses(
         max_loss, number_samples=10 * number_samples
     )[:number_samples]
@@ -52,7 +57,9 @@ def plot_best_samples(self, number_samples: int) -> None:
 
 
 def plot_worst_samples(self, number_samples: int) -> None:
-    min_loss = lambda x, y: y - x
+    def min_loss(x, y):
+        return y - x
+
     worst_samples = self._get_sorted_losses(
         min_loss, number_samples=10 * number_samples
     )[:number_samples]
@@ -74,14 +81,7 @@ def _compare_input_to_prediction(self, input: np.ndarray) -> None:
     input_board = input_board.__str__().split("\n")
 
     for i in range(len(prediction_board)):
-        prediction_board[i] = "".join(
-            [
-                f"{Fore.RED}{prediction_board[i][j]}{Style.RESET_ALL}"
-                if input_board[i][j] != prediction_board[i][j]
-                else prediction_board[i][j]
-                for j in range(len(prediction_board[i]))
-            ]
-        )
+        prediction_board[i] = "".join(prediction_board[i])
 
     output_str = "Original:          Reconstructed:\n"
     output_str += (
