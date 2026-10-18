@@ -199,10 +199,18 @@ def build_scaling_config(config: RayTrainingConfig) -> ScalingConfig:
 
 
 def build_run_config(config: RayTrainingConfig) -> RunConfig:
-    """Build the Ray Train run config (naming, storage, checkpoints)."""
+    """Build the Ray Train run config (naming, storage, checkpoints).
+
+    The storage path must be a URI with a scheme (or an absolute path) for
+    Ray's storage API, so relative paths are resolved against the current
+    working directory.
+    """
+    storage_path = Path(config.storage_path or "ray_results").expanduser()
+    if not storage_path.is_absolute():
+        storage_path = Path.cwd() / storage_path
     return RunConfig(
         name=config.run_name or "chesspos-ray",
-        storage_path=config.storage_path or "ray_results",
+        storage_path=str(storage_path),
         checkpoint_config=CheckpointConfig(num_to_keep=config.checkpoints_to_keep),
     )
 

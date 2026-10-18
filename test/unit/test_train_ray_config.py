@@ -1,9 +1,11 @@
 import pytest
+from pathlib import Path
 
 from bdd import given, then, when
 from src.modeling.transformer import TransformerConfig
 from src.run.train_ray import (
     RayTrainingConfig,
+    build_run_config,
     load_yaml_overrides,
     parse_args,
     resolve_config,
@@ -201,4 +203,45 @@ class TestRayTrainingConfig:
                 max_seq_len=128,
                 max_segments=16,
             )
+        return
+
+
+class TestBuildRunConfig:
+    def test_storage_path_defaults_to_absolute_local_path(self, monkeypatch, tmp_path):
+        with given("a config with no storage_path set and a working directory"):
+            monkeypatch.chdir(tmp_path)
+            config = RayTrainingConfig()
+
+        with when("the run config is built"):
+            run_config = build_run_config(config)
+
+        with then("the storage path is an absolute local path under the cwd"):
+            storage_path = Path(run_config.storage_path)
+            assert storage_path.is_absolute()
+            assert storage_path == tmp_path / "ray_results"
+        return
+
+    def test_relative_storage_path_is_resolved_against_cwd(self, monkeypatch, tmp_path):
+        with given("a config with a relative storage_path and a working directory"):
+            monkeypatch.chdir(tmp_path)
+            config = RayTrainingConfig(storage_path="runs/storage")
+
+        with when("the run config is built"):
+            run_config = build_run_config(config)
+
+        with then("the storage path is resolved against the cwd"):
+            storage_path = Path(run_config.storage_path)
+            assert storage_path.is_absolute()
+            assert storage_path == tmp_path / "runs" / "storage"
+        return
+
+    def test_absolute_storage_path_is_kept(self):
+        with given("a config with an absolute storage_path"):
+            config = RayTrainingConfig(storage_path="/tmp/ray-results")
+
+        with when("the run config is built"):
+            run_config = build_run_config(config)
+
+        with then("the storage path is unchanged"):
+            assert Path(run_config.storage_path) == Path("/tmp/ray-results")
         return

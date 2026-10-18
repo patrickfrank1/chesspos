@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from ray.train import RunConfig, ScalingConfig
 from ray.train.torch import TorchTrainer
 
@@ -64,9 +66,9 @@ class TestBuildRunConfig:
         with when("the run config is built"):
             run_config = build_run_config(config)
 
-        with then("the default run name and storage path are used"):
+        with then("the default run name and an absolute default storage path are used"):
             assert run_config.name == "chesspos-ray"
-            assert str(run_config.storage_path) == "ray_results"
+            assert str(run_config.storage_path) == str(Path.cwd() / "ray_results")
         return
 
     def test_checkpoints_to_keep(self):
