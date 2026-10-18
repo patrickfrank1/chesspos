@@ -34,6 +34,19 @@ class TestArchivePlanner:
             assert items[1].path.endswith("b.pgn.zst")
         return
 
+    def test_plan_from_local_directory_ignores_non_pgn_zst(self, tmp_path):
+        with given("a local directory containing a .pgn file and a non-pgn .zst file"):
+            (tmp_path / "a.pgn").write_bytes(b"")
+            (tmp_path / "lichess_db_puzzle.csv.zst").write_bytes(b"")
+            planner = ArchivePlanner(SourceConfig(data_path=str(tmp_path)))
+
+        with when("the plan is built"):
+            items = planner.plan(completed=set())
+
+        with then("only the .pgn file becomes a work item"):
+            assert [item.archive_id for item in items] == ["a"]
+        return
+
     def test_plan_from_urls(self):
         with given("a source with two lichess archive URLs"):
             urls = [

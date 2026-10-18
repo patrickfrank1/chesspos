@@ -14,6 +14,7 @@ ephemeral disks.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import tempfile
 import threading
@@ -67,7 +68,10 @@ class _RayExtractor:
         import ray
 
         if not ray.is_initialized():
-            ray.init(address="local", ignore_reinit_error=True)
+            ray.init(
+                address=os.environ.get("RAY_ADDRESS") or "local",
+                ignore_reinit_error=True,
+            )
         remote = ray.remote(ChessPositionDataset._extract_positions)
         self._remote = remote
         self._subsampling = subsampling

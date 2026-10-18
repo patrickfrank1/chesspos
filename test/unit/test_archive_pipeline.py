@@ -399,6 +399,7 @@ class TestBatchNumbering:
 class TestRayExtractor:
     def test_ray_initialized_as_fresh_local_cluster(self, monkeypatch):
         with given("a stubbed ray module that records init kwargs"):
+            monkeypatch.delenv("RAY_ADDRESS", raising=False)
             init_kwargs = {}
 
             class FakeRemote:
@@ -433,6 +434,42 @@ class TestRayExtractor:
         with then("ray joins no ambient cluster and starts a fresh local one"):
             assert init_kwargs.get("address") == "local"
             assert rows == ["row"]
+
+    def test_ray_joins_cluster_from_ray_address_env(self, monkeypatch):
+        with given("RAY_ADDRESS points at an existing cluster"):
+            monkeypatch.setenv("RAY_ADDRESS", "127.0.0.1:6379")
+            init_kwargs = {}
+
+            class FakeRemote:
+                def remote(self, *args, **kwargs):
+                    return ("object-ref", args, kwargs)
+
+            class FakeRay:
+                @staticmethod
+                def remote(fn):
+                    return FakeRemote()
+
+                @staticmethod
+                def is_initialized():
+                    return False
+
+                @staticmethod
+                def init(**kwargs):
+                    init_kwargs.update(kwargs)
+                    return
+
+                @staticmethod
+                def get(obj):
+                    return ["row"]
+
+            monkeypatch.setitem(sys.modules, "ray", FakeRay)
+
+        with when("a ray extractor is created"):
+            _RayExtractor(None, None)
+
+        with then("ray connects to the cluster named by RAY_ADDRESS"):
+            assert init_kwargs.get("address") == "127.0.0.1:6379"
+        return
 
 
 def _zst(payload: bytes) -> bytes:

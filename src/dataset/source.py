@@ -76,6 +76,6 @@ class ArchivePlanner:
                     path=str(p),
                 )
                 for p in sorted(root.iterdir())
-                if p.is_file() and p.suffix in (".pgn", ".zst")
+                if p.is_file() and p.name.endswith((".pgn", ".pgn.zst"))
             ]
         return [item for item in items if item.archive_id not in completed]

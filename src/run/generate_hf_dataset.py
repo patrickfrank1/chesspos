@@ -30,6 +30,7 @@ def _get_nested(data: dict[str, Any], key: str) -> Any:
         "archive_urls",
         "chunk_target_mb",
         "output_dir",
+        "pipeline",
     }
     runtime_fields = {"num_batches", "dry_run", "resume", "create_card"}
     preprocessing_fields = {"worker_count", "memory_limit_mb", "debug"}
@@ -116,6 +117,18 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=None,
         help="Approximate size of decompressed chunks cut from archives (MB)",
+    )
+    parser.add_argument(
+        "--pipeline",
+        type=str,
+        choices=["batch", "archive"],
+        default=None,
+        help=(
+            "Pipeline to use: 'batch' processes data_path with the flat "
+            "batch pipeline, 'archive' treats each .pgn/.pgn.zst file in "
+            "data_path as its own archive (grouped shards, resume/skip). "
+            "Defaults to 'archive' when --archive-urls is given, else 'batch'"
+        ),
     )
     parser.add_argument(
         "--dry-run",
@@ -224,6 +237,11 @@ def main() -> int:
     chunk_target_mb: int = _resolve(
         args.chunk_target_mb, _yaml_val(yaml_cfg, "chunk_target_mb"), 256
     )
+    pipeline: str = _resolve(
+        args.pipeline,
+        _yaml_val(yaml_cfg, "pipeline"),
+        "archive" if archive_urls else "batch",
+    )
 
     tiers_yaml = _yaml_val(yaml_cfg, "tiers")
     if tiers_yaml is not None:
@@ -252,18 +270,23 @@ def main() -> int:
         data_path=data_path,
     )
 
-    if archive_urls:
+    if pipeline == "archive":
         if not output_dir:
             output_dir = "data/processed"
         source_config = SourceConfig(
-            archive_urls=archive_urls, chunk_target_mb=chunk_target_mb
+            data_path=None if archive_urls else data_path,
+            archive_urls=archive_urls,
+            chunk_target_mb=chunk_target_mb,
         )
         pipeline = ArchivePipeline(
             dataset_config=dataset_config,
             preprocessing_config=preprocessing_config,
             source_config=source_config,
         )
-        print(f"Processing {len(archive_urls)} archive(s) for {repo_name}")
+        if archive_urls:
+            print(f"Processing {len(archive_urls)} archive(s) for {repo_name}")
+        else:
+            print(f"Processing archives in {data_path} for {repo_name}")
         print(f"Chunk target: {chunk_target_mb}MB")
         print(f"Workers: {worker_count}, Memory: {memory_limit_mb}MB")
         print(
