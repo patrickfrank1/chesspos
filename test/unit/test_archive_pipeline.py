@@ -600,6 +600,19 @@ def _three_game_stream() -> io.BytesIO:
     return io.BytesIO(games)
 
 
+class _DirRecordingChunker(PgnChunker):
+    """Chunker that remembers the directory its chunks are written to."""
+
+    def __init__(self, chunk_target_bytes: int):
+        super().__init__(chunk_target_bytes)
+        self.seen_dirs: list[Path] = []
+        return
+
+    def iter_chunks(self, stream, out_dir):
+        self.seen_dirs.append(Path(out_dir))
+        return super().iter_chunks(stream, out_dir)
+
+
 class TestChunkPipeline:
     def test_chunks_are_consumed_in_production_order(self):
         with given(
@@ -651,4 +664,31 @@ class TestChunkPipeline:
 
         with then("no more than 2 extractions are ever outstanding at once"):
             assert extractor.max_outstanding <= 2
+        return
+
+    def test_chunk_files_are_deleted_after_submission(self):
+        with given("a chunk loop over a 3-game stream whose chunk dir is observable"):
+            pipeline = make_pipeline()
+            chunker = _DirRecordingChunker(10)
+            extractor = _FakeExtractor()
+            files_per_chunk: list[int] = []
+
+            def on_chunk(index: int, rows: list[dict]) -> None:
+                chunk_dir = chunker.seen_dirs[0]
+                files_per_chunk.append(len(list(chunk_dir.glob("chunk_*.pgn"))))
+                return
+
+        with when("the chunk loop runs to completion"):
+            pipeline._run_chunk_loop(
+                _three_game_stream(),
+                chunker,
+                extractor,
+                max_inflight=3,
+                on_chunk=on_chunk,
+            )
+
+        with then("every chunk file is already deleted when its result is consumed"):
+            # A 17GB zst archive produces ~90GB of chunks; keeping them on
+            # disk until the end of the archive filled the disk overnight.
+            assert files_per_chunk == [0, 0, 0]
         return

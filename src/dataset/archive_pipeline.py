@@ -506,6 +506,10 @@ class ArchivePipeline:
                 chunker.iter_chunks(pgn, out_dir=chunk_dir)
             ):
                 handle = extractor.submit(chunk_path.read_bytes())
+                # The bytes are now in flight for extraction; the file is
+                # dead weight (a large archive would otherwise accumulate
+                # its entire decompressed size on disk before finishing).
+                chunk_path.unlink()
                 pending.append((chunk_index, handle))
                 while len(pending) >= max_inflight:
                     index, done = pending.popleft()
