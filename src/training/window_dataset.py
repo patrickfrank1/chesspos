@@ -8,7 +8,7 @@ import pyarrow.parquet as pq
 import torch
 from torch.utils.data import Dataset
 
-from src.dataset.token_stream import CLS, PAD, SEP
+from src.dataset.token_stream import CLS, PAD, SEP, VOCAB_SIZE
 from src.modeling.masking import IGNORE_INDEX, MaskingConfig, mask_stream
 
 
@@ -25,11 +25,56 @@ class WindowDatasetConfig:
     masking: MaskingConfig = field(default_factory=MaskingConfig)
     seed: int | None = None
     apply_masking: bool = True
+    force_mode: str | None = None
+    balanced_modes: bool = True
+    unigram_weights: np.ndarray | None = None
+
+
+def build_mode_pattern(masking: MaskingConfig, period: int = 20) -> list[str]:
+    """Deterministic per-index mode pattern approximating the mode probabilities."""
+    probs = {
+        "random": masking.p_random,
+        "board": masking.p_board,
+        "span": masking.p_span,
+    }
+    total = sum(probs.values())
+    if total <= 0:
+        return ["random"] * period
+    scaled = {mode: p / total * period for mode, p in probs.items()}
+    counts = {mode: int(value) for mode, value in scaled.items()}
+    order = sorted(scaled, key=lambda mode: scaled[mode] - counts[mode], reverse=True)
+    fill = 0
+    while sum(counts.values()) < period:
+        counts[order[fill % len(order)]] += 1
+        fill += 1
+    pattern: list[str] = []
+    for mode in ("random", "board", "span"):
+        pattern.extend([mode] * counts[mode])
+    return pattern
+
+
+def unigram_counts(games: list[list[np.ndarray]]) -> np.ndarray:
+    counts = np.zeros(VOCAB_SIZE, dtype=np.int64)
+    for game in games:
+        for segment in game:
+            counts += np.bincount(segment, minlength=VOCAB_SIZE)
+    return counts
+
+
+def inverse_frequency_weights(
+    counts: np.ndarray, alpha: float = 1.0, cap: float = 100.0
+) -> np.ndarray:
+    counts = np.asarray(counts, dtype=np.float64)
+    p = (counts + alpha) / (counts.sum() + alpha * counts.size)
+    w = 1.0 / p
+    w /= w.min()
+    return np.minimum(w, cap).astype(np.float32)
 
 
 class WindowDataset(Dataset):
     def __init__(self, config: WindowDatasetConfig):
         self.config = config
+        self.mode_pattern = build_mode_pattern(config.masking)
         if config.games is not None:
             self.games = config.games
             return
@@ -45,14 +90,31 @@ class WindowDataset(Dataset):
         config = self.config
         seed = None if config.seed is None else config.seed + index
         rng = np.random.default_rng(seed)
-        segments = self._sample_segments(self.games[index], rng)
+        mode = config.force_mode
+        if mode is None and config.balanced_modes:
+            mode = self.mode_pattern[index % len(self.mode_pattern)]
+        segments = self.games[index]
+        if mode in ("board", "span"):
+            if len(segments) >= config.masking.min_context_segments:
+                segments = self._sample_long(
+                    segments, rng, config.masking.min_context_segments
+                )
+            else:
+                mode = "random"
+                segments = self._sample_segments(segments, rng)
+        else:
+            segments = self._sample_segments(segments, rng)
         tokens = _pack(segments)
         if config.apply_masking:
-            masked, targets = mask_stream(tokens, config.masking, rng)
+            masked, targets, weights = mask_stream(tokens, config.masking, rng, mode)
+            if config.unigram_weights is not None:
+                hit = targets != IGNORE_INDEX
+                weights[hit] *= config.unigram_weights[targets[hit]]
         else:
             masked = tokens
             targets = np.full(tokens.shape, IGNORE_INDEX, dtype=np.int16)
-        return {"tokens": masked, "targets": targets}
+            weights = np.zeros(tokens.shape, dtype=np.float32)
+        return {"tokens": masked, "targets": targets, "weights": weights}
 
     def _sample_segments(
         self, segments: list[np.ndarray], rng: np.random.Generator
@@ -88,6 +150,32 @@ class WindowDataset(Dataset):
             used += cost
         if not chosen:
             chosen = [segments[start][: budget - 1]]
+        return chosen
+
+    def _sample_long(
+        self,
+        segments: list[np.ndarray],
+        rng: np.random.Generator,
+        min_segments: int,
+    ) -> list[np.ndarray]:
+        """Sample a full-budget window guaranteed to hold at least min_segments."""
+        budget = self.config.max_seq_len - 1
+        lengths = np.fromiter((len(s) for s in segments), dtype=np.int64)
+        total = int(lengths.sum() + len(segments))
+        if total <= budget and len(segments) <= self.config.max_segments:
+            return list(segments)
+        max_start = len(segments) - min_segments
+        if max_start < 0:
+            return list(segments)
+        start = int(rng.integers(max_start + 1))
+        chosen: list[np.ndarray] = []
+        used = 0
+        for i in range(start, len(segments)):
+            cost = int(lengths[i]) + 1
+            if used + cost > budget or len(chosen) >= self.config.max_segments:
+                break
+            chosen.append(segments[i])
+            used += cost
         return chosen
 
 
@@ -150,13 +238,18 @@ def collate_windows(batch: list[dict[str, np.ndarray]]) -> dict[str, torch.Tenso
     n = len(batch)
     tokens = np.full((n, max_len), PAD, dtype=np.int16)
     targets = np.full((n, max_len), IGNORE_INDEX, dtype=np.int16)
+    weights = np.zeros((n, max_len), dtype=np.float32)
     for i, sample in enumerate(batch):
         tokens[i, : len(sample["tokens"])] = sample["tokens"]
         targets[i, : len(sample["targets"])] = sample["targets"]
+        sample_weights = sample.get("weights")
+        if sample_weights is not None:
+            weights[i, : len(sample_weights)] = sample_weights
     segment_ids = np.cumsum(tokens == SEP, axis=1, dtype=np.int64)
     return {
         "tokens": torch.from_numpy(tokens.astype(np.int64)),
         "targets": torch.from_numpy(targets.astype(np.int64)),
+        "weights": torch.from_numpy(weights),
         "segment_ids": torch.from_numpy(segment_ids),
         "padding_mask": torch.from_numpy(tokens != PAD),
     }

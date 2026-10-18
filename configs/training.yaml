@@ -22,3 +22,6 @@ training:
   num_training_workers: 1   # >1 enables DDP across workers
   use_gpu: null             # null = auto-detect CUDA
   storage_path: null        # Ray results/checkpoint path (shared FS for multi-node)
+
+  freq_weighting: true      # inverse-unigram-frequency loss weighting (train split only)
+  freq_cap: 100.0           # cap on inverse-frequency weights (most frequent token = 1.0)

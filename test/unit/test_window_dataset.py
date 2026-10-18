@@ -7,12 +7,14 @@ import torch
 
 from bdd import given, then, when
 from src.dataset.token_stream import CLS, SEP, TokenStreamEncoder, pack_stream
-from src.modeling.masking import IGNORE_INDEX
+from src.modeling.masking import IGNORE_INDEX, MaskingConfig
 from src.training.window_dataset import (
     WindowDataset,
     WindowDatasetConfig,
     _load_game_segments,
+    build_mode_pattern,
     collate_windows,
+    inverse_frequency_weights,
 )
 
 
@@ -93,8 +95,12 @@ class TestWindowDataset:
         return
 
     def test_single_mode(self, data_dir):
-        with given("a dataset forced to single-segment windows"):
-            dataset = WindowDataset(config(data_dir, seed=1, p_single=1.0, p_few=0.0))
+        with given(
+            "a dataset forced to single-segment windows with legacy mode drawing"
+        ):
+            dataset = WindowDataset(
+                config(data_dir, seed=1, p_single=1.0, p_few=0.0, balanced_modes=False)
+            )
 
         with when("every window is sampled"):
             windows = [dataset[index] for index in range(len(dataset))]
@@ -107,9 +113,17 @@ class TestWindowDataset:
         return
 
     def test_few_mode(self, data_dir):
-        with given("a dataset forced to few-segment windows of 2 to 6 segments"):
+        with given("a dataset forced to few-segment windows with legacy mode drawing"):
             dataset = WindowDataset(
-                config(data_dir, seed=2, p_single=0.0, p_few=1.0, few_min=2, few_max=6)
+                config(
+                    data_dir,
+                    seed=2,
+                    p_single=0.0,
+                    p_few=1.0,
+                    few_min=2,
+                    few_max=6,
+                    balanced_modes=False,
+                )
             )
 
         with when("every window is sampled and its segment count recorded"):
@@ -178,11 +192,16 @@ class TestWindowDataset:
         with when("every window is sampled"):
             windows = [dataset[index] for index in range(len(dataset))]
 
-        with then("targets match token shapes and some tokens are masked"):
+        with then("targets and weights match token shapes and some tokens are masked"):
             any_masked = False
             for sample in windows:
                 assert sample["targets"].shape == sample["tokens"].shape
-                any_masked |= bool((sample["targets"] != IGNORE_INDEX).any())
+                assert sample["weights"].shape == sample["tokens"].shape
+                assert sample["weights"].dtype == np.float32
+                masked = sample["targets"] != IGNORE_INDEX
+                any_masked |= bool(masked.any())
+                assert np.all(sample["weights"][~masked] == 0.0)
+                assert np.all(sample["weights"][masked] > 0.0)
             assert any_masked
         return
 
@@ -210,6 +229,7 @@ class TestWindowDataset:
             for sa, sb in pairs:
                 assert np.array_equal(sa["tokens"], sb["tokens"])
                 assert np.array_equal(sa["targets"], sb["targets"])
+                assert np.array_equal(sa["weights"], sb["weights"])
         return
 
 
@@ -227,6 +247,8 @@ class TestCollate:
             assert batch["tokens"].shape == (4, max_len)
             assert batch["tokens"].dtype == torch.int64
             assert batch["targets"].dtype == torch.int64
+            assert batch["weights"].dtype == torch.float32
+            assert batch["weights"].shape == batch["tokens"].shape
             assert batch["segment_ids"].dtype == torch.int64
             assert batch["padding_mask"].dtype == torch.bool
             assert int(batch["padding_mask"].sum()) == sum(
@@ -327,3 +349,171 @@ class TestNestedArchiveLayout:
             assert len(games) == 4
             assert all(len(game) > 0 for game in games)
         return
+
+
+class TestModeAssignment:
+    def test_mode_pattern_reflects_probabilities(self):
+        with given("the default masking probabilities (0.45/0.30/0.25)"):
+            masking = MaskingConfig()
+
+        with when("the mode pattern is built"):
+            pattern = build_mode_pattern(masking)
+
+        with then("the period-20 pattern contains 9 random, 6 board, and 5 span"):
+            assert len(pattern) == 20
+            assert pattern.count("random") == 9
+            assert pattern.count("board") == 6
+            assert pattern.count("span") == 5
+        return
+
+    def test_mode_pattern_single_mode(self):
+        with given("a one-hot board masking config as used by the eval suite"):
+            masking = MaskingConfig(p_random=0.0, p_board=1.0, p_span=0.0)
+
+        with when("the mode pattern is built"):
+            pattern = build_mode_pattern(masking)
+
+        with then("every slot is board mode"):
+            assert set(pattern) == {"board"}
+        return
+
+    def test_force_mode_samples_long_windows(self, data_dir):
+        with given("a dataset with force_mode='board' and a full-window budget"):
+            dataset = WindowDataset(
+                config(data_dir, seed=4, force_mode="board", max_seq_len=2048)
+            )
+
+        with when("every window is sampled and its masked segments are recorded"):
+            results = []
+            for sample in dataset_iter(dataset):
+                targets = sample["targets"]
+                sep_positions = np.flatnonzero(sample["tokens"] == SEP)
+                flags = fully_masked_segments(targets, sep_positions)
+                masked = targets != IGNORE_INDEX
+                weight_ok = bool(np.all(sample["weights"][masked] == 2.0))
+                contiguous = len(flags) == 4 and len(flags) == (
+                    flags[-1] - flags[0] + 1
+                )
+                results.append(contiguous and weight_ok)
+
+        with then("each window masks four contiguous segments with board weights"):
+            assert all(results)
+        return
+
+    def test_force_mode_falls_back_to_random_on_short_games(self):
+        with given("a dataset of 3-segment games with force_mode='board'"):
+            games = [random_game(seed, min_plies=3, max_plies=4) for seed in range(4)]
+            dataset = WindowDataset(
+                WindowDatasetConfig(
+                    games=games,
+                    max_seq_len=2048,
+                    max_segments=32,
+                    force_mode="board",
+                    seed=6,
+                )
+            )
+
+        with when("every window is sampled"):
+            windows = [dataset[index] for index in range(len(dataset))]
+
+        with then("masking falls back to random mode with random-mode weights"):
+            for sample in windows:
+                masked = sample["targets"] != IGNORE_INDEX
+                assert masked.any()
+                assert np.all(sample["weights"][masked] == 1.0)
+        return
+
+    def test_balanced_modes_follow_pattern(self, data_dir):
+        with given("a balanced-mode dataset over 20 games with a full-window budget"):
+            dataset = WindowDataset(config(data_dir, seed=8, max_seq_len=2048))
+
+        with when("the first 20 windows are sampled and their mode weights summed"):
+            upweighted = 0
+            for index in range(20):
+                sample = dataset[index]
+                masked = sample["targets"] != IGNORE_INDEX
+                assert masked.any()
+                upweighted += int(np.all(sample["weights"][masked] == 2.0))
+
+        with then("11 of 20 windows carry board/span weights (6 board + 5 span)"):
+            assert upweighted == 11
+        return
+
+
+class TestFrequencyWeights:
+    def test_uniform_counts_give_uniform_weights(self):
+        with given("a unigram count vector with equal counts everywhere"):
+            counts = np.full(806, 10)
+
+        with when("inverse-frequency weights are computed"):
+            weights = inverse_frequency_weights(counts)
+
+        with then("every token gets weight 1.0"):
+            assert np.all(weights == 1.0)
+        return
+
+    def test_rare_tokens_are_upweighted_and_capped(self):
+        with given("a count vector with one very frequent and one rare token"):
+            counts = np.zeros(806)
+            counts[38] = 1_000_000
+            counts[100] = 10
+
+        with when("inverse-frequency weights are computed"):
+            weights = inverse_frequency_weights(counts, cap=50.0)
+
+        with then("the frequent token gets 1.0 and the rare token hits the cap"):
+            assert weights[38] == 1.0
+            assert weights[100] == 50.0
+        return
+
+    def test_smoothing_avoids_infinite_weights(self):
+        with given("a count vector with tokens never observed"):
+            counts = np.zeros(806)
+            counts[38] = 500
+
+        with when("inverse-frequency weights are computed"):
+            weights = inverse_frequency_weights(counts)
+
+        with then("all weights are finite and positive"):
+            assert np.all(np.isfinite(weights))
+            assert np.all(weights > 0.0)
+        return
+
+    def test_dataset_applies_frequency_weights(self, data_dir):
+        with given("a dataset with a unigram weight table favouring one token"):
+            table = np.ones(806, dtype=np.float32)
+            table[60] = 5.0
+            dataset = WindowDataset(
+                config(data_dir, seed=12, max_seq_len=2048, unigram_weights=table)
+            )
+
+        with when("windows are sampled and weights recomputed manually"):
+            checked = 0
+            for index in range(len(dataset)):
+                sample = dataset[index]
+                masked = sample["targets"] != IGNORE_INDEX
+                mode_weight = (
+                    sample["weights"][masked] / table[sample["targets"][masked]]
+                )
+                assert np.all(sample["weights"][masked] > 0.0)
+                checked += int(np.all(np.isin(mode_weight, (1.0, 2.0))))
+                if checked > 3:
+                    break
+
+        with then("weights equal mode weight times frequency weight"):
+            assert checked > 3
+        return
+
+
+def dataset_iter(dataset):
+    for index in range(len(dataset)):
+        yield dataset[index]
+
+
+def fully_masked_segments(targets, sep_positions):
+    starts = [1] + [int(s) + 1 for s in sep_positions[:-1]]
+    flags = []
+    for i, start in enumerate(starts):
+        end = int(sep_positions[i])
+        flags.append(all(targets[p] != IGNORE_INDEX for p in range(start, end)))
+    return np.asarray([idx for idx, flag in enumerate(flags) if flag])

@@ -48,6 +48,8 @@ from src.training.window_dataset import (
     WindowDatasetConfig,
     _load_game_segments,
     collate_windows,
+    inverse_frequency_weights,
+    unigram_counts,
 )
 
 
@@ -92,6 +94,8 @@ class RayTrainingConfig:
     full_eval: bool = True
     eval_pool_size: int = 1024
     eval_counterfactual: int = 256
+    freq_weighting: bool = True
+    freq_cap: float = 100.0
     bf16: bool = False
     compile: bool = False
     seed: int = 17
@@ -271,6 +275,11 @@ def train_loop_per_worker(config: dict) -> None:
             max_segments=cfg.max_segments,
         )
     )
+    if cfg.freq_weighting:
+        train_dataset.config.unigram_weights = inverse_frequency_weights(
+            unigram_counts(train_dataset.games), cap=cfg.freq_cap
+        )
+        log("frequency-aware loss weighting enabled")
     val_games = _load_game_segments(Path(val_dir))
     val_dataset = WindowDataset(
         WindowDatasetConfig(
@@ -428,6 +437,7 @@ def train_loop_per_worker(config: dict) -> None:
                 batch["segment_ids"],
                 padding_mask=batch["padding_mask"],
                 targets=batch["targets"],
+                weights=batch["weights"],
             )
         optimizer.zero_grad()
         output["loss"].backward()

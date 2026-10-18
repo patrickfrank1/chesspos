@@ -32,6 +32,8 @@ from src.training.window_dataset import (
     WindowDatasetConfig,
     _load_game_segments,
     collate_windows,
+    inverse_frequency_weights,
+    unigram_counts,
 )
 
 
@@ -109,6 +111,17 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--eval-pool-size", type=int, default=1024)
     parser.add_argument("--eval-counterfactual", type=int, default=256)
+    parser.add_argument(
+        "--no-freq-weighting",
+        action="store_true",
+        help="Disable inverse-unigram-frequency loss weighting",
+    )
+    parser.add_argument(
+        "--freq-cap",
+        type=float,
+        default=100.0,
+        help="Cap on inverse-frequency loss weights (most frequent token = 1.0)",
+    )
     parser.add_argument("--bf16", action="store_true")
     parser.add_argument("--compile", action="store_true")
     parser.add_argument("--log-file", default=None)
@@ -183,6 +196,11 @@ def main() -> None:
             max_segments=args.max_segments,
         )
     )
+    if not args.no_freq_weighting:
+        train_dataset.config.unigram_weights = inverse_frequency_weights(
+            unigram_counts(train_dataset.games), cap=args.freq_cap
+        )
+        log("frequency-aware loss weighting enabled")
     val_games = _load_game_segments(Path(val_dir))
     val_dataset = WindowDataset(
         WindowDatasetConfig(
@@ -306,6 +324,7 @@ def main() -> None:
                 batch["segment_ids"],
                 padding_mask=batch["padding_mask"],
                 targets=batch["targets"],
+                weights=batch["weights"],
             )
         optimizer.zero_grad()
         output["loss"].backward()

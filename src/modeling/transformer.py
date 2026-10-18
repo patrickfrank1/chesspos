@@ -97,6 +97,7 @@ class MaskedStreamTransformer(nn.Module):
         segment_ids: torch.Tensor,
         padding_mask: torch.Tensor | None = None,
         targets: torch.Tensor | None = None,
+        weights: torch.Tensor | None = None,
     ) -> dict[str, torch.Tensor]:
         if padding_mask is None:
             padding_mask = tokens.ne(0)
@@ -104,7 +105,7 @@ class MaskedStreamTransformer(nn.Module):
         logits = self.head(hidden)
         output = {"logits": logits, "hidden_states": hidden}
         if targets is not None:
-            output["loss"] = self._loss(logits, targets)
+            output["loss"] = self._loss(logits, targets, weights)
         return output
 
     def _trunk(
@@ -123,7 +124,11 @@ class MaskedStreamTransformer(nn.Module):
         return self.ln_final(x)
 
     @staticmethod
-    def _loss(logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+    def _loss(
+        logits: torch.Tensor,
+        targets: torch.Tensor,
+        weights: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         per_token = F.cross_entropy(
             logits.view(-1, logits.size(-1)),
             targets.view(-1),
@@ -133,7 +138,13 @@ class MaskedStreamTransformer(nn.Module):
         valid = targets.ne(IGNORE_INDEX).view(-1)
         if not valid.any():
             return logits.new_zeros(())
-        return per_token[valid].mean()
+        per_token = per_token[valid]
+        if weights is not None:
+            w = weights.reshape(-1)[valid].to(per_token.dtype)
+            total = w.sum()
+            if total > 0:
+                return (per_token * w).sum() / total
+        return per_token.mean()
 
     @torch.no_grad()
     def embed(
