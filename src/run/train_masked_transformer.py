@@ -28,11 +28,13 @@ from src.training.loop import (
 )
 from src.training.mlflow_tracker import MLflowTracker, resolve_tracking_uri
 from src.training.window_dataset import (
+    StreamingWindowDataset,
     WindowDataset,
     WindowDatasetConfig,
     _load_game_segments,
     collate_windows,
     inverse_frequency_weights,
+    streaming_unigram_counts,
     unigram_counts,
 )
 
@@ -117,6 +119,21 @@ def parse_args() -> argparse.Namespace:
         help="Disable inverse-unigram-frequency loss weighting",
     )
     parser.add_argument(
+        "--streaming",
+        action="store_true",
+        help=(
+            "Stream training windows shard by shard instead of preloading the "
+            "whole train split into memory (test split stays preloaded for eval)"
+        ),
+    )
+    parser.add_argument(
+        "--shuffle-buffer",
+        type=int,
+        default=0,
+        help="Number of games held in the streaming shuffle buffer (0 disables; "
+        "only used with --streaming)",
+    )
+    parser.add_argument(
         "--freq-cap",
         type=float,
         default=100.0,
@@ -189,18 +206,34 @@ def main() -> None:
     )
 
     train_dir, val_dir = resolve_data_dirs(args)
-    train_dataset = WindowDataset(
-        WindowDatasetConfig(
-            data_dir=str(train_dir),
-            max_seq_len=args.max_seq_len,
-            max_segments=args.max_segments,
+    if args.streaming:
+        train_dataset = StreamingWindowDataset(
+            WindowDatasetConfig(
+                data_dir=str(train_dir),
+                max_seq_len=args.max_seq_len,
+                max_segments=args.max_segments,
+                seed=args.seed,
+                shuffle_buffer=args.shuffle_buffer,
+            )
         )
-    )
-    if not args.no_freq_weighting:
-        train_dataset.config.unigram_weights = inverse_frequency_weights(
-            unigram_counts(train_dataset.games), cap=args.freq_cap
+        if not args.no_freq_weighting:
+            train_dataset.config.unigram_weights = inverse_frequency_weights(
+                streaming_unigram_counts(str(train_dir)), cap=args.freq_cap
+            )
+            log("frequency-aware loss weighting enabled (streaming counts)")
+    else:
+        train_dataset = WindowDataset(
+            WindowDatasetConfig(
+                data_dir=str(train_dir),
+                max_seq_len=args.max_seq_len,
+                max_segments=args.max_segments,
+            )
         )
-        log("frequency-aware loss weighting enabled")
+        if not args.no_freq_weighting:
+            train_dataset.config.unigram_weights = inverse_frequency_weights(
+                unigram_counts(train_dataset.games), cap=args.freq_cap
+            )
+            log("frequency-aware loss weighting enabled")
     val_games = _load_game_segments(Path(val_dir))
     val_dataset = WindowDataset(
         WindowDatasetConfig(
@@ -265,7 +298,7 @@ def main() -> None:
     train_loader = DataLoader(
         train_dataset,
         batch_size=args.batch_size,
-        shuffle=True,
+        shuffle=not args.streaming,
         num_workers=args.num_workers,
         collate_fn=collate_windows,
         drop_last=True,

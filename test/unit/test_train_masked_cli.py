@@ -16,3 +16,27 @@ class TestParseArgs:
             assert args.n_layers == 8
             assert args.d_ff == 2048
         return
+
+
+class TestStreamingFlag:
+    def test_streaming_defaults_to_off(self, monkeypatch):
+        with given("no CLI arguments"):
+            monkeypatch.setattr("sys.argv", ["train_masked_transformer"])
+
+        with when("the arguments are parsed"):
+            args = parse_args()
+
+        with then("streaming mode is disabled"):
+            assert args.streaming is False
+        return
+
+    def test_streaming_flag_enables_streaming(self, monkeypatch):
+        with given("the --streaming flag"):
+            monkeypatch.setattr("sys.argv", ["train_masked_transformer", "--streaming"])
+
+        with when("the arguments are parsed"):
+            args = parse_args()
+
+        with then("streaming mode is enabled"):
+            assert args.streaming is True
+        return

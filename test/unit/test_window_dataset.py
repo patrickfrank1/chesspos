@@ -517,3 +517,50 @@ def fully_masked_segments(targets, sep_positions):
         end = int(sep_positions[i])
         flags.append(all(targets[p] != IGNORE_INDEX for p in range(start, end)))
     return np.asarray([idx for idx, flag in enumerate(flags) if flag])
+
+
+class TestParallelShardLoading(TestNestedArchiveLayout):
+    def test_parallel_load_matches_sequential_order(self, tmp_path):
+        with given("a data directory with several shards across nested archives"):
+            directory = tmp_path / "processed"
+            self.write_shard(directory, "lichess_2014-01", (1, 2, 3))
+            self.write_shard(directory, "lichess_2014-02", (4, 5))
+            self.write_shard(directory, "lichess_2021-01", (6, 7, 8, 9))
+
+        with when("the segments are loaded with a thread pool"):
+            parallel = _load_game_segments(directory, max_workers=3)
+
+        with then("the games match the sequential load, in shard order"):
+            sequential = _load_game_segments(directory, max_workers=1)
+            assert len(parallel) == 9
+            assert all(
+                np.array_equal(left, right)
+                for game_p, game_s in zip(parallel, sequential)
+                for left, right in zip(game_p, game_s)
+            )
+        return
+
+    def test_parallel_load_single_file(self, tmp_path):
+        with given("a single parquet shard"):
+            directory = tmp_path / "processed"
+            self.write_shard(directory, "lichess_2014-01", (1, 2))
+            shard = sorted(directory.rglob("*.parquet"))[0]
+
+        with when("the shard is loaded directly with a thread pool argument"):
+            games = _load_game_segments(shard, max_workers=4)
+
+        with then("both games are returned"):
+            assert len(games) == 2
+        return
+
+    def test_parallel_load_empty_directory(self, tmp_path):
+        with given("an empty data directory"):
+            directory = tmp_path / "processed"
+            directory.mkdir()
+
+        with when("the segments are loaded with a thread pool"):
+            games = _load_game_segments(directory, max_workers=4)
+
+        with then("no games are returned"):
+            assert games == []
+        return
