@@ -18,8 +18,8 @@ import pyarrow as pa
 
 from src.dataset.config import GameSubsampling, TimeControlFilter
 
-SCHEMA_VERSION = 1
-PIPELINE_VERSION = "2"
+SCHEMA_VERSION = 2
+PIPELINE_VERSION = "3"
 
 
 def _utcnow() -> str:
@@ -50,6 +50,7 @@ class BatchMeta:
     archive_id: str
     url: str | None
     split: str
+    batch_number: int
     chunk_index: int
     seq: int
     file_name: str
@@ -65,7 +66,7 @@ class BatchMeta:
 
     @property
     def batch_stem(self) -> str:
-        return f"batch_{self.chunk_index:04d}_{self.seq:04d}"
+        return f"batch_{self.batch_number:04d}"
 
     def repo_parquet_path(self) -> str:
         return f"{self.split}/{self.archive_id}/{self.batch_stem}.parquet"
@@ -84,6 +85,7 @@ class BatchMeta:
                 },
                 "batch": {
                     "split": self.split,
+                    "batch_number": self.batch_number,
                     "chunk_index": self.chunk_index,
                     "seq": self.seq,
                     "file_name": self.file_name,
@@ -120,6 +122,7 @@ class BatchMeta:
             archive_id=source["archive_id"],
             url=source["url"],
             split=batch["split"],
+            batch_number=batch["batch_number"],
             chunk_index=batch["chunk_index"],
             seq=batch["seq"],
             file_name=batch["file_name"],
@@ -139,6 +142,7 @@ def build_batch_meta(
     table: pa.Table,
     file_bytes: bytes,
     split: str,
+    batch_number: int,
     chunk_index: int,
     seq: int,
     provider: str,
@@ -156,9 +160,10 @@ def build_batch_meta(
         archive_id=archive_id,
         url=url,
         split=split,
+        batch_number=batch_number,
         chunk_index=chunk_index,
         seq=seq,
-        file_name=f"batch_{chunk_index:04d}_{seq:04d}.parquet",
+        file_name=f"batch_{batch_number:04d}.parquet",
         num_games=table.num_rows,
         num_positions=sum(table.column("n_positions").to_pylist()),
         duplicates_dropped=duplicates_dropped,

@@ -403,10 +403,13 @@ class ArchivePipeline:
             chunker = PgnChunker(self.source_config.chunk_target_mb * 1024 * 1024)
             max_inflight = max(1, self.preprocessing_config.worker_count)
             carry: dict = {"train": [], "test": [], "duplicates": 0}
+            counters: dict = {"train": 0, "test": 0}
             last_chunk_index = -1
 
             def emit(batches: list[Batch]) -> None:
                 for batch in batches:
+                    batch_number = counters[batch.split]
+                    counters[batch.split] += 1
                     repo_parquet = self._emit_batch(
                         batch,
                         item,
@@ -415,6 +418,7 @@ class ArchivePipeline:
                         dry_run=dry_run,
                         output_dir=output_dir,
                         scratch=scratch,
+                        batch_number=batch_number,
                     )
                     if repo_parquet:
                         batch_files.append(repo_parquet)
@@ -552,12 +556,13 @@ class ArchivePipeline:
         dry_run: bool,
         output_dir: str | None,
         scratch: Path,
+        batch_number: int,
     ) -> str | None:
         if dry_run:
             root = Path(output_dir) if output_dir else scratch / "out"
         else:
             root = scratch / "out"
-        stem = f"batch_{batch.chunk_index:04d}_{batch.seq:04d}"
+        stem = f"batch_{batch_number:04d}"
         parquet_path = root / batch.split / item.archive_id / f"{stem}.parquet"
         parquet_path.parent.mkdir(parents=True, exist_ok=True)
         pq.write_table(batch.table, parquet_path)
@@ -565,6 +570,7 @@ class ArchivePipeline:
             table=batch.table,
             file_bytes=parquet_path.read_bytes(),
             split=batch.split,
+            batch_number=batch_number,
             chunk_index=batch.chunk_index,
             seq=batch.seq,
             provider=item.provider,

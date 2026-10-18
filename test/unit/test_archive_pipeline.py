@@ -1,15 +1,18 @@
 import hashlib
 import io
+import json
 import re
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pyarrow as pa
 import zstandard
 
 from bdd import given, then, when
 from src.dataset.archive_pipeline import (
     ArchivePipeline,
+    Batch,
     BatchUploader,
     _Prefetcher,
     _RayExtractor,
@@ -313,6 +316,83 @@ class TestBatchUploader:
             kwargs = api.create_commit.call_args.kwargs
             ops = kwargs["operations"]
             assert [op.path_in_repo for op in ops] == ["archives/arch/_COMPLETE.json"]
+        return
+
+
+class TestBatchNumbering:
+    def _emit_batch(self, tmp_path, batch, batch_number):
+        pipeline = make_pipeline()
+        item = WorkItem(
+            archive_id="arch", provider="lichess", url="https://x/arch.pgn.zst"
+        )
+        return pipeline._emit_batch(
+            batch,
+            item,
+            "fp",
+            MagicMock(),
+            dry_run=True,
+            output_dir=str(tmp_path),
+            scratch=tmp_path,
+            batch_number=batch_number,
+        )
+
+    def test_emit_batch_names_files_with_the_consecutive_batch_number(self, tmp_path):
+        with given("a batch produced by chunk 1078, numbered 0 at emit time"):
+            batch = Batch(
+                split="train",
+                chunk_index=1078,
+                seq=0,
+                table=pa.table({"n_positions": pa.array([1], type=pa.int32())}),
+                duplicates_dropped=0,
+                utc_dates=["2023-01-15"],
+            )
+
+        with when("the batch is emitted in dry-run mode"):
+            self._emit_batch(tmp_path, batch, batch_number=0)
+
+        with then("files land at consecutive-numbered paths, keeping chunk provenance"):
+            assert (tmp_path / "train" / "arch" / "batch_0000.parquet").exists()
+            meta = json.loads(
+                (tmp_path / "train" / "arch" / "batch_0000.meta.json").read_text()
+            )
+            assert meta["batch"]["batch_number"] == 0
+            assert meta["batch"]["chunk_index"] == 1078
+            assert meta["config"]["subsampling"]["tiers"] == [
+                {"min_elo": 0, "rate": 1.0}
+            ]
+            assert meta["config"]["time_control_filter"]["min_seconds"] == 300
+            assert meta["config"]["train_ratio"] == 0.8
+            assert meta["config"]["batch_size"] == 10
+        return
+
+    def test_run_names_batches_consecutively_independent_of_chunking(self, tmp_path):
+        with given("a 40-game archive streamed in dry-run mode with batch size 10"):
+            games = b"".join(
+                f'[Event "G{i}"]\n[Site "s"]\n\n1. e4 *\n\n'.encode() for i in range(40)
+            )
+            payload = _zst(games)
+            pipeline = make_pipeline(
+                data_path=None, archive_urls=["https://x/test-a.pgn.zst"]
+            )
+
+        with when("the pipeline runs to completion"):
+            with patch(
+                "src.dataset.archive_pipeline.urllib.request.urlopen",
+                side_effect=lambda url: io.BytesIO(payload),
+            ):
+                pipeline.run(dry_run=True, output_dir=str(tmp_path))
+
+        with then("every split's batch files are numbered consecutively from 0000"):
+            for split in ("train", "test"):
+                names = sorted(
+                    p.name for p in (tmp_path / split / "test-a").glob("*.parquet")
+                )
+                assert len(names) >= 1
+                assert names == [f"batch_{i:04d}.parquet" for i in range(len(names))]
+            train_names = sorted(
+                p.name for p in (tmp_path / "train" / "test-a").glob("*.parquet")
+            )
+            assert len(train_names) >= 2
         return
 
 

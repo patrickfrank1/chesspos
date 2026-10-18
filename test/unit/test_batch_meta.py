@@ -1,4 +1,5 @@
 import hashlib
+import json
 
 from bdd import given, then, when
 from src.dataset.batch_meta import BatchMeta, build_batch_meta, config_fingerprint
@@ -91,6 +92,7 @@ class TestBuildBatchMeta:
                 table=table,
                 file_bytes=file_bytes,
                 split="train",
+                batch_number=0,
                 chunk_index=0,
                 seq=0,
                 provider="lichess",
@@ -99,6 +101,7 @@ class TestBuildBatchMeta:
                 duplicates_dropped=5,
                 config_fingerprint="fp",
                 utc_dates=["2023-01-02", "2023-01-31", "2023-01-15"],
+                **_generation_config_kwargs(),
             )
 
         with then("stats, hash, and date range are recorded"):
@@ -121,6 +124,7 @@ class TestBuildBatchMeta:
                 table=table,
                 file_bytes=b"",
                 split="train",
+                batch_number=0,
                 chunk_index=0,
                 seq=0,
                 provider="local",
@@ -129,6 +133,7 @@ class TestBuildBatchMeta:
                 duplicates_dropped=0,
                 config_fingerprint="fp",
                 utc_dates=[],
+                **_generation_config_kwargs(),
             )
 
         with then("the date range is None"):
@@ -137,13 +142,14 @@ class TestBuildBatchMeta:
         return
 
     def test_json_roundtrip(self):
-        with given("a built batch meta"):
+        with given("a built batch meta with chunk provenance"):
             table = make_games_table(num_games=1)
             meta = build_batch_meta(
                 table=table,
                 file_bytes=b"bytes",
                 split="test",
-                chunk_index=3,
+                batch_number=7,
+                chunk_index=2065,
                 seq=1,
                 provider="lichess",
                 archive_id="arch",
@@ -161,13 +167,14 @@ class TestBuildBatchMeta:
         return
 
     def test_batch_file_name(self):
-        with given("a batch meta for chunk 3, sequence 1 of the train split"):
+        with given("a batch meta numbered 7 that completed chunk 2065"):
             table = make_games_table(num_games=1)
             meta = build_batch_meta(
                 table=table,
                 file_bytes=b"",
                 split="train",
-                chunk_index=3,
+                batch_number=7,
+                chunk_index=2065,
                 seq=1,
                 provider="lichess",
                 archive_id="arch",
@@ -181,7 +188,85 @@ class TestBuildBatchMeta:
             parquet_path = meta.repo_parquet_path()
             meta_path = meta.repo_meta_path()
 
-        with then("both files live under split/archive with matching stems"):
-            assert parquet_path == "train/arch/batch_0003_0001.parquet"
-            assert meta_path == "train/arch/batch_0003_0001.meta.json"
+        with then("the name is the consecutive batch number, independent of chunking"):
+            assert meta.file_name == "batch_0007.parquet"
+            assert parquet_path == "train/arch/batch_0007.parquet"
+            assert meta_path == "train/arch/batch_0007.meta.json"
+        return
+
+
+def _generation_config_kwargs():
+    return {
+        "subsampling": GameSubsampling(
+            tiers=[
+                GameSubsampleTier(min_elo=2200, rate=1.0),
+                GameSubsampleTier(min_elo=1900, rate=0.1),
+            ]
+        ),
+        "time_control_filter": TimeControlFilter(min_seconds=300),
+        "train_ratio": 0.95,
+        "batch_size": 100_000,
+    }
+
+
+class TestMetaConfigValues:
+    def test_meta_records_generation_config_values(self):
+        with given("a batch built with an explicit generation configuration"):
+            table = make_games_table(num_games=1)
+
+        with when("the batch meta is built and serialized"):
+            meta = build_batch_meta(
+                table=table,
+                file_bytes=b"",
+                split="train",
+                batch_number=0,
+                chunk_index=0,
+                seq=0,
+                provider="lichess",
+                archive_id="arch",
+                url=None,
+                duplicates_dropped=0,
+                config_fingerprint="fp",
+                utc_dates=[],
+                **_generation_config_kwargs(),
+            )
+            data = json.loads(meta.to_json())
+
+        with then(
+            "the config values themselves are recorded, not just the fingerprint"
+        ):
+            assert data["config"]["subsampling"]["tiers"] == [
+                {"min_elo": 2200, "rate": 1.0},
+                {"min_elo": 1900, "rate": 0.1},
+            ]
+            assert data["config"]["time_control_filter"]["min_seconds"] == 300
+            assert data["config"]["train_ratio"] == 0.95
+            assert data["config"]["batch_size"] == 100_000
+            assert data["provenance"]["config_fingerprint"] == "fp"
+        return
+
+    def test_config_values_survive_json_roundtrip(self):
+        with given("a batch meta built with an explicit generation configuration"):
+            table = make_games_table(num_games=1)
+            meta = build_batch_meta(
+                table=table,
+                file_bytes=b"",
+                split="test",
+                batch_number=7,
+                chunk_index=2065,
+                seq=1,
+                provider="lichess",
+                archive_id="arch",
+                url="u",
+                duplicates_dropped=0,
+                config_fingerprint="fp",
+                utc_dates=[],
+                **_generation_config_kwargs(),
+            )
+
+        with when("the meta is serialized to json and back"):
+            restored = BatchMeta.from_json(meta.to_json())
+
+        with then("the restored meta equals the original, config values included"):
+            assert restored == meta
         return
