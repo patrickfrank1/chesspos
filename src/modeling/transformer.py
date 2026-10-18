@@ -15,10 +15,10 @@ IGNORE_TOKENS = (CLS, SEP)
 @dataclass
 class TransformerConfig:
     vocab_size: int = VOCAB_SIZE
-    d_model: int = 256
-    n_heads: int = 8
-    n_layers: int = 4
-    d_ff: int = 1024
+    d_model: int = 512
+    n_heads: int = 16
+    n_layers: int = 8
+    d_ff: int = 2048
     dropout: float = 0.1
     max_seq_len: int = 2048
     max_segments: int = 128

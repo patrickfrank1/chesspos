@@ -209,6 +209,19 @@ TINY_CONFIG = TransformerConfig(
 )
 
 
+class TestTransformerConfig:
+    def test_default_architecture_is_scaled_up(self):
+        with given("a transformer config with no explicit dimensions"):
+            config = TransformerConfig()
+
+        with then("the default architecture is the scaled-up configuration"):
+            assert config.d_model == 512
+            assert config.n_heads == 16
+            assert config.n_layers == 8
+            assert config.d_ff == 2048
+        return
+
+
 def tiny_batch(n_segments=3, batch=2, seed=0):
     tokens = make_stream(random_game_factory(seed), n_boards=n_segments)
     samples = [

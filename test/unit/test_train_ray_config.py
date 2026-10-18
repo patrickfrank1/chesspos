@@ -46,10 +46,10 @@ class TestResolveConfig:
             assert config.weight_decay == 0.01
             assert config.warmup == 500
             assert config.grad_clip == 1.0
-            assert config.d_model == 256
-            assert config.n_layers == 4
-            assert config.n_heads == 8
-            assert config.d_ff == 1024
+            assert config.d_model == 512
+            assert config.n_layers == 8
+            assert config.n_heads == 16
+            assert config.d_ff == 2048
             assert config.dropout == 0.1
             assert config.max_seq_len == 2048
             assert config.max_segments == 128
@@ -244,4 +244,49 @@ class TestBuildRunConfig:
 
         with then("the storage path is unchanged"):
             assert Path(run_config.storage_path) == Path("/tmp/ray-results")
+        return
+
+
+class TestWorkerRuntimeEnv:
+    def test_hf_token_is_passed_to_workers(self, monkeypatch):
+        with given("HF_TOKEN is set in the driver environment"):
+            monkeypatch.setenv("HF_TOKEN", "secret-token")
+
+        with when("the run config is built"):
+            run_config = build_run_config(RayTrainingConfig())
+
+        with then("the worker runtime env carries the token"):
+            env_vars = run_config.worker_runtime_env["env_vars"]
+            assert env_vars["HF_TOKEN"] == "secret-token"
+        return
+
+    def test_unset_hf_vars_yield_no_runtime_env(self, monkeypatch):
+        with given("no HF-related variables are set in the driver environment"):
+            for name in (
+                "HF_TOKEN",
+                "HUGGING_FACE_HUB_TOKEN",
+                "HF_HOME",
+                "HF_HUB_CACHE",
+                "HUGGING_FACE_HUB_CACHE",
+                "HF_HUB_OFFLINE",
+            ):
+                monkeypatch.delenv(name, raising=False)
+
+        with when("the run config is built"):
+            run_config = build_run_config(RayTrainingConfig())
+
+        with then("no worker runtime env override is set"):
+            assert not run_config.worker_runtime_env
+        return
+
+    def test_unrelated_vars_are_not_passed(self, monkeypatch):
+        with given("an unrelated environment variable is set"):
+            monkeypatch.setenv("BOGUS_SECRET", "nope")
+
+        with when("the run config is built"):
+            run_config = build_run_config(RayTrainingConfig())
+
+        with then("the unrelated variable is not forwarded to workers"):
+            env_vars = (run_config.worker_runtime_env or {}).get("env_vars", {})
+            assert "BOGUS_SECRET" not in env_vars
         return

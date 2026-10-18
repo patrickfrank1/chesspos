@@ -13,6 +13,7 @@ This supersedes the earlier decision recorded in
 
 from __future__ import annotations
 
+import os
 import tempfile
 import time
 from dataclasses import asdict, dataclass, fields
@@ -76,10 +77,10 @@ class RayTrainingConfig:
     weight_decay: float = 0.01
     warmup: int = 500
     grad_clip: float = 1.0
-    d_model: int = 256
-    n_layers: int = 4
-    n_heads: int = 8
-    d_ff: int = 1024
+    d_model: int = 512
+    n_layers: int = 8
+    n_heads: int = 16
+    d_ff: int = 2048
     dropout: float = 0.1
     max_seq_len: int = 2048
     max_segments: int = 128
@@ -198,6 +199,30 @@ def build_scaling_config(config: RayTrainingConfig) -> ScalingConfig:
     )
 
 
+_PASSTHROUGH_ENV_VARS = (
+    "HF_TOKEN",
+    "HUGGING_FACE_HUB_TOKEN",
+    "HF_HOME",
+    "HF_HUB_CACHE",
+    "HUGGING_FACE_HUB_CACHE",
+    "HF_HUB_OFFLINE",
+)
+
+
+def build_worker_runtime_env() -> dict[str, dict[str, str]] | None:
+    """Build a worker runtime env forwarding HuggingFace auth/cache variables.
+
+    Ray Train workers inherit the environment of the cluster head, not of the
+    driver, so credentials like ``HF_TOKEN`` must be forwarded explicitly when
+    the head was started without them. Only an explicit allowlist is
+    forwarded; nothing is logged.
+    """
+    env_vars = {
+        name: os.environ[name] for name in _PASSTHROUGH_ENV_VARS if name in os.environ
+    }
+    return {"env_vars": env_vars} if env_vars else None
+
+
 def build_run_config(config: RayTrainingConfig) -> RunConfig:
     """Build the Ray Train run config (naming, storage, checkpoints).
 
@@ -212,6 +237,7 @@ def build_run_config(config: RayTrainingConfig) -> RunConfig:
         name=config.run_name or "chesspos-ray",
         storage_path=str(storage_path),
         checkpoint_config=CheckpointConfig(num_to_keep=config.checkpoints_to_keep),
+        worker_runtime_env=build_worker_runtime_env(),
     )
 
 
