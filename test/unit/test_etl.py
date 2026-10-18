@@ -36,7 +36,7 @@ class TestChessPositionDataset:
             assert len(games) == 1
             game = games[0]
             assert game["n_positions"] > 0
-            assert game["ply"] == game["n_positions"] - 1
+            assert "ply" not in game
             assert len(game["packed"]) >= game["n_positions"]
             assert game["packed"][0] == CLS
             assert SEP in game["packed"]
@@ -184,7 +184,7 @@ class TestChessPositionDataset:
             assert packed[0] == CLS
             assert SEP in packed.tolist()
             assert result.column("n_positions").to_pylist() == [2]
-            assert result.column("ply").to_pylist() == [1]
+            assert "ply" not in result.column_names
             assert result.column("game_id").to_pylist() == ["deadbeefdeadbeef"]
             assert result.column("split").to_pylist()[0] in {"train", "test"}
         return

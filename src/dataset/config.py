@@ -76,8 +76,8 @@ class GameSubsampling:
 
     tiers: list[GameSubsampleTier] = field(
         default_factory=lambda: [
-            GameSubsampleTier(min_elo=2400, rate=1.0),
-            GameSubsampleTier(min_elo=2000, rate=0.4),
+            GameSubsampleTier(min_elo=2200, rate=1.0),
+            GameSubsampleTier(min_elo=1900, rate=0.1),
             GameSubsampleTier(min_elo=0, rate=0.001),
         ]
     )

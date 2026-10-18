@@ -297,7 +297,6 @@ class ArchivePipeline:
                         "n_positions": pa.array(
                             [r["n_positions"] for r in part], type=pa.int32()
                         ),
-                        "ply": pa.array([r["ply"] for r in part], type=pa.int32()),
                         "game_id": pa.array(
                             [r["game_id"] for r in part], type=pa.string()
                         ),

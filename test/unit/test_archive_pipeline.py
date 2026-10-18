@@ -56,7 +56,6 @@ def make_rows(num_games=5, game_ids=None):
             {
                 "packed": [3, 4, 2, 5],
                 "n_positions": 2,
-                "ply": 1,
                 "game_id": game_id,
                 "white_elo": 2200,
                 "black_elo": 2100,

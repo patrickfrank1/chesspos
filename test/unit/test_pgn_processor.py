@@ -200,14 +200,14 @@ class TestGameSubsampling:
                 processor._match_tier(metadata).min_elo
                 for metadata in [
                     GameMetadata(white_elo=2600, black_elo=2550),
-                    GameMetadata(white_elo=2700, black_elo=2300),
-                    GameMetadata(white_elo=1900, black_elo=1850),
+                    GameMetadata(white_elo=2000, black_elo=1950),
+                    GameMetadata(white_elo=1800, black_elo=1500),
                     GameMetadata(white_elo=1500, black_elo=1200),
                 ]
             ]
 
         with then("the strictest qualifying tier wins each match"):
-            assert matched == [2400, 2000, 0, 0]
+            assert matched == [2200, 1900, 0, 0]
         return
 
     def test_match_tier_missing_ratings_fall_to_catch_all(self):
@@ -286,6 +286,20 @@ class TestGameSubsampling:
         with then("every construction raises a ValueError"):
             assert len(caught) == len(invalid)
             assert all(isinstance(e, ValueError) for e in caught)
+        return
+
+    def test_default_tiers_rebalance_strength_mix(self):
+        with given("the default GameSubsampling configuration"):
+            subsampling = GameSubsampling()
+
+        with when("its tiers are inspected"):
+            tiers = [(t.min_elo, t.rate) for t in subsampling.tiers]
+
+        with then(
+            "strong games are kept fully, the 1900-2200 band is sampled at 10%, "
+            "and weak or unrated games are rare"
+        ):
+            assert tiers == [(2200, 1.0), (1900, 0.1), (0, 0.001)]
         return
 
     def test_subsampling_round_trip(self):

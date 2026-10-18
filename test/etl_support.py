@@ -62,7 +62,6 @@ def make_batch() -> pa.Table:
         {
             "packed": pa.array([packed], type=pa.list_(pa.int64())),
             "n_positions": pa.array([2], type=pa.int32()),
-            "ply": pa.array([1], type=pa.int32()),
             "game_id": pa.array(["deadbeefdeadbeef"]),
             "white_elo": pa.array([2000], type=pa.int32()),
             "black_elo": pa.array([2000], type=pa.int32()),

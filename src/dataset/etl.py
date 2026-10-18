@@ -90,7 +90,6 @@ class ChessPositionDataset:
                 {
                     "packed": pack_stream(segments, add_cls=True).tolist(),
                     "n_positions": len(segments),
-                    "ply": len(segments) - 1,
                     "game_id": ChessPositionDataset._game_id(game),
                     "white_elo": int(metadata.white_elo or 0),
                     "black_elo": int(metadata.black_elo or 0),
@@ -143,7 +142,6 @@ class ChessPositionDataset:
             {
                 "packed": batch.column("packed").cast(pa.list_(pa.int16())),
                 "n_positions": batch.column("n_positions").cast(pa.int32()),
-                "ply": batch.column("ply").cast(pa.int32()),
                 "game_id": batch.column("game_id"),
                 "white_elo": batch.column("white_elo").cast(pa.int32()),
                 "black_elo": batch.column("black_elo").cast(pa.int32()),
@@ -342,11 +340,6 @@ class ChessPositionDataset:
                 "shape": "()",
                 "dtype": "int32",
                 "description": "Number of encoded positions in the game",
-            },
-            "ply": {
-                "shape": "()",
-                "dtype": "int32",
-                "description": "Ply index of the final position (n_positions - 1)",
             },
             "game_id": {
                 "dtype": "string",

@@ -14,7 +14,6 @@ def make_games_table(num_games=2, n_positions_per_game=3):
             {
                 "packed": [3, 4, 2] * n_positions_per_game,
                 "n_positions": n_positions_per_game,
-                "ply": n_positions_per_game - 1,
                 "game_id": f"aaaa{i:012d}",
                 "white_elo": 2200,
                 "black_elo": 2100,
@@ -25,7 +24,6 @@ def make_games_table(num_games=2, n_positions_per_game=3):
         {
             "packed": pa.array([r["packed"] for r in rows], type=pa.list_(pa.int16())),
             "n_positions": pa.array([r["n_positions"] for r in rows], type=pa.int32()),
-            "ply": pa.array([r["ply"] for r in rows], type=pa.int32()),
             "game_id": pa.array([r["game_id"] for r in rows], type=pa.string()),
             "white_elo": pa.array([r["white_elo"] for r in rows], type=pa.int32()),
             "black_elo": pa.array([r["black_elo"] for r in rows], type=pa.int32()),
