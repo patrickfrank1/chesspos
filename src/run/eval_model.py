@@ -15,7 +15,7 @@ from src.evaluation.eval_suite import (
     neighbor_examples,
     neighbor_stats,
     phase_stats,
-    piece_prior,
+    token_prior,
     plot_phase_projection,
     sample_segments,
     side_to_move_probe,
@@ -91,7 +91,7 @@ def main() -> None:
         seed=args.seed,
         max_seq_len=args.max_seq_len,
         max_segments=args.max_segments,
-        prior=piece_prior(games),
+        prior=token_prior(games),
     ).items():
         print(
             f"  {mode:6s} acc={stats['acc']:.4f} piece={stats['piece_acc']:.4f} "

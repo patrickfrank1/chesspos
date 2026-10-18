@@ -6,7 +6,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-from src.dataset.token_stream import CLS, SEP, PIECE_SQUARE_BASE, VOCAB_SIZE
+from src.dataset.token_stream import CLS, SEP, VOCAB_SIZE
 from src.modeling.masking import IGNORE_INDEX
 
 IGNORE_TOKENS = (CLS, SEP)
@@ -22,29 +22,6 @@ class TransformerConfig:
     dropout: float = 0.1
     max_seq_len: int = 2048
     max_segments: int = 128
-    piece_square_base: int = PIECE_SQUARE_BASE
-    n_pieces: int = 12
-    n_squares: int = 64
-
-
-class FactorizedTokenEmbedding(nn.Module):
-    def __init__(self, config: TransformerConfig):
-        super().__init__()
-        self.piece_square_base = config.piece_square_base
-        self.piece = nn.Embedding(config.n_pieces, config.d_model)
-        self.square = nn.Embedding(config.n_squares, config.d_model)
-        self.state = nn.Embedding(config.piece_square_base, config.d_model)
-        return
-
-    def forward(self, tokens: torch.Tensor) -> torch.Tensor:
-        is_piece = tokens >= self.piece_square_base
-        offset = (tokens - self.piece_square_base).clamp_min(0)
-        piece_index = torch.where(is_piece, offset // 64, torch.zeros_like(offset))
-        square_index = torch.where(is_piece, offset % 64, torch.zeros_like(offset))
-        state_index = tokens.clamp(0, self.piece_square_base - 1)
-        piece_emb = self.piece(piece_index) + self.square(square_index)
-        state_emb = self.state(state_index)
-        return torch.where(is_piece.unsqueeze(-1), piece_emb, state_emb)
 
 
 class TransformerBlock(nn.Module):
@@ -82,7 +59,7 @@ class MaskedStreamTransformer(nn.Module):
     def __init__(self, config: TransformerConfig):
         super().__init__()
         self.config = config
-        self.token_embedding = FactorizedTokenEmbedding(config)
+        self.token_embedding = nn.Embedding(config.vocab_size, config.d_model)
         self.segment_embedding = nn.Embedding(config.max_segments + 1, config.d_model)
         self.blocks = nn.ModuleList(
             TransformerBlock(config) for _ in range(config.n_layers)

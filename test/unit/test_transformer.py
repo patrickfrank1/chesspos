@@ -3,7 +3,7 @@ import pytest
 import torch
 
 from bdd import given, then, when
-from src.dataset.token_stream import SEP
+from src.dataset.token_stream import EMPTY, SEP, VOCAB_SIZE
 from src.modeling.masking import IGNORE_INDEX, MaskingConfig, mask_stream
 from src.modeling.transformer import MaskedStreamTransformer, TransformerConfig
 from src.training.window_dataset import collate_windows
@@ -45,7 +45,7 @@ def segment_flags(targets, sep_positions):
 
 class TestMaskStream:
     def test_random_mode_masks_segment_tokens(self):
-        from src.dataset.token_stream import TURN_WHITE
+        from src.dataset.token_stream import EMPTY
 
         with given("a packed token stream and random-only masking"):
             tokens = make_stream(random_game_factory(1))
@@ -61,7 +61,7 @@ class TestMaskStream:
         with then("only non-structural tokens are masked and targets keep originals"):
             changed = np.flatnonzero(targets != IGNORE_INDEX)
             assert changed.size > 0
-            assert np.all(tokens[changed] >= TURN_WHITE)
+            assert np.all(tokens[changed] >= EMPTY)
             structural = np.flatnonzero((tokens == 3) | (tokens == 2))
             assert np.all(targets[structural] == IGNORE_INDEX)
             assert np.all(masked[structural] == tokens[structural])
@@ -69,7 +69,7 @@ class TestMaskStream:
         return
 
     def test_random_mode_rate(self):
-        from src.dataset.token_stream import TURN_WHITE
+        from src.dataset.token_stream import EMPTY
 
         with given("a packed token stream and random-only masking at rate 0.3"):
             tokens = make_stream(random_game_factory(2))
@@ -79,7 +79,7 @@ class TestMaskStream:
             _, targets, _ = mask_stream(tokens, config, np.random.default_rng(0))
 
         with then("a fraction of the maskable tokens is masked"):
-            n_maskable = int((tokens >= TURN_WHITE).sum())
+            n_maskable = int((tokens >= EMPTY).sum())
             n_masked = int((targets != IGNORE_INDEX).sum())
             assert 0.2 * n_maskable <= n_masked <= 0.4 * n_maskable
         return
@@ -184,11 +184,13 @@ class TestMaskStream:
             masked, targets, _ = mask_stream(tokens, config, np.random.default_rng(0))
 
         with then("replacements follow the 80/10/10 mask/random/keep split"):
-            changed = np.flatnonzero((targets != IGNORE_INDEX) & (targets >= 38))
+            changed = np.flatnonzero((targets != IGNORE_INDEX) & (targets >= EMPTY))
             assert changed.size > 200
             mask_frac = float((masked[changed] == 1).mean())
             random_frac = float(
-                ((masked[changed] >= 38) & (masked[changed] != targets[changed])).mean()
+                (
+                    (masked[changed] >= EMPTY) & (masked[changed] != targets[changed])
+                ).mean()
             )
             keep_frac = float((masked[changed] == targets[changed]).mean())
             assert mask_frac == pytest.approx(0.8, abs=0.1)
@@ -199,8 +201,8 @@ class TestMaskStream:
     def test_scalar_replacement_stays_in_token_class(self):
         from src.dataset.token_stream import (
             CASTLE_BASE,
+            EMPTY,
             EP_BASE,
-            PIECE_SQUARE_BASE,
             TURN_WHITE,
         )
 
@@ -211,10 +213,10 @@ class TestMaskStream:
 
         with when("every replaced token is bucketed by its token class"):
             replaced = {
+                EMPTY: [],
                 TURN_WHITE: [],
                 CASTLE_BASE: [],
                 EP_BASE: [],
-                PIECE_SQUARE_BASE: [],
             }
             for seed in range(60):
                 tokens = make_stream(random_game_factory(seed), n_boards=8)
@@ -224,19 +226,25 @@ class TestMaskStream:
                 for pos in np.flatnonzero(targets != IGNORE_INDEX):
                     low, _ = next(
                         (lo, hi)
-                        for lo, hi in ((4, 6), (6, 22), (22, 38), (38, 806))
+                        for lo, hi in (
+                            (EMPTY, TURN_WHITE),
+                            (TURN_WHITE, CASTLE_BASE),
+                            (CASTLE_BASE, EP_BASE),
+                            (EP_BASE, VOCAB_SIZE),
+                        )
                         if lo <= targets[pos] < hi
                     )
                     if masked[pos] != 1 and masked[pos] != targets[pos]:
                         replaced[low].append(int(masked[pos]))
 
         with then("each class only receives replacements from its own range"):
+            assert replaced[EMPTY], "expected random-replaced slot tokens"
             assert replaced[TURN_WHITE], "expected random-replaced turn tokens"
             assert replaced[CASTLE_BASE], "expected random-replaced castle tokens"
-            assert all(4 <= v < 6 for v in replaced[TURN_WHITE])
-            assert all(6 <= v < 22 for v in replaced[CASTLE_BASE])
-            assert all(22 <= v < 38 for v in replaced[EP_BASE])
-            assert all(38 <= v < 806 for v in replaced[PIECE_SQUARE_BASE])
+            assert all(EMPTY <= v < TURN_WHITE for v in replaced[EMPTY])
+            assert all(TURN_WHITE <= v < CASTLE_BASE for v in replaced[TURN_WHITE])
+            assert all(CASTLE_BASE <= v < EP_BASE for v in replaced[CASTLE_BASE])
+            assert all(EP_BASE <= v < VOCAB_SIZE for v in replaced[EP_BASE])
         return
 
     def test_deterministic_with_same_seed(self):
@@ -290,7 +298,7 @@ TINY_CONFIG = TransformerConfig(
     n_layers=2,
     d_ff=64,
     dropout=0.0,
-    max_seq_len=64,
+    max_seq_len=512,
     max_segments=16,
 )
 
@@ -336,7 +344,7 @@ class TestTransformer:
             )
 
         with then("logits span the vocabulary and the loss is finite"):
-            assert output["logits"].shape == (*batch["tokens"].shape, 806)
+            assert output["logits"].shape == (*batch["tokens"].shape, VOCAB_SIZE)
             assert torch.isfinite(output["loss"])
         return
 

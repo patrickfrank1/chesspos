@@ -6,7 +6,13 @@ import pytest
 import torch
 
 from bdd import given, then, when
-from src.dataset.token_stream import CLS, SEP, TokenStreamEncoder, pack_stream
+from src.dataset.token_stream import (
+    CLS,
+    SEGMENT_LEN,
+    SEP,
+    TokenStreamEncoder,
+    pack_stream,
+)
 from src.modeling.masking import IGNORE_INDEX, MaskingConfig
 from src.training.window_dataset import (
     WindowDataset,
@@ -109,7 +115,7 @@ class TestWindowDataset:
             for sample in windows:
                 tokens = sample["tokens"]
                 assert int((tokens == SEP).sum()) == 1
-                assert len(tokens) <= 45
+                assert len(tokens) <= SEGMENT_LEN + 2
         return
 
     def test_few_mode(self, data_dir):
@@ -152,7 +158,7 @@ class TestWindowDataset:
         return
 
     def test_long_game_window_starts_randomly(self, data_dir, tmp_path):
-        with given("a dataset of long games and a 128-token budget"):
+        with given("a dataset of long games and a 512-token budget"):
             directory = tmp_path / "long"
             directory.mkdir()
             table = pa.table(
@@ -170,7 +176,7 @@ class TestWindowDataset:
             )
             pq.write_table(table, directory / "batch_0000.parquet")
             dataset = WindowDataset(
-                config(directory, seed=5, p_single=0.0, p_few=0.0, max_seq_len=128)
+                config(directory, seed=5, p_single=0.0, p_few=0.0, max_seq_len=512)
             )
 
         with when("every window is sampled and its end position recorded"):
@@ -179,7 +185,7 @@ class TestWindowDataset:
                 sample = dataset[index]
                 tokens = sample["tokens"]
                 starts.add(int((tokens == SEP).sum()))
-                assert len(tokens) <= 128
+                assert len(tokens) <= 512
 
         with then("windows start at varying positions within the budget"):
             assert len(starts) > 1

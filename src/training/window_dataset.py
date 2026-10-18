@@ -111,9 +111,30 @@ def _sample_segments(
         return [segments[start]]
     if u < config.p_single + config.p_few:
         k = int(rng.integers(config.few_min, min(config.few_max, n) + 1))
-        start = int(rng.integers(n - k + 1))
-        return segments[start : start + k]
+        return _sample_few(segments, rng, config, k)
     return _sample_full(segments, rng, config)
+
+
+def _sample_few(
+    segments: list[np.ndarray],
+    rng: np.random.Generator,
+    config: WindowDatasetConfig,
+    k: int,
+) -> list[np.ndarray]:
+    """Sample up to k consecutive segments without exceeding the token budget."""
+    budget = config.max_seq_len - 1
+    start = int(rng.integers(len(segments) - k + 1))
+    chosen: list[np.ndarray] = []
+    used = 0
+    for i in range(start, min(start + k, len(segments))):
+        cost = int(len(segments[i])) + 1
+        if chosen and used + cost > budget:
+            break
+        chosen.append(segments[i])
+        used += cost
+    if not chosen:
+        chosen = [segments[start][: budget - 1]]
+    return chosen
 
 
 def _sample_full(

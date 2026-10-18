@@ -27,7 +27,7 @@ TINY_CONFIG = TransformerConfig(
     n_layers=2,
     d_ff=64,
     dropout=0.0,
-    max_seq_len=64,
+    max_seq_len=512,
     max_segments=16,
 )
 

@@ -8,8 +8,9 @@ import torch
 
 from src.dataset.token_stream import (
     CASTLE_BASE,
+    EMPTY,
     EP_BASE,
-    PIECE_SQUARE_BASE,
+    PIECE_BASE,
     TURN_WHITE,
     VOCAB_SIZE,
     TokenStreamEncoder,
@@ -31,20 +32,22 @@ MODE_CONFIGS = {
     "span": MaskingConfig(p_random=0.0, p_board=0.0, p_span=1.0),
 }
 SCALAR_CLASS_BOUNDS = {
-    "turn": (TURN_WHITE, TURN_WHITE + 2),
+    "turn": (TURN_WHITE, CASTLE_BASE),
     "castle": (CASTLE_BASE, EP_BASE),
-    "ep": (EP_BASE, PIECE_SQUARE_BASE),
+    "ep": (EP_BASE, VOCAB_SIZE),
 }
+SLOT_CONTENT_BOUNDS = (EMPTY, TURN_WHITE)
 
 
-def piece_prior(games: list[list[np.ndarray]]) -> np.ndarray:
+def token_prior(games: list[list[np.ndarray]]) -> np.ndarray:
     counts = np.zeros(VOCAB_SIZE, dtype=np.int64)
     for game in games:
         for segment in game:
             counts += np.bincount(segment, minlength=VOCAB_SIZE)
-    total = counts[PIECE_SQUARE_BASE:].sum()
+    low, high = SLOT_CONTENT_BOUNDS
+    total = counts[low:high].sum()
     prior = np.zeros(VOCAB_SIZE)
-    prior[PIECE_SQUARE_BASE:] = counts[PIECE_SQUARE_BASE:] / max(1, total)
+    prior[low:high] = counts[low:high] / max(1, total)
     return prior
 
 
@@ -102,7 +105,8 @@ def mlm_breakdown(
             predictions = output["logits"].argmax(-1)
             correct = predictions[valid] == batch["targets"][valid]
             targets = batch["targets"][valid]
-            piece = targets.ge(PIECE_SQUARE_BASE)
+            low, high = SLOT_CONTENT_BOUNDS
+            piece = targets.ge(low) & targets.lt(high)
             scalar = ~piece
             counts["total"] += int(valid.sum())
             counts["correct"] += int(correct.sum())
@@ -313,13 +317,12 @@ def write_neighbor_examples(examples: list[dict], out_dir: str | Path) -> Path:
 
 
 def corrupt_segment(segment: np.ndarray, rng: np.random.Generator) -> np.ndarray:
-    piece_positions = np.flatnonzero(segment >= PIECE_SQUARE_BASE)
-    picks = rng.choice(
-        len(piece_positions), size=min(2, len(piece_positions)), replace=False
-    )
+    low, high = SLOT_CONTENT_BOUNDS
+    occupied = np.flatnonzero((segment >= low) & (segment < high) & (segment != EMPTY))
+    picks = rng.choice(len(occupied), size=min(2, len(occupied)), replace=False)
     corrupted = segment.copy()
     for p in picks:
-        corrupted[piece_positions[p]] = rng.integers(PIECE_SQUARE_BASE, VOCAB_SIZE)
+        corrupted[occupied[p]] = rng.integers(PIECE_BASE, TURN_WHITE)
     return corrupted
 
 
@@ -463,7 +466,7 @@ def full_eval(
     was_training = model.training
     model.eval()
     metrics: dict[str, float] = {}
-    prior = piece_prior(val_games)
+    prior = token_prior(val_games)
     for mode, stats in mlm_breakdown(
         model,
         val_games,

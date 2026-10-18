@@ -5,7 +5,7 @@ import torch
 from types import SimpleNamespace
 
 from bdd import given, then, when
-from src.dataset.token_stream import CLS, SEP
+from src.dataset.token_stream import CLS, EMPTY, SEP, VOCAB_SIZE
 from src.training.window_dataset import (
     StreamingWindowDataset,
     WindowDatasetConfig,
@@ -25,7 +25,7 @@ def write_stream_shard(directory, name, seeds, n_boards=3, board_len=8):
         stream = []
         for _ in range(n_boards):
             stream.append(CLS)
-            stream.extend(rng.integers(2, 700, size=board_len).tolist())
+            stream.extend(rng.integers(EMPTY, VOCAB_SIZE, size=board_len).tolist())
             stream.append(SEP)
         streams.append(stream)
     directory.mkdir(parents=True, exist_ok=True)
