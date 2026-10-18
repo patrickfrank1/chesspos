@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import subprocess
 import time
 from dataclasses import asdict
 from pathlib import Path
@@ -12,7 +13,13 @@ from torch.utils.data import DataLoader
 
 from src.evaluation.eval_suite import full_eval
 from src.modeling.transformer import MaskedStreamTransformer, TransformerConfig
+from src.training.checkpoint_hub import (
+    build_metadata,
+    collect_data_provenance,
+    upload_checkpoint,
+)
 from src.training.hf_data import download_split
+from src.training.mlflow_tracker import MLflowTracker, resolve_tracking_uri
 from src.training.window_dataset import (
     WindowDataset,
     WindowDatasetConfig,
@@ -42,6 +49,33 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Size budget for the train split download (test split is always "
         "downloaded in full); only used with --data-repo",
+    )
+    parser.add_argument(
+        "--upload-bucket",
+        default=None,
+        help="HF bucket id (e.g. patrickfrank1/chesspos-checkpoints); when "
+        "set, checkpoints + metadata sidecars are uploaded there",
+    )
+    parser.add_argument(
+        "--upload-prefix",
+        default="checkpoints",
+        help="Path prefix inside the upload bucket (default: checkpoints)",
+    )
+    parser.add_argument(
+        "--mlflow-uri",
+        default=None,
+        help="MLflow tracking server URI; falls back to MLFLOW_TRACKING_URI "
+        "env var; tracking is disabled when neither is set",
+    )
+    parser.add_argument(
+        "--mlflow-experiment",
+        default="chesspos",
+        help="MLflow experiment name (default: chesspos)",
+    )
+    parser.add_argument(
+        "--run-name",
+        default=None,
+        help="MLflow run name (default: auto-generated)",
     )
     parser.add_argument("--checkpoint-dir", default="data/models")
     parser.add_argument("--resume", default=None)
@@ -105,6 +139,18 @@ def resolve_data_dirs(args: argparse.Namespace) -> tuple[Path, Path]:
     )
     val_dir = download_split(args.data_repo, "test", cache_dir=args.data_cache)
     return train_dir, val_dir
+
+
+def get_git_commit() -> str | None:
+    """Return the current git commit, or None outside a git repo."""
+    try:
+        return subprocess.check_output(
+            ["git", "rev-parse", "HEAD"],
+            stderr=subprocess.DEVNULL,
+            text=True,
+        ).strip()
+    except Exception:
+        return None
 
 
 def lr_lambda(step: int, warmup: int, total: int):
@@ -237,6 +283,50 @@ def main() -> None:
     )
     log(f"train games={len(train_dataset)} val games={len(val_dataset)}")
 
+    train_provenance = collect_data_provenance(Path(train_dir))
+    val_provenance = collect_data_provenance(Path(val_dir))
+    git_commit = get_git_commit()
+
+    tracking_uri = resolve_tracking_uri(args.mlflow_uri)
+    tracker = MLflowTracker(
+        enabled=tracking_uri is not None,
+        tracking_uri=tracking_uri,
+        experiment=args.mlflow_experiment,
+        run_name=args.run_name,
+    )
+    tracker.log_params(
+        {**vars(args), "train_games": len(train_dataset), "val_games": len(val_dataset)}
+    )
+
+    def make_metadata(step: int, best_loss: float) -> dict:
+        return build_metadata(
+            training_config=dict(vars(args)),
+            model_config=asdict(model_config),
+            n_params=n_params,
+            step=step,
+            best_val_loss=best_loss,
+            data_repo=args.data_repo,
+            data_limit_gb=args.data_limit_gb,
+            train_provenance=train_provenance,
+            val_provenance=val_provenance,
+            git_commit=git_commit,
+        )
+
+    def upload(path: Path, remote_name: str, step: int, best_loss: float) -> None:
+        if not args.upload_bucket:
+            return
+        metadata = make_metadata(step, best_loss)
+        upload_checkpoint(
+            path,
+            bucket_id=args.upload_bucket,
+            remote_name=remote_name,
+            metadata=metadata,
+            prefix=args.upload_prefix,
+        )
+        tracker.log_artifact(path)
+        log(f"uploaded {remote_name} to {args.upload_bucket}/{args.upload_prefix}")
+        return
+
     train_loader = DataLoader(
         train_dataset,
         batch_size=args.batch_size,
@@ -312,10 +402,20 @@ def main() -> None:
         if step % args.log_every == 0:
             elapsed = time.time() - start
             tokens_per_step = args.batch_size * args.max_seq_len
+            avg_loss = running_loss / running_count
+            tokens_per_second = tokens_per_step * args.log_every / elapsed
             log(
-                f"step={step} loss={running_loss / running_count:.4f} "
+                f"step={step} loss={avg_loss:.4f} "
                 f"lr={scheduler.get_last_lr()[0]:.2e} "
-                f"tokens/s={tokens_per_step * args.log_every / elapsed:.0f}"
+                f"tokens/s={tokens_per_second:.0f}"
+            )
+            tracker.log_metrics(
+                {
+                    "loss": avg_loss,
+                    "lr": scheduler.get_last_lr()[0],
+                    "tokens_per_second": tokens_per_second,
+                },
+                step=step,
             )
             running_loss = 0.0
             running_count = 0
@@ -327,6 +427,7 @@ def main() -> None:
             )
             log(f"step={step} val_loss={val_loss:.4f} val_acc={val_acc:.4f}")
             extras = {"val_loss": val_loss, "val_acc": val_acc}
+            tracker.log_metrics({"val_loss": val_loss, "val_acc": val_acc}, step=step)
             if args.full_eval:
                 metrics = full_eval(
                     raw_model,
@@ -366,6 +467,14 @@ def main() -> None:
                 payload = {"step": step, **metrics}
                 write_eval_artifacts(checkpoint_dir, payload)
                 latest_eval = payload
+                tracker.log_metrics(
+                    {
+                        key: float(value)
+                        for key, value in metrics.items()
+                        if isinstance(value, (int, float))
+                    },
+                    step=step,
+                )
                 watch = [
                     "board_turn_acc",
                     "board_castle_acc",
@@ -396,6 +505,7 @@ def main() -> None:
                     extras,
                 )
                 log(f"saved best checkpoint to {path} (val_loss={val_loss:.4f})")
+                upload(path, f"best_step{step}", step, best_val_loss)
 
         if step % args.save_every == 0 or step == args.steps:
             path = checkpoint_dir / "last.pt"
@@ -416,6 +526,10 @@ def main() -> None:
                 save_extra,
             )
             log(f"saved full checkpoint to {path}")
+            upload(path, "last", step, best_val_loss)
+
+    tracker.end()
+    return
 
 
 if __name__ == "__main__":
