@@ -183,6 +183,35 @@ Known issue: `--debug` (Ray `local_mode=True`) currently fails at `ray.init`
 on Ray 2.54 with a `working_dir` URI validation error. Run without `--debug`
 (a normal local cluster with `--workers 1` works fine).
 
+### Training on a Ray cluster
+
+The training job (`src/run/train_ray.py`) runs on the same Ray cluster as the
+ETL via Ray Train (`TorchTrainer`). Data is snapshot-downloaded from the
+HuggingFace dataset repo inside each training worker, so the ETL stays a
+separate job on the same cluster.
+
+On the training machine (e.g. a GPU box), start/join the cluster and submit:
+
+```bash
+uv run ray start --head   # or point RAY_ADDRESS at the existing head node
+uv run ray job submit --address http://127.0.0.1:8265 \
+  --runtime-env-json '{"working_dir": ".", "excludes": ["data", ".venv", "ray_results"]}' \
+  -- python -m src.run.train_ray --config configs/training.yaml
+```
+
+Notes:
+
+- Ray Train resolves checkpoints into `--storage-path` (default
+  `ray_results/`); use a path on a shared filesystem for multi-node clusters.
+- `--num-training-workers > 1` enables DDP; with one GPU per worker keep
+  `--use-gpu` (auto-detected on the training machine).
+- **Run the submit command through `uv run --extra gpu` (or `uv run --active`):**
+  when the driver runs under `uv run`, Ray replicates the same `uv run`
+  invocation on the workers; without the extra they would build an environment
+  without torch.
+- MLflow tracking and checkpoint upload to the HF bucket reuse the same flags
+  as the standalone trainer (`--mlflow-uri`, `--upload-bucket`).
+
 ## Tools
 
 - Start ML Flow UI, in correct python venv

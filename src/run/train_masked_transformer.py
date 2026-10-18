@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import math
 import time
 from dataclasses import asdict
 from pathlib import Path
@@ -12,12 +11,31 @@ from torch.utils.data import DataLoader
 
 from src.evaluation.eval_suite import full_eval
 from src.modeling.transformer import MaskedStreamTransformer, TransformerConfig
+from src.training.checkpoint_hub import (
+    build_metadata,
+    collect_data_provenance,
+    upload_checkpoint,
+    upload_log,
+)
 from src.training.hf_data import download_split
+from src.training.loop import (
+    evaluate,
+    get_git_commit,
+    lr_lambda,
+    make_logger,
+    save_checkpoint,
+    write_eval_artifacts,
+)
+from src.training.mlflow_tracker import MLflowTracker, resolve_tracking_uri
 from src.training.window_dataset import (
+    StreamingWindowDataset,
     WindowDataset,
     WindowDatasetConfig,
     _load_game_segments,
     collate_windows,
+    inverse_frequency_weights,
+    streaming_unigram_counts,
+    unigram_counts,
 )
 
 
@@ -43,6 +61,33 @@ def parse_args() -> argparse.Namespace:
         help="Size budget for the train split download (test split is always "
         "downloaded in full); only used with --data-repo",
     )
+    parser.add_argument(
+        "--upload-bucket",
+        default=None,
+        help="HF bucket id (e.g. patrickfrank1/chesspos-checkpoints); when "
+        "set, checkpoints + metadata sidecars are uploaded there",
+    )
+    parser.add_argument(
+        "--upload-prefix",
+        default="checkpoints",
+        help="Path prefix inside the upload bucket (default: checkpoints)",
+    )
+    parser.add_argument(
+        "--mlflow-uri",
+        default=None,
+        help="MLflow tracking server URI; falls back to MLFLOW_TRACKING_URI "
+        "env var; tracking is disabled when neither is set",
+    )
+    parser.add_argument(
+        "--mlflow-experiment",
+        default="chesspos",
+        help="MLflow experiment name (default: chesspos)",
+    )
+    parser.add_argument(
+        "--run-name",
+        default=None,
+        help="MLflow run name (default: auto-generated)",
+    )
     parser.add_argument("--checkpoint-dir", default="data/models")
     parser.add_argument("--resume", default=None)
     parser.add_argument("--steps", type=int, default=10_000)
@@ -51,10 +96,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--weight-decay", type=float, default=0.01)
     parser.add_argument("--warmup", type=int, default=500)
     parser.add_argument("--grad-clip", type=float, default=1.0)
-    parser.add_argument("--d-model", type=int, default=256)
-    parser.add_argument("--n-layers", type=int, default=4)
-    parser.add_argument("--n-heads", type=int, default=8)
-    parser.add_argument("--d-ff", type=int, default=1024)
+    parser.add_argument("--d-model", type=int, default=512)
+    parser.add_argument("--n-layers", type=int, default=8)
+    parser.add_argument("--n-heads", type=int, default=16)
+    parser.add_argument("--d-ff", type=int, default=2048)
     parser.add_argument("--dropout", type=float, default=0.1)
     parser.add_argument("--max-seq-len", type=int, default=2048)
     parser.add_argument("--max-segments", type=int, default=128)
@@ -68,24 +113,37 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--eval-pool-size", type=int, default=1024)
     parser.add_argument("--eval-counterfactual", type=int, default=256)
+    parser.add_argument(
+        "--no-freq-weighting",
+        action="store_true",
+        help="Disable inverse-unigram-frequency loss weighting",
+    )
+    parser.add_argument(
+        "--streaming",
+        action="store_true",
+        help=(
+            "Stream training windows shard by shard instead of preloading the "
+            "whole train split into memory (test split stays preloaded for eval)"
+        ),
+    )
+    parser.add_argument(
+        "--shuffle-buffer",
+        type=int,
+        default=0,
+        help="Number of games held in the streaming shuffle buffer (0 disables; "
+        "only used with --streaming)",
+    )
+    parser.add_argument(
+        "--freq-cap",
+        type=float,
+        default=100.0,
+        help="Cap on inverse-frequency loss weights (most frequent token = 1.0)",
+    )
     parser.add_argument("--bf16", action="store_true")
     parser.add_argument("--compile", action="store_true")
     parser.add_argument("--log-file", default=None)
     parser.add_argument("--seed", type=int, default=17)
     return parser.parse_args()
-
-
-def make_logger(path: str | None):
-    file = open(path, "a", encoding="utf-8") if path else None
-
-    def log(message: str) -> None:
-        print(message, flush=True)
-        if file is not None:
-            file.write(f"{message}\n")
-            file.flush()
-        return
-
-    return log
 
 
 def resolve_data_dirs(args: argparse.Namespace) -> tuple[Path, Path]:
@@ -105,77 +163,6 @@ def resolve_data_dirs(args: argparse.Namespace) -> tuple[Path, Path]:
     )
     val_dir = download_split(args.data_repo, "test", cache_dir=args.data_cache)
     return train_dir, val_dir
-
-
-def lr_lambda(step: int, warmup: int, total: int):
-    if step < warmup:
-        return step / max(1, warmup)
-    progress = (step - warmup) / max(1, total - warmup)
-    return 0.5 * (1.0 + math.cos(math.pi * min(progress, 1.0)))
-
-
-def save_checkpoint(
-    path: Path,
-    model: MaskedStreamTransformer,
-    model_config: TransformerConfig,
-    step: int,
-    extra: dict,
-) -> None:
-    checkpoint = {
-        "step": step,
-        "model_state": model.state_dict(),
-        "model_config": asdict(model_config),
-        **extra,
-    }
-    tmp = path.with_suffix(".pt.tmp")
-    torch.save(checkpoint, tmp)
-    tmp.replace(path)
-    return
-
-
-@torch.no_grad()
-def evaluate(
-    model: MaskedStreamTransformer,
-    loader: DataLoader,
-    device: torch.device,
-    max_batches: int,
-    bf16: bool,
-) -> tuple[float, float]:
-    model.eval()
-    losses = []
-    correct = 0
-    total = 0
-    for i, batch in enumerate(loader):
-        if i >= max_batches:
-            break
-        batch = {k: v.to(device) for k, v in batch.items()}
-        with torch.autocast(
-            device_type=device.type, dtype=torch.bfloat16, enabled=bf16
-        ):
-            output = model(
-                batch["tokens"],
-                batch["segment_ids"],
-                padding_mask=batch["padding_mask"],
-                targets=batch["targets"],
-            )
-        losses.append(output["loss"].item())
-        valid = batch["targets"].ne(-100)
-        predictions = output["logits"].argmax(-1)
-        correct += (predictions[valid] == batch["targets"][valid]).sum().item()
-        total += valid.sum().item()
-    model.train()
-    loss = sum(losses) / max(1, len(losses))
-    accuracy = correct / max(1, total)
-    return loss, accuracy
-
-
-def write_eval_artifacts(checkpoint_dir: Path, payload: dict) -> None:
-    (checkpoint_dir / "eval_metrics.json").write_text(
-        json.dumps(payload, indent=2, sort_keys=True)
-    )
-    with (checkpoint_dir / "eval_history.jsonl").open("a") as file:
-        file.write(json.dumps(payload, sort_keys=True) + "\n")
-    return
 
 
 def main() -> None:
@@ -219,13 +206,34 @@ def main() -> None:
     )
 
     train_dir, val_dir = resolve_data_dirs(args)
-    train_dataset = WindowDataset(
-        WindowDatasetConfig(
-            data_dir=str(train_dir),
-            max_seq_len=args.max_seq_len,
-            max_segments=args.max_segments,
+    if args.streaming:
+        train_dataset = StreamingWindowDataset(
+            WindowDatasetConfig(
+                data_dir=str(train_dir),
+                max_seq_len=args.max_seq_len,
+                max_segments=args.max_segments,
+                seed=args.seed,
+                shuffle_buffer=args.shuffle_buffer,
+            )
         )
-    )
+        if not args.no_freq_weighting:
+            train_dataset.config.unigram_weights = inverse_frequency_weights(
+                streaming_unigram_counts(str(train_dir)), cap=args.freq_cap
+            )
+            log("frequency-aware loss weighting enabled (streaming counts)")
+    else:
+        train_dataset = WindowDataset(
+            WindowDatasetConfig(
+                data_dir=str(train_dir),
+                max_seq_len=args.max_seq_len,
+                max_segments=args.max_segments,
+            )
+        )
+        if not args.no_freq_weighting:
+            train_dataset.config.unigram_weights = inverse_frequency_weights(
+                unigram_counts(train_dataset.games), cap=args.freq_cap
+            )
+            log("frequency-aware loss weighting enabled")
     val_games = _load_game_segments(Path(val_dir))
     val_dataset = WindowDataset(
         WindowDatasetConfig(
@@ -237,10 +245,60 @@ def main() -> None:
     )
     log(f"train games={len(train_dataset)} val games={len(val_dataset)}")
 
+    train_provenance = collect_data_provenance(Path(train_dir))
+    val_provenance = collect_data_provenance(Path(val_dir))
+    git_commit = get_git_commit()
+
+    tracking_uri = resolve_tracking_uri(args.mlflow_uri)
+    tracker = MLflowTracker(
+        enabled=tracking_uri is not None,
+        tracking_uri=tracking_uri,
+        experiment=args.mlflow_experiment,
+        run_name=args.run_name,
+    )
+    tracker.log_params(
+        {**vars(args), "train_games": len(train_dataset), "val_games": len(val_dataset)}
+    )
+
+    def make_metadata(step: int, best_loss: float) -> dict:
+        return build_metadata(
+            training_config=dict(vars(args)),
+            model_config=asdict(model_config),
+            n_params=n_params,
+            step=step,
+            best_val_loss=best_loss,
+            data_repo=args.data_repo,
+            data_limit_gb=args.data_limit_gb,
+            train_provenance=train_provenance,
+            val_provenance=val_provenance,
+            git_commit=git_commit,
+        )
+
+    def upload(path: Path, remote_name: str, step: int, best_loss: float) -> None:
+        if not args.upload_bucket:
+            return
+        metadata = make_metadata(step, best_loss)
+        upload_checkpoint(
+            path,
+            bucket_id=args.upload_bucket,
+            remote_name=remote_name,
+            metadata=metadata,
+            prefix=args.upload_prefix,
+        )
+        if args.log_file and Path(args.log_file).exists():
+            upload_log(
+                Path(args.log_file),
+                bucket_id=args.upload_bucket,
+                prefix=args.upload_prefix,
+            )
+        tracker.log_artifact(path)
+        log(f"uploaded {remote_name} to {args.upload_bucket}/{args.upload_prefix}")
+        return
+
     train_loader = DataLoader(
         train_dataset,
         batch_size=args.batch_size,
-        shuffle=True,
+        shuffle=not args.streaming,
         num_workers=args.num_workers,
         collate_fn=collate_windows,
         drop_last=True,
@@ -299,6 +357,7 @@ def main() -> None:
                 batch["segment_ids"],
                 padding_mask=batch["padding_mask"],
                 targets=batch["targets"],
+                weights=batch["weights"],
             )
         optimizer.zero_grad()
         output["loss"].backward()
@@ -312,10 +371,20 @@ def main() -> None:
         if step % args.log_every == 0:
             elapsed = time.time() - start
             tokens_per_step = args.batch_size * args.max_seq_len
+            avg_loss = running_loss / running_count
+            tokens_per_second = tokens_per_step * args.log_every / elapsed
             log(
-                f"step={step} loss={running_loss / running_count:.4f} "
+                f"step={step} loss={avg_loss:.4f} "
                 f"lr={scheduler.get_last_lr()[0]:.2e} "
-                f"tokens/s={tokens_per_step * args.log_every / elapsed:.0f}"
+                f"tokens/s={tokens_per_second:.0f}"
+            )
+            tracker.log_metrics(
+                {
+                    "loss": avg_loss,
+                    "lr": scheduler.get_last_lr()[0],
+                    "tokens_per_second": tokens_per_second,
+                },
+                step=step,
             )
             running_loss = 0.0
             running_count = 0
@@ -327,6 +396,7 @@ def main() -> None:
             )
             log(f"step={step} val_loss={val_loss:.4f} val_acc={val_acc:.4f}")
             extras = {"val_loss": val_loss, "val_acc": val_acc}
+            tracker.log_metrics({"val_loss": val_loss, "val_acc": val_acc}, step=step)
             if args.full_eval:
                 metrics = full_eval(
                     raw_model,
@@ -366,6 +436,14 @@ def main() -> None:
                 payload = {"step": step, **metrics}
                 write_eval_artifacts(checkpoint_dir, payload)
                 latest_eval = payload
+                tracker.log_metrics(
+                    {
+                        key: float(value)
+                        for key, value in metrics.items()
+                        if isinstance(value, (int, float))
+                    },
+                    step=step,
+                )
                 watch = [
                     "board_turn_acc",
                     "board_castle_acc",
@@ -396,6 +474,7 @@ def main() -> None:
                     extras,
                 )
                 log(f"saved best checkpoint to {path} (val_loss={val_loss:.4f})")
+                upload(path, f"best_step{step}", step, best_val_loss)
 
         if step % args.save_every == 0 or step == args.steps:
             path = checkpoint_dir / "last.pt"
@@ -416,6 +495,10 @@ def main() -> None:
                 save_extra,
             )
             log(f"saved full checkpoint to {path}")
+            upload(path, "last", step, best_val_loss)
+
+    tracker.end()
+    return
 
 
 if __name__ == "__main__":

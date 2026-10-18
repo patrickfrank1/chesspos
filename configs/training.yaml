@@ -1,0 +1,27 @@
+# Ray training job config (consumed by src/run/train_ray.py --config).
+# CLI flags override values set here; unset values fall back to code defaults.
+
+training:
+  data_repo: "patrickfrank1/chess-positions"   # HuggingFace dataset repo (required)
+  data_limit_gb: null       # byte budget for the train split download
+  data_cache: null          # cache dir for hub downloads (default: HF cache)
+
+  upload_bucket: null       # e.g. "patrickfrank1/chesspos-checkpoints"
+  upload_prefix: "checkpoints"
+  mlflow_uri: null          # empty string ("") disables tracking explicitly
+  mlflow_experiment: "chesspos"
+  run_name: null
+
+  steps: 10000
+  batch_size: 8
+  lr: 3.0e-4
+  warmup: 500
+  save_every: 2000
+  eval_every: 1000
+
+  num_training_workers: 1   # >1 enables DDP across workers
+  use_gpu: null             # null = auto-detect CUDA
+  storage_path: null        # Ray results/checkpoint path (shared FS for multi-node)
+
+  freq_weighting: true      # inverse-unigram-frequency loss weighting (train split only)
+  freq_cap: 100.0           # cap on inverse-frequency weights (most frequent token = 1.0)

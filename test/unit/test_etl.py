@@ -1,4 +1,5 @@
 import io
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import chess
@@ -235,4 +236,48 @@ class TestChessPositionDataset:
 
         with then("the card content is returned"):
             assert "Dataset Card" in card
+        return
+
+
+class TestPathResolution:
+    def test_data_path_resolution(self, monkeypatch, tmp_path):
+        with given("a relative data path and a working directory"):
+            monkeypatch.chdir(tmp_path)
+
+        with when("the data path is resolved"):
+            resolved = ChessPositionDataset._resolve_data_path("data/raw")
+
+        with then("it is absolute and anchored at the working directory"):
+            assert resolved == tmp_path / "data" / "raw"
+        return
+
+    def test_data_path_resolution_keeps_absolute(self):
+        with given("an absolute data path"):
+            absolute = "/tmp/chesspos-data/raw"
+
+        with when("the data path is resolved"):
+            resolved = ChessPositionDataset._resolve_data_path(absolute)
+
+        with then("it is unchanged"):
+            assert resolved == Path(absolute)
+        return
+
+    def test_write_batch_resolves_relative_output_dir(
+        self, dataset, monkeypatch, tmp_path
+    ):
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+
+        with given("a dataset, a batch, and a relative output dir with a cwd"):
+            monkeypatch.chdir(tmp_path)
+            table = pa.table({"x": [1, 2, 3]})
+
+        with when("the batch is written to the relative output dir"):
+            dataset._write_batch(table, table, 1, "out/debug")
+
+        with then("the parquet shards land under the working directory"):
+            for split in ("train", "test"):
+                shard = tmp_path / "out" / "debug" / split / "batch_0001_000000.parquet"
+                assert shard.exists()
+                assert pq.read_metadata(shard).num_rows == 3
         return

@@ -500,6 +500,7 @@ dependencies = [
     { name = "chess" },
     { name = "datasets" },
     { name = "matplotlib" },
+    { name = "mlflow" },
     { name = "numpy" },
     { name = "ray", extra = ["data", "default"] },
     { name = "zstandard" },
@@ -518,7 +519,6 @@ gpu = [
 dev = [
     { name = "ipywidgets" },
     { name = "jupyter" },
-    { name = "mlflow" },
     { name = "pytest" },
     { name = "ruff" },
     { name = "umap-learn" },
@@ -529,6 +529,7 @@ requires-dist = [
     { name = "chess", specifier = ">=1.11.2" },
     { name = "datasets", specifier = ">=4.5.0" },
     { name = "matplotlib", specifier = ">=3.10.8" },
+    { name = "mlflow", specifier = ">=3.9.0" },
     { name = "numpy", specifier = ">=1.24,<2.4" },
     { name = "ray", extras = ["data"], specifier = ">=2.40.0" },
     { name = "ray", extras = ["default"], specifier = ">=2.40.0" },
@@ -542,7 +543,6 @@ provides-extras = ["cpu", "gpu"]
 dev = [
     { name = "ipywidgets", specifier = ">=8.1.8" },
     { name = "jupyter", specifier = ">=1.1.1" },
-    { name = "mlflow", specifier = ">=3.9.0" },
     { name = "pytest", specifier = ">=9.1.1" },
     { name = "ruff", specifier = ">=0.15.22" },
     { name = "umap-learn", specifier = ">=0.5.11" },

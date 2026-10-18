@@ -3,6 +3,7 @@ import io
 import json
 import re
 import sys
+import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -209,69 +210,77 @@ class TestBuildBatches:
 
 
 class TestBatchUploader:
-    def _uploader_with_existing(self, existing_meta_json=None):
+    def _uploader_with_existing(
+        self, existing_meta_json=None, flush_interval_seconds=900.0, clock=None
+    ):
         api = MagicMock()
-        uploader = BatchUploader(hf_api=api, repo_id="test/repo")
+        kwargs = {"hf_api": api, "repo_id": "test/repo"}
+        if flush_interval_seconds is not None:
+            kwargs["flush_interval_seconds"] = flush_interval_seconds
+        if clock is not None:
+            kwargs["clock"] = clock
+        uploader = BatchUploader(**kwargs)
         patcher = patch(
             "src.dataset.archive_pipeline.hf_hub_download",
-            return_value=None,
+            return_value=existing_meta_json,
         )
-        if existing_meta_json is not None:
-            patcher = patch(
-                "src.dataset.archive_pipeline.hf_hub_download",
-                return_value=existing_meta_json,
-            )
         return uploader, api, patcher
 
-    def test_upload_creates_single_commit_with_parquet_and_meta(self, tmp_path):
+    @staticmethod
+    def _meta(parquet_path, sha):
+        meta = MagicMock()
+        meta.repo_parquet_path.return_value = f"train/arch/{parquet_path.name}"
+        meta.repo_meta_path.return_value = f"train/arch/{parquet_path.stem}.meta.json"
+        meta.to_json.return_value = '{"schema_version": 1}'
+        meta.file_sha256 = sha
+        return meta
+
+    def test_queue_batch_defers_commit_until_flush(self, tmp_path):
         with given("a written parquet file and its batch meta, nothing on the hub yet"):
             parquet_path = tmp_path / "batch_0000_0000.parquet"
             parquet_path.write_bytes(b"parquet")
-            meta = MagicMock()
-            meta.repo_parquet_path.return_value = "train/arch/batch_0000_0000.parquet"
-            meta.repo_meta_path.return_value = "train/arch/batch_0000_0000.meta.json"
-            meta.to_json.return_value = '{"schema_version": 1}'
+            meta = self._meta(parquet_path, hashlib.sha256(b"parquet").hexdigest())
             uploader, api, patcher = self._uploader_with_existing(None)
 
-        with when("the batch is uploaded"):
+        with when("the batch is queued and the archive is flushed"):
             with patcher:
-                uploaded = uploader.upload_batch(parquet_path, meta)
+                queued = uploader.queue_batch(parquet_path, meta)
+                uploader.flush("arch", [meta.repo_parquet_path.return_value])
 
-        with then("one commit contains both files"):
-            assert uploaded is True
+        with then("one commit contains the batch files and the completion marker"):
+            assert queued is True
             api.create_commit.assert_called_once()
-            kwargs = api.create_commit.call_args.kwargs
-            ops = kwargs["operations"]
+            ops = api.create_commit.call_args.kwargs["operations"]
             paths = sorted(op.path_in_repo for op in ops)
             assert paths == [
+                "archives/arch/_COMPLETE.json",
                 "train/arch/batch_0000_0000.meta.json",
                 "train/arch/batch_0000_0000.parquet",
             ]
         return
 
-    def test_upload_skipped_when_identical_batch_exists(self, tmp_path):
+    def test_queue_batch_skipped_when_identical_batch_exists(self, tmp_path):
         with given("a batch already on the hub with the same content hash"):
             parquet_path = tmp_path / "batch_0000_0000.parquet"
             parquet_path.write_bytes(b"parquet")
             sha = hashlib.sha256(b"parquet").hexdigest()
             existing_meta = '{"schema_version": 1, "file_sha256": "%s"}' % sha
-            meta = MagicMock()
-            meta.repo_parquet_path.return_value = "train/arch/batch_0000_0000.parquet"
-            meta.repo_meta_path.return_value = "train/arch/batch_0000_0000.meta.json"
-            meta.to_json.return_value = existing_meta
-            meta.file_sha256 = sha
+            meta = self._meta(parquet_path, sha)
             uploader, api, patcher = self._uploader_with_existing(existing_meta)
 
-        with when("the batch is uploaded again"):
+        with when("the batch is queued and the archive is flushed"):
             with patcher:
-                uploaded = uploader.upload_batch(parquet_path, meta)
+                queued = uploader.queue_batch(parquet_path, meta)
+                uploader.flush("arch", [meta.repo_parquet_path.return_value])
 
-        with then("no commit is made"):
-            assert uploaded is False
-            api.create_commit.assert_not_called()
+        with then("the batch is not queued and the flush only commits the marker"):
+            assert queued is False
+            api.create_commit.assert_called_once()
+            ops = api.create_commit.call_args.kwargs["operations"]
+            assert [op.path_in_repo for op in ops] == ["archives/arch/_COMPLETE.json"]
         return
 
-    def test_upload_overwrites_when_content_differs(self, tmp_path):
+    def test_queue_batch_queued_when_content_differs(self, tmp_path):
         with given("a batch on the hub with a different content hash"):
             parquet_path = tmp_path / "batch_0000_0000.parquet"
             parquet_path.write_bytes(b"new-bytes")
@@ -280,42 +289,175 @@ class TestBatchUploader:
                 '{"schema_version": 1, "file_sha256": "%s"}'
                 % hashlib.sha256(b"old-bytes").hexdigest()
             )
-            meta = MagicMock()
-            meta.repo_parquet_path.return_value = "train/arch/batch_0000_0000.parquet"
-            meta.repo_meta_path.return_value = "train/arch/batch_0000_0000.meta.json"
-            meta.to_json.return_value = (
-                '{"schema_version": 1, "file_sha256": "%s"}' % sha
-            )
-            meta.file_sha256 = sha
+            meta = self._meta(parquet_path, sha)
             uploader, api, patcher = self._uploader_with_existing(existing_meta)
 
-        with when("the batch is uploaded"):
+        with when("the batch is queued and the archive is flushed"):
             with patcher:
-                uploaded = uploader.upload_batch(parquet_path, meta)
+                queued = uploader.queue_batch(parquet_path, meta)
+                uploader.flush("arch", [meta.repo_parquet_path.return_value])
 
-        with then("the batch is re-uploaded"):
-            assert uploaded is True
+        with then("the batch is re-uploaded together with the marker"):
+            assert queued is True
             api.create_commit.assert_called_once()
+            ops = api.create_commit.call_args.kwargs["operations"]
+            paths = sorted(op.path_in_repo for op in ops)
+            assert paths == [
+                "archives/arch/_COMPLETE.json",
+                "train/arch/batch_0000_0000.meta.json",
+                "train/arch/batch_0000_0000.parquet",
+            ]
         return
 
-    def test_mark_complete_uploads_completion_marker(self):
-        with given("an uploader and the list of uploaded batch files"):
-            uploader, api, _ = self._uploader_with_existing(None)
-
-        with when("the archive is marked complete"):
-            uploader.mark_complete(
-                archive_id="arch",
-                batch_files=[
-                    "train/arch/batch_0000_0000.parquet",
-                    "test/arch/batch_0000_0000.parquet",
-                ],
+    def test_queue_batch_within_interval_defers_bulk_commit(self, tmp_path):
+        with given("an uploader that committed less than the flush interval ago"):
+            now = [100.0]
+            parquet_path = tmp_path / "batch_0000_0000.parquet"
+            parquet_path.write_bytes(b"parquet")
+            meta = self._meta(parquet_path, hashlib.sha256(b"parquet").hexdigest())
+            uploader, api, patcher = self._uploader_with_existing(
+                None, flush_interval_seconds=900.0, clock=lambda: now[0]
             )
 
-        with then("a _COMPLETE.json marker is committed at the archive root"):
+        with when("a batch is queued shortly after the uploader was created"):
+            with patcher:
+                uploader.queue_batch(parquet_path, meta)
+
+        with then("no commit is made yet"):
+            api.create_commit.assert_not_called()
+        return
+
+    def test_queue_batch_flushes_pending_in_bulk_when_interval_elapsed(self, tmp_path):
+        with given("an uploader with a pending batch from more than 15 minutes ago"):
+            now = [0.0]
+
+            def clock():
+                return now[0]
+
+            first = tmp_path / "batch_0000_0000.parquet"
+            first.write_bytes(b"parquet")
+            second = tmp_path / "batch_0001_0000.parquet"
+            second.write_bytes(b"parquet-2")
+            meta_first = self._meta(first, hashlib.sha256(b"parquet").hexdigest())
+            meta_second = self._meta(second, hashlib.sha256(b"parquet-2").hexdigest())
+            uploader, api, patcher = self._uploader_with_existing(
+                None, flush_interval_seconds=900.0, clock=clock
+            )
+
+        with when(
+            "the first batch is queued, time advances past the interval, "
+            "and the second batch is queued"
+        ):
+            with patcher:
+                uploader.queue_batch(first, meta_first)
+                now[0] = 901.0
+                uploader.queue_batch(second, meta_second)
+
+        with then("the pending batch is bulk-committed without the marker"):
             api.create_commit.assert_called_once()
-            kwargs = api.create_commit.call_args.kwargs
-            ops = kwargs["operations"]
-            assert [op.path_in_repo for op in ops] == ["archives/arch/_COMPLETE.json"]
+            ops = api.create_commit.call_args.kwargs["operations"]
+            paths = sorted(op.path_in_repo for op in ops)
+            assert paths == [
+                "train/arch/batch_0000_0000.meta.json",
+                "train/arch/batch_0000_0000.parquet",
+            ]
+        return
+
+    def test_bulk_committed_batches_are_not_requeued_after_flush_at_archive_end(
+        self, tmp_path
+    ):
+        with given("a batch already bulk-committed by the interval timer"):
+            now = [0.0]
+
+            def clock():
+                return now[0]
+
+            first = tmp_path / "batch_0000_0000.parquet"
+            first.write_bytes(b"parquet")
+            second = tmp_path / "batch_0001_0000.parquet"
+            second.write_bytes(b"parquet-2")
+            meta_first = self._meta(first, hashlib.sha256(b"parquet").hexdigest())
+            meta_second = self._meta(second, hashlib.sha256(b"parquet-2").hexdigest())
+            uploader, api, patcher = self._uploader_with_existing(
+                None, flush_interval_seconds=900.0, clock=clock
+            )
+
+        with when(
+            "the interval elapses, a second batch is queued, and the archive is flushed"
+        ):
+            with patcher:
+                uploader.queue_batch(first, meta_first)
+                now[0] = 901.0
+                uploader.queue_batch(second, meta_second)
+                uploader.flush("arch", [meta_second.repo_parquet_path.return_value])
+
+        with then(
+            "the flush commits only the second batch and the marker, "
+            "not the already bulk-committed first batch"
+        ):
+            assert api.create_commit.call_count == 2
+            last_ops = api.create_commit.call_args_list[-1].kwargs["operations"]
+            paths = sorted(op.path_in_repo for op in last_ops)
+            assert paths == [
+                "archives/arch/_COMPLETE.json",
+                "train/arch/batch_0001_0000.meta.json",
+                "train/arch/batch_0001_0000.parquet",
+            ]
+        return
+
+    def test_flush_clears_pending_operations(self, tmp_path):
+        with given("an uploader with one queued batch"):
+            parquet_path = tmp_path / "batch_0000_0000.parquet"
+            parquet_path.write_bytes(b"parquet")
+            meta = self._meta(parquet_path, hashlib.sha256(b"parquet").hexdigest())
+            uploader, api, patcher = self._uploader_with_existing(None)
+
+        with when("the archive is flushed twice"):
+            with patcher:
+                uploader.queue_batch(parquet_path, meta)
+                uploader.flush("arch", [meta.repo_parquet_path.return_value])
+                uploader.flush("arch", [meta.repo_parquet_path.return_value])
+
+        with then("the second flush commits only the marker again"):
+            assert api.create_commit.call_count == 2
+            second_ops = api.create_commit.call_args_list[1].kwargs["operations"]
+            assert [op.path_in_repo for op in second_ops] == [
+                "archives/arch/_COMPLETE.json"
+            ]
+        return
+
+    def test_flush_chunks_large_queues_with_marker_in_last_commit(self, tmp_path):
+        with given("more queued batch files than fit in one commit"):
+            uploader, api, _ = self._uploader_with_existing(None)
+            queued = 0
+            for i in range(30):
+                parquet_path = tmp_path / f"batch_{i:04d}.parquet"
+                parquet_path.write_bytes(b"parquet")
+                meta = self._meta(parquet_path, hashlib.sha256(b"parquet").hexdigest())
+                with patch(
+                    "src.dataset.archive_pipeline.hf_hub_download",
+                    return_value=None,
+                ):
+                    uploader.queue_batch(parquet_path, meta)
+                queued += 1
+
+        with when("the archive is flushed"):
+            uploader.flush("arch", ["train/arch/batch_0000.parquet"])
+
+        with then(
+            "the operations are split across commits and the marker rides in the last"
+        ):
+            commits = api.create_commit.call_args_list
+            assert len(commits) >= 2
+            for commit in commits[:-1]:
+                ops = commit.kwargs["operations"]
+                assert all(not op.path_in_repo.endswith("_COMPLETE.json") for op in ops)
+            marker_ops = [
+                op
+                for op in commits[-1].kwargs["operations"]
+                if op.path_in_repo.endswith("_COMPLETE.json")
+            ]
+            assert len(marker_ops) == 1
         return
 
 
@@ -396,9 +538,57 @@ class TestBatchNumbering:
         return
 
 
+class TestRunUploadsPerArchiveCommit:
+    def test_non_dry_run_commits_all_batches_and_marker_once(self, tmp_path):
+        with given("a 15-game archive with an empty hub and a stubbed HF API"):
+            games = b"".join(
+                f'[Event "G{i}"]\n[Site "s"]\n\n1. e4 *\n\n'.encode() for i in range(15)
+            )
+            payload = _zst(games)
+            pipeline = make_pipeline(
+                debug=True,
+                data_path=None,
+                archive_urls=["https://x/test-a.pgn.zst"],
+            )
+            api = MagicMock()
+
+            def fake_init(self, repo_id=""):
+                self.hf_api = api
+                self.repo_id = repo_id
+                self.flush_interval_seconds = 900.0
+                self._clock = time.monotonic
+                self._pending = []
+                self._last_commit = self._clock()
+                return
+
+        with when("the pipeline runs with upload enabled"):
+            with patch(
+                "src.dataset.archive_pipeline.urllib.request.urlopen",
+                side_effect=lambda url: io.BytesIO(payload),
+            ):
+                with patch(
+                    "src.dataset.archive_pipeline.hf_hub_download",
+                    return_value=None,
+                ):
+                    with patch.object(BatchUploader, "__init__", fake_init):
+                        pipeline.run(dry_run=False, output_dir=str(tmp_path))
+
+        with then("all queued batches and the marker land in a single commit"):
+            api.create_commit.assert_called_once()
+            ops = api.create_commit.call_args.kwargs["operations"]
+            parquet_ops = [op for op in ops if op.path_in_repo.endswith(".parquet")]
+            marker_ops = [
+                op for op in ops if op.path_in_repo.endswith("_COMPLETE.json")
+            ]
+            assert len(parquet_ops) >= 2
+            assert len(marker_ops) == 1
+        return
+
+
 class TestRayExtractor:
     def test_ray_initialized_as_fresh_local_cluster(self, monkeypatch):
         with given("a stubbed ray module that records init kwargs"):
+            monkeypatch.delenv("RAY_ADDRESS", raising=False)
             init_kwargs = {}
 
             class FakeRemote:
@@ -432,7 +622,76 @@ class TestRayExtractor:
 
         with then("ray joins no ambient cluster and starts a fresh local one"):
             assert init_kwargs.get("address") == "local"
+            assert init_kwargs.get("dashboard_host") == "0.0.0.0"
             assert rows == ["row"]
+
+    def test_ray_dashboard_host_from_env(self, monkeypatch):
+        with given("RAY_DASHBOARD_HOST restricts the dashboard bind address"):
+            monkeypatch.setenv("RAY_DASHBOARD_HOST", "127.0.0.1")
+            init_kwargs = {}
+
+            class FakeRemote:
+                def remote(self, *args, **kwargs):
+                    return ("object-ref", args, kwargs)
+
+            class FakeRay:
+                @staticmethod
+                def remote(fn):
+                    return FakeRemote()
+
+                @staticmethod
+                def is_initialized():
+                    return False
+
+                @staticmethod
+                def init(**kwargs):
+                    init_kwargs.update(kwargs)
+                    return
+
+            monkeypatch.setitem(sys.modules, "ray", FakeRay)
+
+        with when("a ray extractor is created"):
+            _RayExtractor(None, None)
+
+        with then("ray binds the dashboard to the address from the environment"):
+            assert init_kwargs.get("dashboard_host") == "127.0.0.1"
+        return
+
+    def test_ray_joins_cluster_from_ray_address_env(self, monkeypatch):
+        with given("RAY_ADDRESS points at an existing cluster"):
+            monkeypatch.setenv("RAY_ADDRESS", "127.0.0.1:6379")
+            init_kwargs = {}
+
+            class FakeRemote:
+                def remote(self, *args, **kwargs):
+                    return ("object-ref", args, kwargs)
+
+            class FakeRay:
+                @staticmethod
+                def remote(fn):
+                    return FakeRemote()
+
+                @staticmethod
+                def is_initialized():
+                    return False
+
+                @staticmethod
+                def init(**kwargs):
+                    init_kwargs.update(kwargs)
+                    return
+
+                @staticmethod
+                def get(obj):
+                    return ["row"]
+
+            monkeypatch.setitem(sys.modules, "ray", FakeRay)
+
+        with when("a ray extractor is created"):
+            _RayExtractor(None, None)
+
+        with then("ray connects to the cluster named by RAY_ADDRESS"):
+            assert init_kwargs.get("address") == "127.0.0.1:6379"
+        return
 
 
 def _zst(payload: bytes) -> bytes:

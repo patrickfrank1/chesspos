@@ -7,6 +7,7 @@ import random
 from dataclasses import dataclass, field
 from datetime import datetime
 from functools import partial
+from pathlib import Path
 from typing import Iterator
 
 import chess
@@ -175,7 +176,7 @@ class ChessPositionDataset:
 
         try:
             file_paths = file_paths_from_directory(
-                self.dataset_config.data_path, ".pgn"
+                str(self._resolve_data_path(self.dataset_config.data_path)), ".pgn"
             )
             encoded = self._build_encoded(file_paths)
             start_batch = self._get_start_batch(resume)
@@ -273,6 +274,15 @@ class ChessPositionDataset:
         test_table = chunk.filter(pa.compute.invert(train_mask))
         return train_table, test_table
 
+    @staticmethod
+    def _resolve_data_path(data_path: str) -> Path:
+        """Resolve a data path to an absolute path.
+
+        Ray Data workers read the collected file paths in their own working
+        directory, which is not the driver's; only absolute paths survive.
+        """
+        return Path(data_path).expanduser().resolve()
+
     def _get_start_batch(self, resume: bool) -> int:
         if not resume:
             return 1
@@ -314,9 +324,7 @@ class ChessPositionDataset:
         batch_num: int,
         output_dir: str,
     ) -> None:
-        from pathlib import Path
-
-        out = Path(output_dir)
+        out = self._resolve_data_path(output_dir)
         for split, table in (("train", train_table), ("test", test_table)):
             split_dir = out / split
             split_dir.mkdir(parents=True, exist_ok=True)
