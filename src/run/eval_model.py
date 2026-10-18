@@ -66,6 +66,7 @@ def print_neighbor_queries(
             print(
                 f"    {rank}. sim={sims[q][j]:.3f} material={materials[j]:+.0f}  {boards[j].fen()}"
             )
+    return
 
 
 def main() -> None:
@@ -134,6 +135,7 @@ def main() -> None:
     print(f"  pc2_piece_corr: {corr2:.4f}")
     plot_path = plot_phase_projection(projected, piece_counts, args.out_dir)
     print(f"  plot saved to {plot_path}")
+    return
 
 
 if __name__ == "__main__":

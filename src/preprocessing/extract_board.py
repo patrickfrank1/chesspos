@@ -30,11 +30,9 @@ def extract_board(directory: str) -> Generator[chess.Board]:
     """
     pgn_files = file_paths_from_directory(directory, ".pgn")
     print(f"These pgn files will be processed: {pgn_files}")
-    # iterate over all pgn files
     for file_path in pgn_files:
         print(f"Extraction from {file_path}")
         with open(file_path, "r") as file:
-            # iterate over all games in a file
             while True:
                 header = pgn.read_headers(file)
                 if header is None:
@@ -49,7 +47,6 @@ def extract_board(directory: str) -> Generator[chess.Board]:
                         print("\nGame is None?!\n")
                         continue
                     board = chess.Board()
-                    # iterate over all moves in a game
                     for i, move in enumerate(game.mainline_moves()):
                         try:
                             board.push(move)
@@ -61,3 +58,4 @@ def extract_board(directory: str) -> Generator[chess.Board]:
                             < sample_position_by_ply(i) * SUBSAMPLE_POSITIONS
                         ):
                             yield board
+    return

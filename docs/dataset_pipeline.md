@@ -167,6 +167,76 @@ generate_hf_dataset.py
 
 ---
 
+## Scaled Archive Pipeline (`source.py`, `chunker.py`, `batch_meta.py`, `archive_pipeline.py`)
+
+For large sources (multi-GB lichess monthly dumps) `generate_hf_dataset.py
+--archive-urls …` routes through a second, archive-oriented pipeline that
+never materialises more than one prefetched archive on disk and is fully
+idempotent on ephemeral disks:
+
+- **Planning** (`source.py`) — `SourceConfig` points at either a local
+  directory or a list of remote archive URLs (mutually exclusive).
+  `ArchivePlanner.plan(completed)` turns that into `WorkItem`s
+  (`archive_id` = file/URL stem without `.pgn.zst`/`.pgn`), skipping
+  archives that have a completion marker on the hub.
+- **Prefetching** (`archive_pipeline._Prefetcher`, `download.py`) — the first
+  archive streams directly from its URL while it is processed; from the
+  second onwards, each archive is downloaded to a temp file in a background
+  thread (single stream, a few retries) while its predecessor processes.
+  When an archive's turn comes it is read from that file; if the prefetch
+  failed the pipeline falls back to streaming the URL directly. Downloads
+  are link-bound (~10s per 2010s-era monthly archive), so prefetching hides
+  them behind extraction entirely. Only one prefetched archive exists on
+  disk at a time.
+- **Streaming** (`archive_pipeline._open_pgn_stream`) — the archive is
+  opened as a byte stream: a prefetched local file when available, else the
+  HTTP response body for URLs or a file handle for local paths; `.zst`
+  sources are decompressed on the fly via `zstandard.stream_reader`.
+- **Chunking** (`chunker.py`) — `PgnChunker.iter_chunks` cuts the stream
+  into game-aligned chunk files of ≈ `chunk_target_mb` at `\n\n[Event`
+  boundaries and yields them lazily, so extraction overlaps with
+  decompression. Chunks are cut byte-exactly (`b"".join(chunks) ==
+  original`), and a single oversized game becomes one oversized chunk.
+- **Extraction** — `_run_chunk_loop` submits each chunk for extraction as
+  soon as it is cut and consumes results strictly in chunk order, with at
+  most `worker_count` extractions in flight; chunk N+1 is extracted while
+  chunk N's batches are emitted. Extraction uses the same two-pass
+  `ChessPositionDataset._extract_positions` as the legacy ETL (recording
+  `utc_date` per game): a single background thread in `debug` mode, Ray
+  tasks (`ray.init(address="local")` — never joining an ambient cluster)
+  otherwise.
+- **Batching** (`archive_pipeline.py`) — `ArchivePipeline.build_batches`
+  sorts rows by `game_id`, drops adjacent duplicates (the sorted order
+  makes all copies of a duplicated game adjacent), assigns the hash-based
+  train/test split, and slices both splits into `batch_size` batches with
+  per-split sequence numbers. Deterministic by construction: the same
+  chunk always produces byte-identical parquet.
+- **Metadata** (`batch_meta.py`) — every parquet shard gets a
+  `batch_{chunk}_{seq}.meta.json` sidecar (source, stats incl.
+  `file_sha256`, date range from `UTCDate` headers, provenance incl. a
+  `config_fingerprint` of the subsampling + time-control config). The
+  sidecars are the source of truth for resume.
+- **Upload** — `BatchUploader.upload_batch` commits parquet + sidecar in a
+  single atomic `create_commit`; it skips when a sidecar with the same
+  `file_sha256` already exists and overwrites when content differs.
+  After the last chunk, `mark_complete` writes
+  `archives/{archive_id}/_COMPLETE.json` — the marker that makes future
+  runs skip the archive entirely.
+
+Repo layout on the hub:
+
+```
+{split}/{archive_id}/batch_{chunk:04d}_{seq:04d}.parquet
+{split}/{archive_id}/batch_{chunk:04d}_{seq:04d}.meta.json
+archives/{archive_id}/_COMPLETE.json
+```
+
+In `--dry-run` the same layout is written under `--output-dir`
+(default `data/processed`, including the completion marker), so a dry
+run can be inspected and re-run safely.
+
+---
+
 ## Component Responsibilities
 
 ### Configuration (`config.py`)

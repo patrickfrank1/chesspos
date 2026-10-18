@@ -11,6 +11,7 @@ class _Step:
     def __init__(self, step: str, description: str) -> None:
         self._step = step
         self._description = description
+        return
 
     def __enter__(self) -> "_Step":
         return self

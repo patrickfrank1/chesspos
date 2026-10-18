@@ -71,6 +71,7 @@ class TestWindowDataset:
 
         with then("all 20 games are reported"):
             assert length == 20
+        return
 
     def test_window_structure(self, data_dir):
         with given("a window dataset with default settings"):
@@ -88,6 +89,7 @@ class TestWindowDataset:
                 n_segments = int((tokens == SEP).sum())
                 assert 1 <= n_segments <= 32
                 assert np.all(tokens >= 0)
+        return
 
     def test_single_mode(self, data_dir):
         with given("a dataset forced to single-segment windows"):
@@ -101,6 +103,7 @@ class TestWindowDataset:
                 tokens = sample["tokens"]
                 assert int((tokens == SEP).sum()) == 1
                 assert len(tokens) <= 45
+        return
 
     def test_few_mode(self, data_dir):
         with given("a dataset forced to few-segment windows of 2 to 6 segments"):
@@ -117,6 +120,7 @@ class TestWindowDataset:
         with then("all counts stay within the few-segment bounds"):
             assert min(counts) >= 2
             assert max(counts) <= 6
+        return
 
     def test_full_mode_respects_budget(self, data_dir):
         with given("a dataset in full mode with a 200-token budget"):
@@ -130,6 +134,7 @@ class TestWindowDataset:
         with then("no window exceeds the token budget"):
             for sample in windows:
                 assert len(sample["tokens"]) <= 200
+        return
 
     def test_long_game_window_starts_randomly(self, data_dir, tmp_path):
         with given("a dataset of long games and a 128-token budget"):
@@ -163,6 +168,7 @@ class TestWindowDataset:
 
         with then("windows start at varying positions within the budget"):
             assert len(starts) > 1
+        return
 
     def test_masking_applied(self, data_dir):
         with given("a dataset with masking enabled"):
@@ -177,6 +183,7 @@ class TestWindowDataset:
                 assert sample["targets"].shape == sample["tokens"].shape
                 any_masked |= bool((sample["targets"] != IGNORE_INDEX).any())
             assert any_masked
+        return
 
     def test_masking_disabled(self, data_dir):
         with given("a dataset with masking disabled"):
@@ -188,6 +195,7 @@ class TestWindowDataset:
         with then("all targets are the ignore index"):
             for sample in windows:
                 assert np.all(sample["targets"] == IGNORE_INDEX)
+        return
 
     def test_seeded_reproducibility(self, data_dir):
         with given("two datasets built with the same seed"):
@@ -201,6 +209,7 @@ class TestWindowDataset:
             for sa, sb in pairs:
                 assert np.array_equal(sa["tokens"], sb["tokens"])
                 assert np.array_equal(sa["targets"], sb["targets"])
+        return
 
 
 class TestCollate:
@@ -222,6 +231,7 @@ class TestCollate:
             assert int(batch["padding_mask"].sum()) == sum(
                 len(s["tokens"]) for s in samples
             )
+        return
 
     def test_segment_ids_from_cumsum(self):
         with given("a collated sample built from a packed stream"):
@@ -243,6 +253,7 @@ class TestCollate:
             expected = np.cumsum(stream == SEP)
             assert np.array_equal(segment_ids, expected)
             assert int(segment_ids.max()) == 3
+        return
 
     def test_pad_positions_excluded_from_mask(self):
         with given("a collated batch with one padded sample"):
@@ -266,3 +277,4 @@ class TestCollate:
         with then("only pad positions are excluded and their targets are ignored"):
             assert pad_row.sum() == len(stream) - 20
             assert torch.all(batch["targets"][1][pad_row] == IGNORE_INDEX)
+        return

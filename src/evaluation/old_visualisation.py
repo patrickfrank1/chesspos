@@ -14,6 +14,7 @@ def print_board(board: chess.Board) -> None:
     output = ""
     output += "".join([f"{board[i]}\n" for i in range(len(board))]) + "\n"
     print(output)
+    return
 
 
 def _get_sorted_losses(

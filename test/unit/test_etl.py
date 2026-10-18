@@ -5,7 +5,7 @@ import chess
 import numpy as np
 
 from bdd import given, then, when
-from etl_support import SAMPLE_PGN, make_batch
+from etl_support import SAMPLE_PGN, make_batch, make_lichess_pgn
 from src.dataset.config import GameSubsampling, GameSubsampleTier, TimeControlFilter
 from src.dataset.etl import ChessPositionDataset
 from src.dataset.token_stream import CLS, SEP
@@ -18,6 +18,7 @@ class TestChessPositionDataset:
 
         with then("the config is stored on the dataset"):
             assert stored == dataset_config
+        return
 
     def test_extract_positions(self):
         with given("a raw PGN row and permissive subsampling"):
@@ -35,7 +36,7 @@ class TestChessPositionDataset:
             assert len(games) == 1
             game = games[0]
             assert game["n_positions"] > 0
-            assert game["ply"] == game["n_positions"] - 1
+            assert "ply" not in game
             assert len(game["packed"]) >= game["n_positions"]
             assert game["packed"][0] == CLS
             assert SEP in game["packed"]
@@ -43,6 +44,7 @@ class TestChessPositionDataset:
             assert game["black_elo"] == 2100
             assert game["result"] == "1-0"
             assert len(game["game_id"]) == 16
+        return
 
     def test_game_id_is_deterministic(self):
         with given("a parsed PGN game"):
@@ -54,6 +56,7 @@ class TestChessPositionDataset:
 
         with then("both derivations produce the same id"):
             assert first == second
+        return
 
     def test_extract_positions_filters(self):
         with given("a raw PGN row and a subsampling tier above the game's rating"):
@@ -69,6 +72,7 @@ class TestChessPositionDataset:
 
         with then("the game is dropped"):
             assert len(games) == 0
+        return
 
     def test_extract_positions_empty_pgn(self):
         with given("a row containing empty PGN bytes"):
@@ -84,6 +88,7 @@ class TestChessPositionDataset:
 
         with then("no games are produced"):
             assert len(games) == 0
+        return
 
     def test_extract_positions_filters_bullet(self):
         with given("a bullet game PGN row and a 300s minimum time control"):
@@ -102,6 +107,7 @@ class TestChessPositionDataset:
 
         with then("the game is dropped"):
             assert len(games) == 0
+        return
 
     def test_extract_positions_missing_elo_defaults_to_zero(self):
         with given("a PGN row without Elo headers"):
@@ -122,6 +128,27 @@ class TestChessPositionDataset:
             assert len(games) == 1
             assert games[0]["white_elo"] == 0
             assert games[0]["black_elo"] == 0
+        return
+
+    def test_extract_positions_captures_utc_date(self):
+        with given("a lichess-style PGN row with UTCDate headers"):
+            row = {
+                "bytes": make_lichess_pgn("Test", date="2023.01.15"),
+                "path": "/fake/x.pgn",
+            }
+            subsampling = GameSubsampling(
+                tiers=[GameSubsampleTier(min_elo=0, rate=1.0)]
+            )
+
+        with when("positions are extracted"):
+            games = ChessPositionDataset._extract_positions(
+                row, subsampling, TimeControlFilter()
+            )
+
+        with then("each game record carries its UTCDate as an ISO date"):
+            assert len(games) == 1
+            assert games[0]["utc_date"] == "2023-01-15"
+        return
 
     def test_split_for_game_is_deterministic(self):
         with when("the split is computed twice for a fixed game id and ratio"):
@@ -131,6 +158,7 @@ class TestChessPositionDataset:
         with then("both computations agree and yield a valid split"):
             assert first == second
             assert first in {"train", "test"}
+        return
 
     def test_split_for_game_extremes(self):
         with when("the split is computed at ratio 1.0 and 0.0"):
@@ -140,6 +168,7 @@ class TestChessPositionDataset:
         with then("the game lands in train and test respectively"):
             assert all_train == "train"
             assert all_test == "test"
+        return
 
     def test_finalize_batch(self):
         with given("an un-finalized batch of one game"):
@@ -155,9 +184,10 @@ class TestChessPositionDataset:
             assert packed[0] == CLS
             assert SEP in packed.tolist()
             assert result.column("n_positions").to_pylist() == [2]
-            assert result.column("ply").to_pylist() == [1]
+            assert "ply" not in result.column_names
             assert result.column("game_id").to_pylist() == ["deadbeefdeadbeef"]
             assert result.column("split").to_pylist()[0] in {"train", "test"}
+        return
 
     def test_finalize_batch_split_is_deterministic(self):
         with given("the same un-finalized batch twice"):
@@ -171,6 +201,7 @@ class TestChessPositionDataset:
             assert (
                 first.column("split").to_pylist() == second.column("split").to_pylist()
             )
+        return
 
     def test_get_start_batch_default(self, dataset):
         with when("the start batch is computed without resume"):
@@ -178,6 +209,7 @@ class TestChessPositionDataset:
 
         with then("generation starts at batch 1"):
             assert start_batch == 1
+        return
 
     def test_get_start_batch_resume_unknown(self, dataset):
         with given("a mocked HF client reporting batch 5 as next"):
@@ -190,6 +222,7 @@ class TestChessPositionDataset:
 
         with then("generation resumes at batch 5"):
             assert start_batch == 5
+        return
 
     def test_create_dataset_card(self, dataset):
         with given("a mocked HF client returning a fixed dataset card"):
@@ -202,3 +235,4 @@ class TestChessPositionDataset:
 
         with then("the card content is returned"):
             assert "Dataset Card" in card
+        return

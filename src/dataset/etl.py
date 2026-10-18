@@ -5,6 +5,7 @@ import io
 import os
 import random
 from dataclasses import dataclass, field
+from datetime import datetime
 from functools import partial
 from typing import Iterator
 
@@ -38,6 +39,7 @@ class ChessPositionDataset:
     def __post_init__(self):
         if self.hf_client is None:
             self.hf_client = HuggingFaceClient(repo_name=self.dataset_config.repo_name)
+        return
 
     @staticmethod
     def _extract_positions(
@@ -88,14 +90,23 @@ class ChessPositionDataset:
                 {
                     "packed": pack_stream(segments, add_cls=True).tolist(),
                     "n_positions": len(segments),
-                    "ply": len(segments) - 1,
                     "game_id": ChessPositionDataset._game_id(game),
                     "white_elo": int(metadata.white_elo or 0),
                     "black_elo": int(metadata.black_elo or 0),
                     "result": metadata.result or "",
+                    "utc_date": ChessPositionDataset._utc_date(game.headers),
                 }
             )
         return games
+
+    @staticmethod
+    def _utc_date(headers: chess.pgn.Headers) -> str:
+        """Convert a PGN UTCDate header (``YYYY.MM.DD``) to ISO format."""
+        raw = headers.get("UTCDate", "")
+        try:
+            return datetime.strptime(raw, "%Y.%m.%d").date().isoformat()
+        except ValueError:
+            return ""
 
     @staticmethod
     def _game_id(game: chess.pgn.Game) -> str:
@@ -131,7 +142,6 @@ class ChessPositionDataset:
             {
                 "packed": batch.column("packed").cast(pa.list_(pa.int16())),
                 "n_positions": batch.column("n_positions").cast(pa.int32()),
-                "ply": batch.column("ply").cast(pa.int32()),
                 "game_id": batch.column("game_id"),
                 "white_elo": batch.column("white_elo").cast(pa.int32()),
                 "black_elo": batch.column("black_elo").cast(pa.int32()),
@@ -194,6 +204,7 @@ class ChessPositionDataset:
                 yield train_ds, test_ds
         finally:
             ray.shutdown()
+        return
 
     def _build_encoded(self, file_paths: list[str]) -> ray.data.Dataset:
         subsampling = self.preprocessing_config.subsampling
@@ -252,6 +263,7 @@ class ChessPositionDataset:
                 buffer = buffer.slice(batch_size)
         if buffer is not None and buffer.num_rows > 0:
             yield buffer
+        return
 
     @staticmethod
     def _split_chunk(chunk: pa.Table) -> tuple[pa.Table, pa.Table]:
@@ -293,6 +305,7 @@ class ChessPositionDataset:
                     repo_type="dataset",
                     commit_message=f"Add {split} batch {batch_num}",
                 )
+        return
 
     def _write_batch(
         self,
@@ -311,6 +324,7 @@ class ChessPositionDataset:
                 table,
                 split_dir / f"batch_{batch_num:04d}_000000.parquet",
             )
+        return
 
     def create_dataset_card(self) -> str:
         features = {
@@ -326,11 +340,6 @@ class ChessPositionDataset:
                 "shape": "()",
                 "dtype": "int32",
                 "description": "Number of encoded positions in the game",
-            },
-            "ply": {
-                "shape": "()",
-                "dtype": "int32",
-                "description": "Ply index of the final position (n_positions - 1)",
             },
             "game_id": {
                 "dtype": "string",

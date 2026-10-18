@@ -5,10 +5,12 @@ from typing import Any
 
 import yaml
 
+from src.dataset.archive_pipeline import ArchivePipeline
 from src.dataset.config import (
     DatasetConfig,
     GameSubsampling,
     PreprocessingConfig,
+    SourceConfig,
     TimeControlFilter,
 )
 from src.dataset.etl import ChessPositionDataset
@@ -20,7 +22,15 @@ def load_yaml_config(path: str) -> dict[str, Any]:
 
 
 def _get_nested(data: dict[str, Any], key: str) -> Any:
-    flat_fields = {"batch_size", "train_ratio", "repo_name", "data_path", "output_dir"}
+    flat_fields = {
+        "batch_size",
+        "train_ratio",
+        "repo_name",
+        "data_path",
+        "archive_urls",
+        "chunk_target_mb",
+        "output_dir",
+    }
     runtime_fields = {"num_batches", "dry_run", "resume", "create_card"}
     preprocessing_fields = {"worker_count", "memory_limit_mb", "debug"}
     sampling_fields = {"tiers", "min_time_control_seconds"}
@@ -76,7 +86,7 @@ def parse_args() -> argparse.Namespace:
         "--batch-size",
         type=int,
         default=None,
-        help="Number of positions per batch",
+        help="Number of games per batch",
     )
     parser.add_argument(
         "--train-ratio",
@@ -89,6 +99,23 @@ def parse_args() -> argparse.Namespace:
         type=str,
         default=None,
         help="Path to directory containing PGN files",
+    )
+    parser.add_argument(
+        "--archive-urls",
+        type=str,
+        nargs="+",
+        default=None,
+        help=(
+            "Remote PGN archive URLs to process (e.g. lichess database "
+            "monthly .pgn.zst dumps). Mutually exclusive with --data-path; "
+            "uses the scaled archive pipeline"
+        ),
+    )
+    parser.add_argument(
+        "--chunk-target-mb",
+        type=int,
+        default=None,
+        help="Approximate size of decompressed chunks cut from archives (MB)",
     )
     parser.add_argument(
         "--dry-run",
@@ -191,6 +218,13 @@ def main() -> int:
     )
     debug: bool = _resolve(args.debug, _yaml_val(yaml_cfg, "debug"), False)
 
+    archive_urls: list[str] | None = _resolve(
+        args.archive_urls, _yaml_val(yaml_cfg, "archive_urls"), None
+    )
+    chunk_target_mb: int = _resolve(
+        args.chunk_target_mb, _yaml_val(yaml_cfg, "chunk_target_mb"), 256
+    )
+
     tiers_yaml = _yaml_val(yaml_cfg, "tiers")
     if tiers_yaml is not None:
         subsampling = GameSubsampling.from_dict({"tiers": tiers_yaml})
@@ -217,6 +251,46 @@ def main() -> int:
         train_ratio=train_ratio,
         data_path=data_path,
     )
+
+    if archive_urls:
+        if not output_dir:
+            output_dir = "data/processed"
+        source_config = SourceConfig(
+            archive_urls=archive_urls, chunk_target_mb=chunk_target_mb
+        )
+        pipeline = ArchivePipeline(
+            dataset_config=dataset_config,
+            preprocessing_config=preprocessing_config,
+            source_config=source_config,
+        )
+        print(f"Processing {len(archive_urls)} archive(s) for {repo_name}")
+        print(f"Chunk target: {chunk_target_mb}MB")
+        print(f"Workers: {worker_count}, Memory: {memory_limit_mb}MB")
+        print(
+            "Game subsampling tiers: "
+            + ", ".join(f">={t.min_elo}: {t.rate:.0%}" for t in subsampling.tiers)
+        )
+        min_tc = time_control_filter.min_seconds
+        if min_tc is None:
+            print("Time control filter: disabled")
+        else:
+            print(f"Time control filter: excluding games with base time < {min_tc}s")
+
+        if dry_run:
+            print("DRY RUN: Data will not be pushed to HuggingFace Hub")
+            if output_dir:
+                print(f"Writing parquet shards to: {output_dir}")
+
+        result = pipeline.run(dry_run=dry_run, output_dir=output_dir)
+        for archive_id in result.processed:
+            print(f"Processed archive: {archive_id}")
+        for archive_id in result.skipped:
+            print(f"Skipped complete archive: {archive_id}")
+        print(
+            f"\nComplete! Processed {len(result.processed)} archive(s), "
+            f"skipped {len(result.skipped)}"
+        )
+        return 0
 
     dataset = ChessPositionDataset(
         dataset_config=dataset_config,

@@ -103,6 +103,11 @@ entity-relationship diagram and runtime flow. Summary:
    enforced by the pre-commit hook and CI. The hook lives in
    [`.githooks/pre-commit`](.githooks/pre-commit); enable it with
    `git config core.hooksPath .githooks`.
+5. **Explicit return for None-returning functions.** Every function that
+   returns `None` — including ones with no return value anywhere — must end
+   with a bare `return` statement as its last line, in both `src/` and `test/`
+   (test functions included). Functions that return a value are exempt, as are
+   bodies that end in `raise` or a bare `return` already.
 
 ## Development Workflow
 
