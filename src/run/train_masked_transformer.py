@@ -12,6 +12,7 @@ from torch.utils.data import DataLoader
 
 from src.evaluation.eval_suite import full_eval
 from src.modeling.transformer import MaskedStreamTransformer, TransformerConfig
+from src.training.hf_data import download_split
 from src.training.window_dataset import (
     WindowDataset,
     WindowDatasetConfig,
@@ -24,6 +25,24 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train masked stream transformer")
     parser.add_argument("--train-dir", default="data/processed/train")
     parser.add_argument("--val-dir", default="data/processed/test")
+    parser.add_argument(
+        "--data-repo",
+        default=None,
+        help="HuggingFace dataset repo id; when set, train/val data is "
+        "snapshot-downloaded from it and the dirs above are ignored",
+    )
+    parser.add_argument(
+        "--data-cache",
+        default=None,
+        help="Cache directory for hub downloads (default: HF cache)",
+    )
+    parser.add_argument(
+        "--data-limit-gb",
+        type=float,
+        default=None,
+        help="Size budget for the train split download (test split is always "
+        "downloaded in full); only used with --data-repo",
+    )
     parser.add_argument("--checkpoint-dir", default="data/models")
     parser.add_argument("--resume", default=None)
     parser.add_argument("--steps", type=int, default=10_000)
@@ -67,6 +86,25 @@ def make_logger(path: str | None):
         return
 
     return log
+
+
+def resolve_data_dirs(args: argparse.Namespace) -> tuple[Path, Path]:
+    """Resolve train/val data directories from args.
+
+    With ``--data-repo`` both splits are snapshot-downloaded (train bounded
+    by ``--data-limit-gb``, test always in full); otherwise the local
+    ``--train-dir`` / ``--val-dir`` paths are used unchanged.
+    """
+    if args.data_repo is None:
+        return Path(args.train_dir), Path(args.val_dir)
+    max_bytes = (
+        None if args.data_limit_gb is None else int(args.data_limit_gb * 1024**3)
+    )
+    train_dir = download_split(
+        args.data_repo, "train", cache_dir=args.data_cache, max_bytes=max_bytes
+    )
+    val_dir = download_split(args.data_repo, "test", cache_dir=args.data_cache)
+    return train_dir, val_dir
 
 
 def lr_lambda(step: int, warmup: int, total: int):
@@ -180,14 +218,15 @@ def main() -> None:
         f"device={device} params={n_params / 1e6:.2f}M bf16={bf16} compile={args.compile}"
     )
 
+    train_dir, val_dir = resolve_data_dirs(args)
     train_dataset = WindowDataset(
         WindowDatasetConfig(
-            data_dir=args.train_dir,
+            data_dir=str(train_dir),
             max_seq_len=args.max_seq_len,
             max_segments=args.max_segments,
         )
     )
-    val_games = _load_game_segments(Path(args.val_dir))
+    val_games = _load_game_segments(Path(val_dir))
     val_dataset = WindowDataset(
         WindowDatasetConfig(
             games=val_games,
