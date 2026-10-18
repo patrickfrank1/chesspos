@@ -179,13 +179,15 @@ idempotent on ephemeral disks:
   `ArchivePlanner.plan(completed)` turns that into `WorkItem`s
   (`archive_id` = file/URL stem without `.pgn.zst`/`.pgn`), skipping
   archives that have a completion marker on the hub.
-- **Prefetching** (`archive_pipeline._Prefetcher`, `download.py`) — while an
-  archive is being processed, the next pending archive is downloaded to a
-  temp file in a background thread (single stream, a few retries). When its
-  turn comes it is read from that file; if the prefetch failed the pipeline
-  falls back to streaming the URL directly. Downloads are link-bound
-  (~10s per monthly archive), so prefetching hides them behind extraction
-  entirely. Only one prefetched archive exists on disk at a time.
+- **Prefetching** (`archive_pipeline._Prefetcher`, `download.py`) — the first
+  archive streams directly from its URL while it is processed; from the
+  second onwards, each archive is downloaded to a temp file in a background
+  thread (single stream, a few retries) while its predecessor processes.
+  When an archive's turn comes it is read from that file; if the prefetch
+  failed the pipeline falls back to streaming the URL directly. Downloads
+  are link-bound (~10s per 2010s-era monthly archive), so prefetching hides
+  them behind extraction entirely. Only one prefetched archive exists on
+  disk at a time.
 - **Streaming** (`archive_pipeline._open_pgn_stream`) — the archive is
   opened as a byte stream: a prefetched local file when available, else the
   HTTP response body for URLs or a file handle for local paths; `.zst`

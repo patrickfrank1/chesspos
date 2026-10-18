@@ -409,9 +409,51 @@ class TestPrefetch:
             assert path is None
         return
 
+    def test_run_streams_first_archive_without_downloading_it(self, tmp_path):
+        with given(
+            "a pipeline over one archive URL and a fake downloader that must never run"
+        ):
+            payload = _zst(b'[Event "A"]\n[Site "s"]\n[Result "1-0"]\n\n1. e4 *\n\n')
+            events: list[str] = []
+
+            def fake_download(url, dest):
+                events.append("download:test-a")
+                Path(dest).write_bytes(payload)
+                return
+
+            pipeline = make_pipeline(
+                data_path=None, archive_urls=["https://x/test-a.pgn.zst"]
+            )
+            original_process = pipeline._process
+
+            def spy_process(item, *args, **kwargs):
+                assert kwargs.get("local_path") is None
+                return original_process(item, *args, **kwargs)
+
+            pipeline._process = spy_process
+
+        with when("the pipeline runs in dry-run mode"):
+            with (
+                patch(
+                    "src.dataset.archive_pipeline.download_file",
+                    side_effect=fake_download,
+                ),
+                patch(
+                    "src.dataset.archive_pipeline.urllib.request.urlopen",
+                    side_effect=lambda url: io.BytesIO(payload),
+                ),
+            ):
+                result = pipeline.run(dry_run=True, output_dir=str(tmp_path))
+
+        with then("the archive is processed by streaming, with no download attempt"):
+            assert result.processed == ["test-a"]
+            assert events == []
+        return
+
     def test_run_downloads_next_archive_while_processing_current(self, tmp_path):
         with given(
-            "a pipeline over two archive URLs and a fake downloader recording events"
+            "a pipeline over two archive URLs, a fake downloader recording events, "
+            "and a fake HTTP stream for the first archive"
         ):
             events: list[str] = []
             payloads = {
@@ -424,9 +466,8 @@ class TestPrefetch:
             }
 
             def fake_download(url, dest):
-                archive_id = "test-a" if "test-a" in url else "test-b"
-                events.append(f"download:{archive_id}")
-                Path(dest).write_bytes(payloads[archive_id])
+                events.append("download:test-b")
+                Path(dest).write_bytes(payloads["test-b"])
                 return
 
             pipeline = make_pipeline(
@@ -445,17 +486,24 @@ class TestPrefetch:
             pipeline._process = spy_process
 
         with when("the pipeline runs in dry-run mode"):
-            with patch(
-                "src.dataset.archive_pipeline.download_file",
-                side_effect=fake_download,
+            with (
+                patch(
+                    "src.dataset.archive_pipeline.download_file",
+                    side_effect=fake_download,
+                ),
+                patch(
+                    "src.dataset.archive_pipeline.urllib.request.urlopen",
+                    side_effect=lambda url: io.BytesIO(payloads["test-a"]),
+                ),
             ):
                 result = pipeline.run(dry_run=True, output_dir=str(tmp_path))
 
         with then(
-            "each archive's download starts before the current archive finishes processing"
+            "the first archive streams directly while the second downloads in "
+            "the background"
         ):
             assert result.processed == ["test-a", "test-b"]
-            assert events.index("download:test-a") < events.index("process:test-a")
+            assert "download:test-a" not in events
             assert events.index("download:test-b") < events.index("process:test-a")
         return
 

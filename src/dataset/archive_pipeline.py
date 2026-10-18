@@ -341,17 +341,23 @@ class ArchivePipeline:
         ]
         with tempfile.TemporaryDirectory(prefix="chesspos-prefetch-") as prefetch_dir:
             prefetcher = _Prefetcher()
-            if pending:
-                prefetcher.start(
-                    pending[0], Path(prefetch_dir) / f"{pending[0].archive_id}.pgn.zst"
-                )
+
+            def dest_for(item: WorkItem) -> Path:
+                return Path(prefetch_dir) / f"{item.archive_id}.pgn.zst"
+
+            # The first archive streams directly from its URL; from the
+            # second onwards each archive is downloaded to disk in the
+            # background while its predecessor processes.
+            if len(pending) > 1:
+                prefetcher.start(pending[1], dest_for(pending[1]))
             for index, item in enumerate(pending):
-                local_path = prefetcher.take()
-                if index + 1 < len(pending):
-                    nxt = pending[index + 1]
-                    prefetcher.start(
-                        nxt, Path(prefetch_dir) / f"{nxt.archive_id}.pgn.zst"
-                    )
+                local_path: str | None = None
+                if index > 0:
+                    local_path = prefetcher.take()
+                    if index + 1 < len(pending):
+                        prefetcher.start(
+                            pending[index + 1], dest_for(pending[index + 1])
+                        )
                 self._process(
                     item,
                     uploader,
