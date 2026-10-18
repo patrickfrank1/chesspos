@@ -15,6 +15,7 @@ from src.training.checkpoint_hub import (
     build_metadata,
     collect_data_provenance,
     upload_checkpoint,
+    upload_log,
 )
 from src.training.hf_data import download_split
 from src.training.loop import (
@@ -233,6 +234,12 @@ def main() -> None:
             metadata=metadata,
             prefix=args.upload_prefix,
         )
+        if args.log_file and Path(args.log_file).exists():
+            upload_log(
+                Path(args.log_file),
+                bucket_id=args.upload_bucket,
+                prefix=args.upload_prefix,
+            )
         tracker.log_artifact(path)
         log(f"uploaded {remote_name} to {args.upload_bucket}/{args.upload_prefix}")
         return

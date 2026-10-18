@@ -69,6 +69,24 @@ def build_metadata(
     }
 
 
+def upload_log(
+    log_path: Path,
+    bucket_id: str,
+    prefix: str = "checkpoints",
+    remote_name: str = "train.log",
+) -> None:
+    """Upload a training log file to a bucket.
+
+    The log is a mutable artifact that is overwritten on every call, so the
+    bucket copy always reflects the latest sync point.
+    """
+    batch_bucket_files(
+        bucket_id,
+        add=[(Path(log_path), f"{prefix}/{remote_name}")],
+    )
+    return
+
+
 def upload_checkpoint(
     checkpoint_path: Path,
     bucket_id: str,

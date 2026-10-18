@@ -209,3 +209,43 @@ class TestBuildMetadata:
         with then("it round-trips through JSON"):
             assert json.loads(encoded) == metadata
         return
+
+
+class TestUploadLog:
+    def test_uploads_log_file(self, uploads, tmp_path):
+        with given("a local training log file"):
+            log_path = tmp_path / "train.log"
+            log_path.write_text("step=1 loss=6.9\nstep=2 loss=6.8\n")
+
+        with when("the log is uploaded"):
+            checkpoint_hub.upload_log(
+                log_path,
+                bucket_id="patrickfrank1/chesspos-checkpoints",
+                prefix="run_full_v2",
+            )
+
+        with then("the log is committed under the prefix as train.log"):
+            call = uploads[0]
+            assert call["bucket_id"] == "patrickfrank1/chesspos-checkpoints"
+            local, remote = call["add"][0]
+            assert local == log_path
+            assert remote == "run_full_v2/train.log"
+        return
+
+    def test_custom_remote_name(self, uploads, tmp_path):
+        with given("a log file and a custom remote name"):
+            log_path = tmp_path / "worker0.log"
+            log_path.write_text("rank=0 step=1\n")
+
+        with when("the log is uploaded with that name"):
+            checkpoint_hub.upload_log(
+                log_path,
+                bucket_id="patrickfrank1/chesspos-checkpoints",
+                prefix="run_full_v2",
+                remote_name="worker0.log",
+            )
+
+        with then("the file lands under the custom name"):
+            _, remote = uploads[0]["add"][0]
+            assert remote == "run_full_v2/worker0.log"
+        return
