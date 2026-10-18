@@ -18,7 +18,7 @@ import pyarrow as pa
 
 from src.dataset.config import GameSubsampling, TimeControlFilter
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 PIPELINE_VERSION = "3"
 
 
@@ -60,6 +60,7 @@ class BatchMeta:
     file_sha256: str
     date_min: str | None
     date_max: str | None
+    config: dict
     config_fingerprint: str
     pipeline_version: str
     created_at: str
@@ -100,6 +101,7 @@ class BatchMeta:
                     "date_min": self.date_min,
                     "date_max": self.date_max,
                 },
+                "config": self.config,
                 "provenance": {
                     "config_fingerprint": self.config_fingerprint,
                     "pipeline_version": self.pipeline_version,
@@ -115,6 +117,7 @@ class BatchMeta:
         batch = data["batch"]
         stats = data["stats"]
         range_ = data["range"]
+        config = data.get("config", {})
         provenance = data["provenance"]
         return cls(
             schema_version=data["schema_version"],
@@ -132,6 +135,7 @@ class BatchMeta:
             file_sha256=stats["file_sha256"],
             date_min=range_["date_min"],
             date_max=range_["date_max"],
+            config=config,
             config_fingerprint=provenance["config_fingerprint"],
             pipeline_version=provenance["pipeline_version"],
             created_at=provenance["created_at"],
@@ -151,8 +155,18 @@ def build_batch_meta(
     duplicates_dropped: int,
     config_fingerprint: str,
     utc_dates: list[str],
+    subsampling: GameSubsampling,
+    time_control_filter: TimeControlFilter,
+    train_ratio: float,
+    batch_size: int,
 ) -> BatchMeta:
-    """Build a BatchMeta from a finalized batch table and its parquet bytes."""
+    """Build a BatchMeta from a finalized batch table and its parquet bytes.
+
+    The full generation-relevant configuration (subsampling tiers, time
+    control filter, split ratio and batch size) is recorded alongside the
+    fingerprint so the values themselves are inspectable, not just their
+    hash.
+    """
     dates = sorted(d for d in utc_dates if d)
     return BatchMeta(
         schema_version=SCHEMA_VERSION,
@@ -170,6 +184,12 @@ def build_batch_meta(
         file_sha256=hashlib.sha256(file_bytes).hexdigest(),
         date_min=dates[0] if dates else None,
         date_max=dates[-1] if dates else None,
+        config={
+            "batch_size": batch_size,
+            "train_ratio": train_ratio,
+            "subsampling": subsampling.to_dict(),
+            "time_control_filter": time_control_filter.to_dict(),
+        },
         config_fingerprint=config_fingerprint,
         pipeline_version=PIPELINE_VERSION,
         created_at=_utcnow(),

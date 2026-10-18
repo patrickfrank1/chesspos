@@ -157,6 +157,7 @@ class TestBuildBatchMeta:
                 duplicates_dropped=0,
                 config_fingerprint="fp",
                 utc_dates=["2023-01-15"],
+                **_generation_config_kwargs(),
             )
 
         with when("the meta is serialized to json and back"):
@@ -182,6 +183,7 @@ class TestBuildBatchMeta:
                 duplicates_dropped=0,
                 config_fingerprint="fp",
                 utc_dates=[],
+                **_generation_config_kwargs(),
             )
 
         with when("the repo file paths are derived"):

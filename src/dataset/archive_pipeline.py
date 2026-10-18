@@ -579,6 +579,10 @@ class ArchivePipeline:
             duplicates_dropped=batch.duplicates_dropped,
             config_fingerprint=fingerprint,
             utc_dates=batch.utc_dates,
+            subsampling=self.preprocessing_config.subsampling,
+            time_control_filter=self.preprocessing_config.time_control_filter,
+            train_ratio=self.dataset_config.train_ratio,
+            batch_size=self.dataset_config.batch_size,
         )
         (root / batch.split / item.archive_id / f"{stem}.meta.json").write_text(
             meta.to_json()
