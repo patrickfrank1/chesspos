@@ -4,8 +4,10 @@ For every incomplete archive (local file or remote lichess URL) the
 pipeline: downloads/decompresses it as a stream, cuts it into
 game-aligned chunks, extracts one row per game per chunk, sorts and
 deduplicates the rows, splits them into train/test batches, and uploads
-each parquet shard together with a ``.meta.json`` sidecar in a single
-atomic commit. A completed archive is marked with
+the parquet shards together with their ``.meta.json`` sidecars in bulk
+commits (batches are queued and committed every 15 minutes, and any
+remainder is flushed together with the completion marker when the
+archive finishes). A completed archive is marked with
 ``archives/<archive_id>/_COMPLETE.json``; marked archives are skipped on
 every subsequent run, which makes the whole pipeline idempotent on
 ephemeral disks.
@@ -18,6 +20,7 @@ import os
 import shutil
 import tempfile
 import threading
+import time
 import urllib.request
 from collections import deque
 from collections.abc import Iterator
@@ -70,6 +73,7 @@ class _RayExtractor:
         if not ray.is_initialized():
             ray.init(
                 address=os.environ.get("RAY_ADDRESS") or "local",
+                dashboard_host=os.environ.get("RAY_DASHBOARD_HOST", "0.0.0.0"),
                 ignore_reinit_error=True,
             )
         remote = ray.remote(ChessPositionDataset._extract_positions)
@@ -153,11 +157,33 @@ class _Prefetcher:
 
 
 class BatchUploader:
-    """Idempotent uploader for batch parquet + sidecar pairs."""
+    """Queued, idempotent uploader for batch parquet + sidecar pairs.
 
-    def __init__(self, hf_api: HfApi | None = None, repo_id: str = ""):
+    Batches are queued with :meth:`queue_batch` and committed in bulk:
+    whenever the queue is non-empty and ``flush_interval_seconds`` have
+    elapsed since the last commit, the pending operations are committed
+    without the completion marker. :meth:`flush` commits any remainder
+    together with the ``archives/<archive_id>/_COMPLETE.json`` marker at
+    archive end. This keeps the number of Hub commits low (rate limit:
+    128 per hour) while bounding re-upload loss after a crash to the
+    flush interval.
+    """
+
+    MAX_OPS_PER_COMMIT = 32
+
+    def __init__(
+        self,
+        hf_api: HfApi | None = None,
+        repo_id: str = "",
+        flush_interval_seconds: float = 900.0,
+        clock=time.monotonic,
+    ):
         self.hf_api = hf_api or HfApi()
         self.repo_id = repo_id
+        self.flush_interval_seconds = flush_interval_seconds
+        self._clock = clock
+        self._pending: list[CommitOperationAdd] = []
+        self._last_commit: float = clock()
         return
 
     def _existing_meta_json(self, path_in_repo: str) -> str | None:
@@ -176,13 +202,8 @@ class BatchUploader:
         except (OSError, TypeError):
             return result if isinstance(result, str) else None
 
-    def upload_batch(self, parquet_path: Path, meta: BatchMeta) -> bool:
-        """Upload parquet + sidecar in one commit.
-
-        Returns False (and uploads nothing) when an identical batch
-        (same ``file_sha256``) already exists on the hub; overwrites when
-        the content differs.
-        """
+    def _batch_already_uploaded(self, meta: BatchMeta) -> bool:
+        """True when an identical batch (same ``file_sha256``) is on the hub."""
         existing = self._existing_meta_json(meta.repo_meta_path())
         if existing:
             try:
@@ -190,29 +211,24 @@ class BatchUploader:
                 recorded = data.get("file_sha256")
                 if recorded is None:
                     recorded = data.get("stats", {}).get("file_sha256")
-                if recorded == meta.file_sha256:
-                    return False
+                return recorded == meta.file_sha256
             except (ValueError, AttributeError, TypeError):
                 pass
-        operations = [
-            CommitOperationAdd(
-                path_in_repo=meta.repo_parquet_path(),
-                path_or_fileobj=str(parquet_path),
-            ),
-            CommitOperationAdd(
-                path_in_repo=meta.repo_meta_path(),
-                path_or_fileobj=meta.to_json().encode("utf-8"),
-            ),
-        ]
-        self.hf_api.create_commit(
-            repo_id=self.repo_id,
-            repo_type="dataset",
-            operations=operations,
-            commit_message=f"Add {meta.split} batch {meta.file_name}",
-        )
-        return True
+        return False
 
-    def mark_complete(self, archive_id: str, batch_files: list[str]) -> None:
+    def _commit_operations(self, operations: list[CommitOperationAdd]) -> None:
+        for start in range(0, len(operations), self.MAX_OPS_PER_COMMIT):
+            chunk = operations[start : start + self.MAX_OPS_PER_COMMIT]
+            self.hf_api.create_commit(
+                repo_id=self.repo_id,
+                repo_type="dataset",
+                operations=chunk,
+                commit_message="Add chess position batches",
+            )
+        self._last_commit = self._clock()
+        return
+
+    def _marker_operation(self, archive_id: str, batch_files: list[str]):
         payload = json.dumps(
             {
                 "archive_id": archive_id,
@@ -220,18 +236,68 @@ class BatchUploader:
                 "created_at": _utcnow(),
             }
         )
-        operations = [
-            CommitOperationAdd(
-                path_in_repo=f"archives/{archive_id}/_COMPLETE.json",
-                path_or_fileobj=payload.encode("utf-8"),
-            )
-        ]
-        self.hf_api.create_commit(
-            repo_id=self.repo_id,
-            repo_type="dataset",
-            operations=operations,
-            commit_message=f"Mark archive {archive_id} complete",
+        return CommitOperationAdd(
+            path_in_repo=f"archives/{archive_id}/_COMPLETE.json",
+            path_or_fileobj=payload.encode("utf-8"),
         )
+
+    def queue_batch(self, parquet_path: Path, meta: BatchMeta) -> bool:
+        """Queue a batch's parquet + sidecar for bulk commit.
+
+        Commits all pending operations first when the flush interval has
+        elapsed. Returns False (and queues nothing) when an identical
+        batch (same ``file_sha256``) already exists on the hub.
+        """
+        if (
+            self._pending
+            and self._clock() - self._last_commit >= self.flush_interval_seconds
+        ):
+            pending, self._pending = self._pending, []
+            self._commit_operations(pending)
+        if self._batch_already_uploaded(meta):
+            return False
+        self._pending.extend(
+            [
+                CommitOperationAdd(
+                    path_in_repo=meta.repo_parquet_path(),
+                    path_or_fileobj=str(parquet_path),
+                ),
+                CommitOperationAdd(
+                    path_in_repo=meta.repo_meta_path(),
+                    path_or_fileobj=meta.to_json().encode("utf-8"),
+                ),
+            ]
+        )
+        return True
+
+    def flush(self, archive_id: str, batch_files: list[str]) -> None:
+        """Commit pending operations together with the completion marker.
+
+        The marker rides in the last chunk when the pending queue is
+        chunked; a queue that fits a single commit lands as one commit.
+        """
+        operations = self._pending
+        self._pending = []
+        marker = self._marker_operation(archive_id, batch_files)
+        marker_path = marker.path_in_repo
+        chunks = [
+            operations[start : start + self.MAX_OPS_PER_COMMIT]
+            for start in range(0, len(operations), self.MAX_OPS_PER_COMMIT)
+        ] or [[]]
+        chunks[-1] = chunks[-1] + [marker]
+        for chunk in chunks:
+            message = (
+                f"Mark archive {archive_id} complete"
+                if any(op.path_in_repo == marker_path for op in chunk)
+                else "Add chess position batches"
+            )
+            self.hf_api.create_commit(
+                repo_id=self.repo_id,
+                repo_type="dataset",
+                operations=chunk,
+                commit_message=message,
+            )
+        self._last_commit = self._clock()
         return
 
 
@@ -592,7 +658,7 @@ class ArchivePipeline:
             meta.to_json()
         )
         if not dry_run:
-            uploader.upload_batch(parquet_path, meta)
+            uploader.queue_batch(parquet_path, meta)
             return meta.repo_parquet_path()
         return None
 
@@ -619,5 +685,5 @@ class ArchivePipeline:
             )
             (marker_dir / "_COMPLETE.json").write_text(payload)
         else:
-            uploader.mark_complete(item.archive_id, batch_files)
+            uploader.flush(item.archive_id, batch_files)
         return
