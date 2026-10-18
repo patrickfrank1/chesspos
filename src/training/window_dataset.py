@@ -34,7 +34,7 @@ class WindowDataset(Dataset):
             self.games = config.games
             return
         self.games: list[list[np.ndarray]] = []
-        for path in sorted(Path(config.data_dir).glob("*.parquet")):
+        for path in sorted(Path(config.data_dir).rglob("*.parquet")):
             self.games.extend(_load_game_segments(path))
         return
 
@@ -92,6 +92,17 @@ class WindowDataset(Dataset):
 
 
 def _load_game_segments(path: Path) -> list[list[np.ndarray]]:
+    """Load games from a parquet file, or recursively from a directory.
+
+    Directories (e.g. a hub snapshot's ``{split}/{archive_id}/`` layout) are
+    searched recursively for ``*.parquet`` shards; other files such as
+    ``.meta.json`` sidecars are ignored.
+    """
+    if path.is_dir():
+        games = []
+        for shard in sorted(path.rglob("*.parquet")):
+            games.extend(_load_game_segments(shard))
+        return games
     table = pq.read_table(path, columns=["packed"])
     column = table.column("packed").combine_chunks()
     if len(column) == 0:

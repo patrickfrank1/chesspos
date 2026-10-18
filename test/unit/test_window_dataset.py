@@ -11,6 +11,7 @@ from src.modeling.masking import IGNORE_INDEX
 from src.training.window_dataset import (
     WindowDataset,
     WindowDatasetConfig,
+    _load_game_segments,
     collate_windows,
 )
 
@@ -277,4 +278,52 @@ class TestCollate:
         with then("only pad positions are excluded and their targets are ignored"):
             assert pad_row.sum() == len(stream) - 20
             assert torch.all(batch["targets"][1][pad_row] == IGNORE_INDEX)
+        return
+
+
+class TestNestedArchiveLayout:
+    def write_shard(self, directory, archive: str, seeds: tuple[int, ...]):
+        shard_dir = directory / archive
+        shard_dir.mkdir(parents=True)
+        table = pa.table(
+            {
+                "packed": pa.array(
+                    [pack_stream(random_game(seed)).tolist() for seed in seeds],
+                    type=pa.list_(pa.int64()),
+                )
+            }
+        )
+        pq.write_table(table, shard_dir / "batch_0000.parquet")
+        (shard_dir / "batch_0000.meta.json").touch()
+        return
+
+    def test_window_dataset_loads_nested_shards(self, tmp_path):
+        with given("a data directory with shards nested per archive and meta sidecars"):
+            directory = tmp_path / "processed"
+            self.write_shard(directory, "lichess_2014-01", (1, 2))
+            self.write_shard(directory, "lichess_2021-01", (3, 4))
+
+        with when("a window dataset is created over the directory"):
+            dataset = WindowDataset(
+                WindowDatasetConfig(
+                    data_dir=str(directory), max_seq_len=256, max_segments=32
+                )
+            )
+
+        with then("all four games across both archives are loaded"):
+            assert len(dataset) == 4
+        return
+
+    def test_load_game_segments_from_nested_directory(self, tmp_path):
+        with given("a data directory with shards nested per archive and meta sidecars"):
+            directory = tmp_path / "processed"
+            self.write_shard(directory, "lichess_2014-01", (1, 2))
+            self.write_shard(directory, "lichess_2021-01", (3, 4))
+
+        with when("the game segments are loaded from the directory"):
+            games = _load_game_segments(directory)
+
+        with then("all four games are returned and sidecars are ignored"):
+            assert len(games) == 4
+            assert all(len(game) > 0 for game in games)
         return
