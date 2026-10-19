@@ -34,11 +34,12 @@ def make_pipeline(
     data_path: str | None = "/tmp",
     archive_urls: list[str] | None = None,
     worker_count: int = 1,
+    batch_size: int = 10,
 ) -> ArchivePipeline:
     return ArchivePipeline(
         dataset_config=DatasetConfig(
             repo_name="test/chesspos-test",
-            batch_size=10,
+            batch_size=batch_size,
             train_ratio=0.8,
             data_path=data_path,
         ),
@@ -514,7 +515,9 @@ class TestBatchNumbering:
             )
             payload = _zst(games)
             pipeline = make_pipeline(
-                data_path=None, archive_urls=["https://x/test-a.pgn.zst"]
+                data_path=None,
+                archive_urls=["https://x/test-a.pgn.zst"],
+                batch_size=5,
             )
 
         with when("the pipeline runs to completion"):
