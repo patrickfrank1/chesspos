@@ -92,11 +92,12 @@ class MaskedStreamTransformer(nn.Module):
         if padding_mask is None:
             padding_mask = tokens.ne(0)
         hidden = self._trunk(tokens, segment_ids, padding_mask)
-        logits = self.head(hidden)
-        output = {"logits": logits, "hidden_states": hidden}
-        if targets is not None:
-            output["loss"] = self._loss(logits, targets, weights)
-        return output
+        if targets is None:
+            return {"logits": self.head(hidden), "hidden_states": hidden}
+        return {
+            "loss": self._loss(hidden, targets, weights),
+            "hidden_states": hidden,
+        }
 
     def _trunk(
         self,
@@ -111,24 +112,26 @@ class MaskedStreamTransformer(nn.Module):
             flat = block(flat, cu, max_seqlen)
         return scatter_valid(self.ln_final(flat), padding_mask)
 
-    @staticmethod
     def _loss(
-        logits: torch.Tensor,
+        self,
+        hidden: torch.Tensor,
         targets: torch.Tensor,
         weights: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        per_token = F.cross_entropy(
-            logits.view(-1, logits.size(-1)),
-            targets.view(-1),
-            ignore_index=IGNORE_INDEX,
-            reduction="none",
-        )
-        valid = targets.ne(IGNORE_INDEX).view(-1)
+        """Supervised loss computed only at positions with targets.
+
+        The vocabulary head runs solely on supervised rows (masked tokens);
+        ignored positions (unmasked tokens, CLS/SEP, padding) never reach the
+        head or the cross-entropy.
+        """
+        valid = targets.ne(IGNORE_INDEX)
         if not valid.any():
-            return logits.new_zeros(())
-        per_token = per_token[valid]
+            return hidden.new_zeros(())
+        flat_hidden = hidden[valid]
+        logits = self.head(flat_hidden)
+        per_token = F.cross_entropy(logits, targets[valid], reduction="none")
         if weights is not None:
-            w = weights.reshape(-1)[valid].to(per_token.dtype)
+            w = weights[valid].to(per_token.dtype)
             total = w.sum()
             if total > 0:
                 return (per_token * w).sum() / total

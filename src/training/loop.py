@@ -17,7 +17,13 @@ from pathlib import Path
 import torch
 from torch.utils.data import DataLoader
 
+from src.modeling.masking import IGNORE_INDEX
 from src.modeling.transformer import MaskedStreamTransformer, TransformerConfig
+
+
+def use_fused_adamw(device: torch.device) -> bool:
+    """Whether the fused CUDA AdamW kernel can be used on ``device``."""
+    return device.type == "cuda" and torch.cuda.is_available()
 
 
 def make_logger(path: str | None):
@@ -153,9 +159,9 @@ def evaluate(
                 targets=batch["targets"],
             )
         losses.append(output["loss"].item())
-        valid = batch["targets"].ne(-100)
-        predictions = output["logits"].argmax(-1)
-        correct += (predictions[valid] == batch["targets"][valid]).sum().item()
+        valid = batch["targets"].ne(IGNORE_INDEX)
+        predictions = model.head(output["hidden_states"][valid]).argmax(-1)
+        correct += (predictions == batch["targets"][valid]).sum().item()
         total += valid.sum().item()
     model.train()
     loss = sum(losses) / max(1, len(losses))

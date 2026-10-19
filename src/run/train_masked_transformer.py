@@ -26,6 +26,7 @@ from src.training.loop import (
     make_logger,
     save_checkpoint,
     system_snapshot,
+    use_fused_adamw,
     write_eval_artifacts,
 )
 from src.training.mlflow_tracker import MLflowTracker, resolve_tracking_uri
@@ -346,7 +347,10 @@ def main() -> None:
     )
 
     optimizer = torch.optim.AdamW(
-        model.parameters(), lr=args.lr, weight_decay=args.weight_decay
+        model.parameters(),
+        lr=args.lr,
+        weight_decay=args.weight_decay,
+        fused=use_fused_adamw(device),
     )
     scheduler = torch.optim.lr_scheduler.LambdaLR(
         optimizer,

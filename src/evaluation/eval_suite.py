@@ -102,8 +102,8 @@ def mlm_breakdown(
                 targets=batch["targets"],
             )
             valid = batch["targets"].ne(IGNORE_INDEX)
-            predictions = output["logits"].argmax(-1)
-            correct = predictions[valid] == batch["targets"][valid]
+            predictions = model.head(output["hidden_states"][valid]).argmax(-1)
+            correct = predictions == batch["targets"][valid]
             targets = batch["targets"][valid]
             low, high = SLOT_CONTENT_BOUNDS
             piece = targets.ge(low) & targets.lt(high)

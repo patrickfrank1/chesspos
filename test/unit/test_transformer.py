@@ -1,6 +1,7 @@
 import numpy as np
 import pytest
 import torch
+from torch import nn
 
 from bdd import given, then, when
 from src.dataset.token_stream import EMPTY, SEP, VOCAB_SIZE
@@ -333,8 +334,19 @@ def tiny_batch(n_segments=3, batch=2, seed=0):
     return collate_windows(samples)
 
 
+def supervised_batch():
+    """A tiny batch with real supervised targets at six positions."""
+    batch = tiny_batch()
+    targets = batch["targets"].clone()
+    for row, positions in ((0, (2, 5, 8)), (1, (1, 4, 9))):
+        for position in positions:
+            targets[row, position] = batch["tokens"][row, position]
+    batch["targets"] = targets
+    return batch
+
+
 class TestTransformer:
-    def test_forward_shapes_and_loss(self):
+    def test_forward_with_targets_returns_loss_without_logits(self):
         with given("a tiny masked stream transformer in eval mode and a batch"):
             model = MaskedStreamTransformer(TINY_CONFIG)
             model.eval()
@@ -348,9 +360,31 @@ class TestTransformer:
                 targets=batch["targets"],
             )
 
-        with then("logits span the vocabulary and the loss is finite"):
-            assert output["logits"].shape == (*batch["tokens"].shape, VOCAB_SIZE)
+        with then("the loss is finite and no full logits tensor is materialized"):
+            assert "logits" not in output
             assert torch.isfinite(output["loss"])
+            assert output["hidden_states"].shape == (
+                *batch["tokens"].shape,
+                TINY_CONFIG.d_model,
+            )
+        return
+
+    def test_forward_without_targets_returns_full_logits(self):
+        with given("a tiny masked stream transformer in eval mode and a batch"):
+            model = MaskedStreamTransformer(TINY_CONFIG)
+            model.eval()
+            batch = tiny_batch()
+
+        with when("the model runs a forward pass without targets"):
+            output = model(
+                batch["tokens"],
+                batch["segment_ids"],
+                padding_mask=batch["padding_mask"],
+            )
+
+        with then("logits span the padded sequence and the vocabulary"):
+            assert output["logits"].shape == (*batch["tokens"].shape, VOCAB_SIZE)
+            assert torch.isfinite(output["logits"]).all()
         return
 
     def test_padding_does_not_change_real_outputs(self):
@@ -401,28 +435,83 @@ class TestTransformer:
             assert loss.item() == 0.0
         return
 
+    def test_head_runs_only_on_supervised_positions(self):
+        with given("a tiny model whose head records how many rows it sees"):
+            model = MaskedStreamTransformer(TINY_CONFIG)
+            model.eval()
+            batch = supervised_batch()
+
+            class RecordingHead(nn.Module):
+                def __init__(self, inner: nn.Module):
+                    super().__init__()
+                    self.inner = inner
+                    self.row_counts: list[int] = []
+
+                def forward(self, x: torch.Tensor) -> torch.Tensor:
+                    self.row_counts.append(x.shape[0])
+                    return self.inner(x)
+
+            recording = RecordingHead(model.head)
+            model.head = recording
+
+        with when("the model runs a forward pass with targets"):
+            with torch.no_grad():
+                model(
+                    batch["tokens"],
+                    batch["segment_ids"],
+                    padding_mask=batch["padding_mask"],
+                    targets=batch["targets"],
+                )
+
+        with then("the head saw exactly the supervised rows in a single call"):
+            supervised = int(batch["targets"].ne(IGNORE_INDEX).sum())
+            assert recording.row_counts == [supervised]
+        return
+
     def test_weighted_loss_matches_manual_weighted_mean(self):
-        with given("synthetic logits, targets, and per-target weights"):
-            logits = torch.zeros(1, 3, 10)
-            logits[0, 0, 3] = 100.0
-            logits[0, 1, 5] = 100.0
-            targets = torch.tensor([[2, 5, IGNORE_INDEX]])
-            weights = torch.tensor([[10.0, 1.0, 0.0]])
+        with given(
+            "a tiny model with a recording head, targets, and per-target weights"
+        ):
+            model = MaskedStreamTransformer(TINY_CONFIG)
+            model.eval()
+            batch = supervised_batch()
+            weights = (batch["targets"] != IGNORE_INDEX).float() + 1.0
 
-        with when("the weighted and unweighted losses are computed"):
-            weighted = MaskedStreamTransformer._loss(logits, targets, weights)
-            unweighted = MaskedStreamTransformer._loss(logits, targets)
+            recorded: dict[str, torch.Tensor] = {}
 
-        with then("the weighted loss equals the manually computed weighted mean"):
-            ce0 = torch.nn.functional.cross_entropy(
-                logits[0, 0].unsqueeze(0), targets[0, 0].unsqueeze(0)
+            class RecordingHead(nn.Module):
+                def __init__(self, inner: nn.Module):
+                    super().__init__()
+                    self.inner = inner
+
+                def forward(self, x: torch.Tensor) -> torch.Tensor:
+                    logits = self.inner(x)
+                    recorded["logits"] = logits
+                    return logits
+
+            model.head = RecordingHead(model.head)
+
+        with when("the weighted loss is computed"):
+            with torch.no_grad():
+                weighted = model(
+                    batch["tokens"],
+                    batch["segment_ids"],
+                    padding_mask=batch["padding_mask"],
+                    targets=batch["targets"],
+                    weights=weights,
+                )["loss"]
+
+        with then(
+            "it equals the manually computed weighted mean over the recorded logits"
+        ):
+            logits = recorded["logits"]
+            targets = batch["targets"][batch["targets"] != IGNORE_INDEX]
+            w = weights[batch["targets"] != IGNORE_INDEX]
+            per_token = torch.nn.functional.cross_entropy(
+                logits, targets, reduction="none"
             )
-            ce1 = torch.nn.functional.cross_entropy(
-                logits[0, 1].unsqueeze(0), targets[0, 1].unsqueeze(0)
-            )
-            expected = (10.0 * ce0 + 1.0 * ce1) / 11.0
+            expected = (per_token * w).sum() / w.sum()
             assert weighted.item() == pytest.approx(expected.item(), rel=1e-4)
-            assert weighted.item() != pytest.approx(unweighted.item(), rel=1e-3)
         return
 
     def test_forward_accepts_weights(self):
