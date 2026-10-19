@@ -4,6 +4,8 @@ import os
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
+from queue import Queue
+from threading import Thread
 
 import numpy as np
 import pyarrow.parquet as pq
@@ -31,6 +33,7 @@ class WindowDatasetConfig:
     balanced_modes: bool = True
     unigram_weights: np.ndarray | None = None
     shuffle_buffer: int = 0
+    prefetch_shards: int = 0
 
 
 def build_mode_pattern(masking: MaskingConfig, period: int = 20) -> list[str]:
@@ -347,8 +350,15 @@ class StreamingWindowDataset(IterableDataset):
         epoch = 0
         while True:
             order = rng.permutation(worker_indices)
-            for shard_index in order:
-                for segments in _load_game_segments(self.shards[shard_index]):
+            shard_iter = (
+                self._prefetched_shards(order)
+                if self.config.prefetch_shards > 0
+                else (
+                    (index, _load_game_segments(self.shards[index])) for index in order
+                )
+            )
+            for _, games in shard_iter:
+                for segments in games:
                     if self.config.shuffle_buffer > 1:
                         if len(buffer) >= self.config.shuffle_buffer:
                             game = buffer.pop(int(rng.integers(len(buffer))))
@@ -363,6 +373,38 @@ class StreamingWindowDataset(IterableDataset):
                 yield self._window(game, rng, mode_counter)
                 mode_counter += 1
             epoch += 1
+        return
+
+    def _prefetched_shards(self, order: np.ndarray):
+        """Yield ``(shard_index, games)`` while preloading ahead in a thread pool.
+
+        A bounded queue holds up to ``prefetch_shards`` decoded shards per
+        worker, decoupling parquet IO + decode from window building so the
+        consumer never waits on the next shard load. The bound caps the
+        cache's memory footprint.
+        """
+        queue: Queue = Queue(maxsize=self.config.prefetch_shards)
+        end = object()
+
+        def producer() -> None:
+            try:
+                for index in order:
+                    queue.put((index, _load_game_segments(self.shards[index])))
+                queue.put(end)
+            except Exception as error:  # surface producer failures to consumer
+                queue.put(error)
+            return
+
+        thread = Thread(target=producer, daemon=True)
+        thread.start()
+        while True:
+            item = queue.get()
+            if item is end:
+                break
+            if isinstance(item, Exception):
+                raise item
+            yield item
+        thread.join()
         return
 
     def _window(

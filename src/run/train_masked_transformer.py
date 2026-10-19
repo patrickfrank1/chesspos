@@ -116,6 +116,24 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--eval-pool-size", type=int, default=1024)
     parser.add_argument("--eval-counterfactual", type=int, default=256)
     parser.add_argument(
+        "--prefetch-shards",
+        type=int,
+        default=2,
+        help="Shards preloaded ahead per streaming worker (0 disables; "
+        "only used with --streaming). Bounds the decoded-shard cache.",
+    )
+    parser.add_argument(
+        "--prefetch-factor",
+        type=int,
+        default=4,
+        help="Batches prefetched per DataLoader worker",
+    )
+    parser.add_argument(
+        "--no-pin-memory",
+        action="store_true",
+        help="Disable pinned memory for host-to-device batch transfers",
+    )
+    parser.add_argument(
         "--no-freq-weighting",
         action="store_true",
         help="Disable inverse-unigram-frequency loss weighting",
@@ -220,6 +238,7 @@ def main() -> None:
                 max_segments=args.max_segments,
                 seed=args.seed,
                 shuffle_buffer=args.shuffle_buffer,
+                prefetch_shards=args.prefetch_shards,
             )
         )
         if not args.no_freq_weighting:
@@ -303,6 +322,7 @@ def main() -> None:
         log(f"uploaded {remote_name} to {args.upload_bucket}/{args.upload_prefix}")
         return
 
+    pin_memory = not args.no_pin_memory and device.type == "cuda"
     train_loader = DataLoader(
         train_dataset,
         batch_size=args.batch_size,
@@ -311,6 +331,8 @@ def main() -> None:
         collate_fn=collate_windows,
         drop_last=True,
         persistent_workers=args.num_workers > 0,
+        pin_memory=pin_memory,
+        prefetch_factor=args.prefetch_factor if args.num_workers > 0 else None,
     )
     val_loader = DataLoader(
         val_dataset,
@@ -319,6 +341,8 @@ def main() -> None:
         num_workers=args.num_workers,
         collate_fn=collate_windows,
         persistent_workers=args.num_workers > 0,
+        pin_memory=pin_memory,
+        prefetch_factor=args.prefetch_factor if args.num_workers > 0 else None,
     )
 
     optimizer = torch.optim.AdamW(
@@ -358,7 +382,7 @@ def main() -> None:
             train_iter = iter(train_loader)
             batch = next(train_iter)
 
-        batch = {k: v.to(device) for k, v in batch.items()}
+        batch = {k: v.to(device, non_blocking=pin_memory) for k, v in batch.items()}
         with autocast():
             output = model(
                 batch["tokens"],

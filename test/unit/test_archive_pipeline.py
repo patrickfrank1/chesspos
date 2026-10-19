@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pyarrow as pa
+import pytest
 import zstandard
 
 from bdd import given, then, when
@@ -27,6 +28,10 @@ from src.dataset.config import (
     SourceConfig,
 )
 from src.dataset.source import WorkItem
+
+# These tests boot real local Ray instances; keep them in one xdist worker
+# (with --dist loadgroup) so parallel Ray clusters cannot collide on ports.
+pytestmark = pytest.mark.xdist_group("ray")
 
 
 def make_pipeline(

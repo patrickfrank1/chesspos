@@ -39,7 +39,7 @@ jobs:
         run: uv run ruff check .
 
       - name: Pytest (unit)
-        run: uv run pytest -m "not integration" -ra -n auto
+        run: uv run pytest -m "not integration" -ra -n auto --dist loadgroup
 
   test-integration:
     runs-on: ubuntu-latest

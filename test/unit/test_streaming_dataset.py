@@ -248,3 +248,52 @@ class TestStreamingUnigramCounts:
             assert any("2/2" in message for message in messages)
             assert any("done" in message for message in messages)
         return
+
+
+class TestStreamingPrefetch:
+    def test_prefetch_keeps_epoch_content_identical(self, tmp_path):
+        with given("a streaming dataset with a two-shard lookahead cache"):
+            directory = tmp_path / "train"
+            write_stream_shard(directory, "a.parquet", (1, 2, 3))
+            write_stream_shard(directory, "b.parquet", (4, 5, 6))
+            dataset = StreamingWindowDataset(make_config(directory, prefetch_shards=2))
+
+        with when("one full epoch is consumed"):
+            samples = []
+            for sample in dataset:
+                samples.append(sample_signature(sample))
+                if len(samples) == len(dataset):
+                    break
+
+        with then("the samples are exactly the packed games, as a multiset"):
+            expected = sorted(g.tobytes() for g in expected_packed_games(directory))
+            assert sorted(samples) == expected
+        return
+
+    def test_prefetch_works_across_workers(self, tmp_path):
+        with given("a two-worker loader over a prefetched streaming dataset"):
+            directory = tmp_path / "train"
+            write_stream_shard(directory, "a.parquet", (1, 2, 3))
+            write_stream_shard(directory, "b.parquet", (4, 5, 6))
+            write_stream_shard(directory, "c.parquet", (7, 8, 9))
+            write_stream_shard(directory, "d.parquet", (10, 11, 12))
+            dataset = StreamingWindowDataset(make_config(directory, prefetch_shards=2))
+            loader = DataLoader(
+                dataset,
+                batch_size=2,
+                num_workers=2,
+                collate_fn=collate_windows,
+            )
+
+        with when("one full epoch (12 games) is consumed across two workers"):
+            signatures = []
+            for batch in loader:
+                for row in batch["tokens"].numpy().astype(np.int16):
+                    signatures.append(np.trim_zeros(row, "b").tobytes())
+                if len(signatures) >= len(dataset):
+                    break
+
+        with then("every game appears exactly once, no epoch wraparound"):
+            expected = sorted(g.tobytes() for g in expected_packed_games(directory))
+            assert sorted(signatures) == expected
+        return
