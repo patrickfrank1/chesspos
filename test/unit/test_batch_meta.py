@@ -1,9 +1,12 @@
 import hashlib
 import json
 
+import numpy as np
+
 from bdd import given, then, when
 from src.dataset.batch_meta import BatchMeta, build_batch_meta, config_fingerprint
 from src.dataset.config import GameSubsampling, GameSubsampleTier, TimeControlFilter
+from src.dataset.token_stream import CLS, SEP, VOCAB_SIZE
 
 
 def make_games_table(num_games=2, n_positions_per_game=3):
@@ -271,4 +274,93 @@ class TestMetaConfigValues:
 
         with then("the restored meta equals the original, config values included"):
             assert restored == meta
+        return
+
+
+class TestUnigramCountsInMeta:
+    def test_build_batch_meta_records_unigram_histogram(self):
+        with given("a finalized batch table with packed token streams"):
+            table = make_games_table(num_games=2, n_positions_per_game=3)
+
+        with when("the batch meta is built"):
+            meta = build_batch_meta(
+                table=table,
+                file_bytes=b"",
+                split="train",
+                batch_number=0,
+                chunk_index=0,
+                seq=0,
+                provider="lichess",
+                archive_id="arch",
+                url="u",
+                duplicates_dropped=0,
+                config_fingerprint="fp",
+                utc_dates=[],
+                **_generation_config_kwargs(),
+            )
+
+        with then("the histogram excludes SEP tokens and each stream's leading CLS"):
+            packed = np.concatenate(
+                [
+                    np.asarray(row, dtype=np.int64)
+                    for row in table.column("packed").to_pylist()
+                ]
+            )
+            expected = np.bincount(packed, minlength=VOCAB_SIZE)
+            expected[SEP] -= int((packed == SEP).sum())
+            leading = [row[0] for row in table.column("packed").to_pylist()]
+            expected[CLS] -= sum(1 for token in leading if token == CLS)
+            assert meta.unigram_counts == expected.tolist()
+        return
+
+    def test_unigram_histogram_survives_json_roundtrip(self):
+        with given("a batch meta built from a packed table"):
+            meta = build_batch_meta(
+                table=make_games_table(num_games=1),
+                file_bytes=b"",
+                split="train",
+                batch_number=0,
+                chunk_index=0,
+                seq=0,
+                provider="lichess",
+                archive_id="arch",
+                url="u",
+                duplicates_dropped=0,
+                config_fingerprint="fp",
+                utc_dates=[],
+                **_generation_config_kwargs(),
+            )
+
+        with when("the meta is serialized to json and back"):
+            restored = BatchMeta.from_json(meta.to_json())
+
+        with then("the histogram is preserved"):
+            assert restored.unigram_counts == meta.unigram_counts
+        return
+
+    def test_from_json_tolerates_old_sidecars_without_histogram(self):
+        with given("a sidecar JSON produced before histograms were recorded"):
+            meta = build_batch_meta(
+                table=make_games_table(num_games=1),
+                file_bytes=b"",
+                split="train",
+                batch_number=0,
+                chunk_index=0,
+                seq=0,
+                provider="lichess",
+                archive_id="arch",
+                url="u",
+                duplicates_dropped=0,
+                config_fingerprint="fp",
+                utc_dates=[],
+                **_generation_config_kwargs(),
+            )
+            payload = json.loads(meta.to_json())
+            del payload["stats"]["unigram_counts"]
+
+        with when("the old sidecar is parsed"):
+            restored = BatchMeta.from_json(json.dumps(payload))
+
+        with then("the histogram is simply absent"):
+            assert restored.unigram_counts is None
         return

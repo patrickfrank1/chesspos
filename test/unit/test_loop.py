@@ -3,7 +3,7 @@ from torch import nn
 
 from bdd import given, then, when
 from src.modeling.masking import IGNORE_INDEX
-from src.training.loop import evaluate, use_fused_adamw
+from src.training.loop import apply_compile, evaluate, use_fused_adamw
 
 
 class FakeModel(nn.Module):
@@ -57,6 +57,38 @@ class TestEvaluate:
         with then("the stub loss is averaged and accuracy counts valid positions only"):
             assert loss == 0.25
             assert accuracy == 0.5
+        return
+
+
+class TestApplyCompile:
+    def test_disabled_returns_model_unchanged(self):
+        with given("a model and compile disabled"):
+            model = nn.Linear(2, 2)
+
+        with when("compile is applied"):
+            result = apply_compile(model, False)
+
+        with then("the exact model object is returned"):
+            assert result is model
+        return
+
+    def test_enabled_wraps_with_dynamic_shapes(self, monkeypatch):
+        with given("a model, compile enabled, and torch.compile recorded"):
+            model = nn.Linear(2, 2)
+            calls: dict = {}
+
+            def fake_compile(module, **kwargs):
+                calls.update(kwargs)
+                return ("compiled", module)
+
+            monkeypatch.setattr(torch, "compile", fake_compile)
+
+        with when("compile is applied"):
+            result = apply_compile(model, True)
+
+        with then("torch.compile wraps the model with dynamic shapes enabled"):
+            assert result == ("compiled", model)
+            assert calls.get("dynamic") is True
         return
 
 

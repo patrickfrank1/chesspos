@@ -26,6 +26,17 @@ def use_fused_adamw(device: torch.device) -> bool:
     return device.type == "cuda" and torch.cuda.is_available()
 
 
+def apply_compile(model: torch.nn.Module, enabled: bool) -> torch.nn.Module:
+    """Wrap ``model`` with torch.compile when enabled.
+
+    ``dynamic=True`` lets the varlen valid-token count vary across batches
+    without triggering a recompilation for every new shape.
+    """
+    if not enabled:
+        return model
+    return torch.compile(model, dynamic=True)
+
+
 def make_logger(path: str | None):
     file = open(path, "a", encoding="utf-8") if path else None
 

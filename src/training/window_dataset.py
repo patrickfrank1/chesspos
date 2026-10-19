@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -271,36 +272,79 @@ def _split_segments(stream: np.ndarray) -> list[np.ndarray]:
     return segments
 
 
+def _shard_counts(shard: Path) -> np.ndarray:
+    """Per-shard token histogram with SEP and leading-CLS framing removed."""
+    counts = np.zeros(VOCAB_SIZE, dtype=np.int64)
+    table = pq.read_table(shard, columns=["packed"])
+    column = table.column("packed").combine_chunks()
+    if len(column) == 0:
+        return counts
+    offsets = np.asarray(column.offsets)
+    values = column.flatten().to_numpy(zero_copy_only=False).astype(np.int16)
+    counts += np.bincount(values, minlength=VOCAB_SIZE)
+    counts[SEP] -= int((values == SEP).sum())
+    counts[CLS] -= int((values[offsets[:-1]] == CLS).sum())
+    return counts
+
+
+def _shard_signature(shards: list[Path]) -> str:
+    """JSON fingerprint of the shard set (names and sizes)."""
+    return json.dumps([[shard.name, shard.stat().st_size] for shard in shards])
+
+
 def streaming_unigram_counts(
-    data_dir: str | Path, log=None, log_every: int = 25
+    data_dir: str | Path,
+    log=None,
+    log_every: int = 25,
+    cache: bool = True,
+    max_workers: int | None = None,
 ) -> np.ndarray:
     """Compute token counts over a split without materializing games.
 
-    Reads every shard once and accumulates a vocabulary-sized histogram of
-    the raw packed tokens. Segment-level counts exclude the SEP framing
-    tokens and the leading CLS of each game stream (interior CLS tokens are
-    kept, matching :func:`_split_segments`), so those are subtracted to match
-    :func:`unigram_counts` over preloaded games. ``log`` is an optional
-    callable receiving human-readable progress messages.
+    Reads every shard once (in parallel) and accumulates a vocabulary-sized
+    histogram of the raw packed tokens. Segment-level counts exclude the SEP
+    framing tokens and the leading CLS of each game stream (interior CLS
+    tokens are kept, matching :func:`_split_segments`), so those are
+    subtracted to match :func:`unigram_counts` over preloaded games. ``log``
+    is an optional callable receiving human-readable progress messages.
+
+    Results are cached in ``<data_dir>/.unigram_counts.npz`` keyed by the
+    shard set (names and sizes), so repeated launches over an immutable
+    snapshot (e.g. watchdog restarts) skip the pass entirely. A shard-set
+    mismatch or an unwritable directory silently falls back to recomputation.
     """
     log = log or (lambda message: None)
     shards = sorted(Path(data_dir).rglob("*.parquet"))
     log(f"unigram pass: {len(shards)} shards in {data_dir}")
+    cache_path = Path(data_dir) / ".unigram_counts.npz"
+    signature = _shard_signature(shards)
+    if cache and cache_path.exists():
+        try:
+            with np.load(cache_path, allow_pickle=False) as payload:
+                if json.loads(str(payload["signature"])) == json.loads(signature):
+                    counts = payload["counts"]
+                    log("unigram pass: loaded cached counts")
+                    log(f"unigram pass: done, {int(counts.sum())} tokens counted")
+                    return counts
+            log("unigram pass: cache stale, recomputing")
+        except (OSError, ValueError, KeyError):
+            log("unigram pass: cache unreadable, recomputing")
     counts = np.zeros(VOCAB_SIZE, dtype=np.int64)
-    for index, shard in enumerate(shards, start=1):
-        table = pq.read_table(shard, columns=["packed"])
-        column = table.column("packed").combine_chunks()
-        if len(column) == 0:
-            continue
-        offsets = np.asarray(column.offsets)
-        values = column.flatten().to_numpy(zero_copy_only=False).astype(np.int16)
-        counts += np.bincount(values, minlength=VOCAB_SIZE)
-        counts[SEP] -= int((values == SEP).sum())
-        leading_cls = int((values[offsets[:-1]] == CLS).sum())
-        counts[CLS] -= leading_cls
-        if index == 1 or index % log_every == 0 or index == len(shards):
-            log(f"unigram pass: shard {index}/{len(shards)} done")
+    if shards:
+        workers = max_workers or min(len(shards), os.cpu_count() or 1)
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            for index, shard_count in enumerate(
+                pool.map(_shard_counts, shards), start=1
+            ):
+                counts += shard_count
+                if index == 1 or index % log_every == 0 or index == len(shards):
+                    log(f"unigram pass: shard {index}/{len(shards)} done")
     log(f"unigram pass: done, {int(counts.sum())} tokens counted")
+    if cache:
+        try:
+            np.savez(cache_path, counts=counts, signature=np.array(signature))
+        except OSError:
+            log("unigram pass: could not write cache, skipping")
     return counts
 
 

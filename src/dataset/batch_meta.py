@@ -14,12 +14,32 @@ import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
+import numpy as np
 import pyarrow as pa
 
 from src.dataset.config import GameSubsampling, TimeControlFilter
+from src.dataset.token_stream import CLS, SEP, VOCAB_SIZE
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 PIPELINE_VERSION = "3"
+
+
+def unigram_histogram(table: pa.Table) -> list[int]:
+    """Token histogram over a batch's packed streams, framing tokens removed.
+
+    Mirrors the training-side unigram semantics: SEP framing tokens and each
+    stream's leading CLS are excluded so summing per-batch histograms equals
+    :func:`src.training.window_dataset.unigram_counts` over the same games.
+    """
+    column = table.column("packed").combine_chunks()
+    if len(column) == 0:
+        return [0] * VOCAB_SIZE
+    offsets = np.asarray(column.offsets)
+    values = column.flatten().to_numpy(zero_copy_only=False).astype(np.int64)
+    counts = np.bincount(values, minlength=VOCAB_SIZE)
+    counts[SEP] -= int((values == SEP).sum())
+    counts[CLS] -= int((values[offsets[:-1]] == CLS).sum())
+    return counts.tolist()
 
 
 def _utcnow() -> str:
@@ -58,6 +78,7 @@ class BatchMeta:
     num_positions: int
     duplicates_dropped: int
     file_sha256: str
+    unigram_counts: list[int] | None
     date_min: str | None
     date_max: str | None
     config: dict
@@ -96,6 +117,7 @@ class BatchMeta:
                     "num_positions": self.num_positions,
                     "duplicates_dropped": self.duplicates_dropped,
                     "file_sha256": self.file_sha256,
+                    "unigram_counts": self.unigram_counts,
                 },
                 "range": {
                     "date_min": self.date_min,
@@ -133,6 +155,7 @@ class BatchMeta:
             num_positions=stats["num_positions"],
             duplicates_dropped=stats["duplicates_dropped"],
             file_sha256=stats["file_sha256"],
+            unigram_counts=stats.get("unigram_counts"),
             date_min=range_["date_min"],
             date_max=range_["date_max"],
             config=config,
@@ -182,6 +205,7 @@ def build_batch_meta(
         num_positions=sum(table.column("n_positions").to_pylist()),
         duplicates_dropped=duplicates_dropped,
         file_sha256=hashlib.sha256(file_bytes).hexdigest(),
+        unigram_counts=unigram_histogram(table),
         date_min=dates[0] if dates else None,
         date_max=dates[-1] if dates else None,
         config={

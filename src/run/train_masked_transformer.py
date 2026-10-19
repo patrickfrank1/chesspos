@@ -19,6 +19,7 @@ from src.training.checkpoint_hub import (
 )
 from src.training.hf_data import download_split
 from src.training.loop import (
+    apply_compile,
     evaluate,
     format_system_snapshot,
     get_git_commit,
@@ -223,8 +224,7 @@ def main() -> None:
 
     model = MaskedStreamTransformer(model_config).to(device)
     raw_model = model
-    if args.compile:
-        model = torch.compile(model)
+    model = apply_compile(model, args.compile)
     n_params = sum(p.numel() for p in model.parameters())
     log(
         f"device={device} params={n_params / 1e6:.2f}M bf16={bf16} compile={args.compile}"
