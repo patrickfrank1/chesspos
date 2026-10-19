@@ -5,7 +5,12 @@ import torch
 from bdd import given, then, when
 from src.dataset.token_stream import EMPTY, SEP, VOCAB_SIZE
 from src.modeling.masking import IGNORE_INDEX, MaskingConfig, mask_stream
-from src.modeling.transformer import MaskedStreamTransformer, TransformerConfig
+from src.modeling.transformer import (
+    MaskedStreamTransformer,
+    TransformerBlock,
+    TransformerConfig,
+)
+from src.modeling.varlen import cu_seqlens, flatten_valid, scatter_valid
 from src.training.window_dataset import collate_windows
 
 
@@ -486,4 +491,112 @@ class TestTransformer:
                 assert torch.allclose(pooled[row, s], expected, atol=1e-6)
             assert mask[row, : len(real_segments)].all()
             assert not mask[row, len(real_segments) :].any()
+        return
+
+
+VARLEN_MASK = [
+    [1, 1, 1, 1, 0, 0],
+    [1, 1, 0, 0, 0, 0],
+    [1, 1, 1, 1, 1, 1],
+]
+
+
+class TestVarlenAttention:
+    def test_cu_seqlens_from_padding_mask(self):
+        with given("a padding mask for a batch of three rows"):
+            padding_mask = torch.tensor(VARLEN_MASK, dtype=torch.bool)
+
+        with when("cumulative segment offsets are computed"):
+            cu, max_seqlen = cu_seqlens(padding_mask)
+
+        with then("offsets delimit each row's valid tokens in row-major order"):
+            assert cu.tolist() == [0, 4, 6, 12]
+            assert max_seqlen == 6
+            assert cu.dtype == torch.int32
+        return
+
+    def test_flatten_valid_gathers_rows_in_order(self):
+        with given("a padded hidden tensor and its padding mask"):
+            x = torch.arange(18.0).reshape(3, 6, 1)
+            padding_mask = torch.tensor(VARLEN_MASK, dtype=torch.bool)
+
+        with when("valid tokens are flattened"):
+            flat = flatten_valid(x, padding_mask)
+
+        with then("flat holds only the valid tokens in row-major order"):
+            assert flat.shape == (12, 1)
+            expected = [
+                value
+                for row, value_row in enumerate(x.reshape(3, 6).tolist())
+                for kept, value in zip(VARLEN_MASK[row], value_row)
+                if kept
+            ]
+            assert flat.ravel().tolist() == expected
+        return
+
+    def test_scatter_valid_restores_padded_layout(self):
+        with given(
+            "a padded hidden tensor, its padding mask, and the flattened valid tokens"
+        ):
+            x = torch.arange(18.0).reshape(3, 6, 1)
+            padding_mask = torch.tensor(VARLEN_MASK, dtype=torch.bool)
+            flat = flatten_valid(x, padding_mask)
+
+        with when("the flat tokens are scattered back into a padded tensor"):
+            restored = scatter_valid(flat, padding_mask)
+
+        with then("valid positions are restored and pad positions are zeroed"):
+            assert restored.shape == x.shape
+            assert torch.equal(restored, x * padding_mask.unsqueeze(-1))
+        return
+
+    def test_block_attends_only_within_segments(self):
+        with given("a tiny transformer block and a flat input of two segments"):
+            block = TransformerBlock(TINY_CONFIG)
+            block.eval()
+            cu = torch.tensor([0, 4, 9], dtype=torch.int32)
+            max_seqlen = 5
+            x = torch.randn(9, TINY_CONFIG.d_model)
+
+        with when("the block runs forward over the flat segments"):
+            with torch.no_grad():
+                out = block(x, cu, max_seqlen)
+
+        with then("each segment's output equals running the block on it alone"):
+            for start, end in ((0, 4), (4, 9)):
+                with torch.no_grad():
+                    alone = block(
+                        x[start:end],
+                        torch.tensor([0, end - start], dtype=torch.int32),
+                        end - start,
+                    )
+                assert torch.allclose(out[start:end], alone, atol=1e-5)
+        return
+
+    def test_trunk_runs_blocks_on_flattened_valid_tokens(self):
+        with given("a tiny model and a padded batch whose blocks record their inputs"):
+            model = MaskedStreamTransformer(TINY_CONFIG)
+            model.eval()
+            batch = tiny_batch()
+            seen = []
+
+            def record(self, x, cu, max_seqlen):
+                seen.append((x.dim(), int(cu[-1])))
+                return x
+
+            for layer in model.blocks:
+                layer.forward = record.__get__(layer)
+
+        with when("the trunk runs forward with a padding mask"):
+            with torch.no_grad():
+                model._trunk(
+                    batch["tokens"], batch["segment_ids"], batch["padding_mask"]
+                )
+
+        with then("every block saw a flat tensor covering exactly the valid tokens"):
+            assert len(seen) == len(model.blocks)
+            valid_total = int(batch["padding_mask"].sum())
+            for dim, covered in seen:
+                assert dim == 2
+                assert covered == valid_total
         return

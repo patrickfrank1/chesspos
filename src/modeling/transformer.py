@@ -8,6 +8,12 @@ from torch import nn
 
 from src.dataset.token_stream import CLS, SEP, VOCAB_SIZE
 from src.modeling.masking import IGNORE_INDEX
+from src.modeling.varlen import (
+    cu_seqlens,
+    flatten_valid,
+    scatter_valid,
+    varlen_attention,
+)
 
 IGNORE_TOKENS = (CLS, SEP)
 
@@ -37,20 +43,27 @@ class TransformerBlock(nn.Module):
         self.fc_out = nn.Linear(config.d_ff, config.d_model)
         return
 
-    def forward(self, x: torch.Tensor, attn_mask: torch.Tensor) -> torch.Tensor:
-        batch, length, d_model = x.shape
+    def forward(
+        self, x: torch.Tensor, cu: torch.Tensor, max_seqlen: int
+    ) -> torch.Tensor:
+        """Run the block over flat valid tokens ``[T, d_model]``.
+
+        ``cu`` delimits each row's valid run so attention never crosses rows;
+        see :mod:`src.modeling.varlen`.
+        """
+        d_model = x.shape[-1]
         h = self.ln_attn(x)
-        qkv = self.qkv(h).view(batch, length, 3, self.n_heads, d_model // self.n_heads)
-        q, k, v = qkv.permute(2, 0, 3, 1, 4).unbind(0)
-        attended = F.scaled_dot_product_attention(
+        qkv = self.qkv(h).view(-1, 3, self.n_heads, d_model // self.n_heads)
+        q, k, v = qkv.permute(1, 0, 2, 3).unbind(0)
+        attended = varlen_attention(
             q,
             k,
             v,
-            attn_mask=attn_mask,
+            cu,
+            max_seqlen,
             dropout_p=self.dropout if self.training else 0.0,
         )
-        attended = attended.transpose(1, 2).reshape(batch, length, d_model)
-        x = x + self.attn_out(attended)
+        x = x + self.attn_out(attended.reshape(x.shape[0], d_model))
         x = x + self.fc_out(F.gelu(self.fc_in(self.ln_ffn(x))))
         return x
 
@@ -91,14 +104,12 @@ class MaskedStreamTransformer(nn.Module):
         segment_ids: torch.Tensor,
         padding_mask: torch.Tensor,
     ) -> torch.Tensor:
-        batch, length = tokens.shape
         x = self.token_embedding(tokens) + self.segment_embedding(segment_ids)
-        key_allowed = padding_mask[:, None, None, :]
-        eye = torch.eye(length, dtype=torch.bool, device=tokens.device)
-        attn_mask = key_allowed | eye
+        cu, max_seqlen = cu_seqlens(padding_mask)
+        flat = flatten_valid(x, padding_mask)
         for block in self.blocks:
-            x = block(x, attn_mask)
-        return self.ln_final(x)
+            flat = block(flat, cu, max_seqlen)
+        return scatter_valid(self.ln_final(flat), padding_mask)
 
     @staticmethod
     def _loss(
