@@ -287,65 +287,59 @@ def _shard_counts(shard: Path) -> np.ndarray:
     return counts
 
 
-def _shard_signature(shards: list[Path]) -> str:
-    """JSON fingerprint of the shard set (names and sizes)."""
-    return json.dumps([[shard.name, shard.stat().st_size] for shard in shards])
-
-
 def streaming_unigram_counts(
     data_dir: str | Path,
     log=None,
     log_every: int = 25,
-    cache: bool = True,
     max_workers: int | None = None,
 ) -> np.ndarray:
     """Compute token counts over a split without materializing games.
 
-    Reads every shard once (in parallel) and accumulates a vocabulary-sized
-    histogram of the raw packed tokens. Segment-level counts exclude the SEP
-    framing tokens and the leading CLS of each game stream (interior CLS
-    tokens are kept, matching :func:`_split_segments`), so those are
-    subtracted to match :func:`unigram_counts` over preloaded games. ``log``
-    is an optional callable receiving human-readable progress messages.
-
-    Results are cached in ``<data_dir>/.unigram_counts.npz`` keyed by the
-    shard set (names and sizes), so repeated launches over an immutable
-    snapshot (e.g. watchdog restarts) skip the pass entirely. A shard-set
-    mismatch or an unwritable directory silently falls back to recomputation.
+    Shards whose ``.meta.json`` sidecar carries a ``unigram_counts``
+    histogram (recorded at ETL time) are summed directly without touching
+    the parquet files. Remaining shards are counted with a parallel parquet
+    pass (mirroring :func:`unigram_counts` semantics: SEP framing tokens and
+    each stream's leading CLS excluded). ``log`` is an optional callable
+    receiving human-readable progress messages.
     """
     log = log or (lambda message: None)
     shards = sorted(Path(data_dir).rglob("*.parquet"))
     log(f"unigram pass: {len(shards)} shards in {data_dir}")
-    cache_path = Path(data_dir) / ".unigram_counts.npz"
-    signature = _shard_signature(shards)
-    if cache and cache_path.exists():
-        try:
-            with np.load(cache_path, allow_pickle=False) as payload:
-                if json.loads(str(payload["signature"])) == json.loads(signature):
-                    counts = payload["counts"]
-                    log("unigram pass: loaded cached counts")
-                    log(f"unigram pass: done, {int(counts.sum())} tokens counted")
-                    return counts
-            log("unigram pass: cache stale, recomputing")
-        except (OSError, ValueError, KeyError):
-            log("unigram pass: cache unreadable, recomputing")
     counts = np.zeros(VOCAB_SIZE, dtype=np.int64)
-    if shards:
-        workers = max_workers or min(len(shards), os.cpu_count() or 1)
-        with ThreadPoolExecutor(max_workers=workers) as pool:
-            for index, shard_count in enumerate(
-                pool.map(_shard_counts, shards), start=1
-            ):
-                counts += shard_count
-                if index == 1 or index % log_every == 0 or index == len(shards):
-                    log(f"unigram pass: shard {index}/{len(shards)} done")
+    missing: list[Path] = []
+    for shard in shards:
+        sidecar = _sidecar_counts(shard)
+        if sidecar is None:
+            missing.append(shard)
+        else:
+            counts += sidecar
+    if not missing:
+        log(f"unigram pass: done, {int(counts.sum())} tokens counted (from sidecars)")
+        return counts
+    log(f"unigram pass: {len(missing)} shards without sidecar histograms")
+    workers = max_workers or min(len(missing), os.cpu_count() or 1)
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        for index, shard_count in enumerate(pool.map(_shard_counts, missing), start=1):
+            counts += shard_count
+            if index == 1 or index % log_every == 0 or index == len(missing):
+                log(f"unigram pass: shard {index}/{len(missing)} done")
     log(f"unigram pass: done, {int(counts.sum())} tokens counted")
-    if cache:
-        try:
-            np.savez(cache_path, counts=counts, signature=np.array(signature))
-        except OSError:
-            log("unigram pass: could not write cache, skipping")
     return counts
+
+
+def _sidecar_counts(shard: Path) -> np.ndarray | None:
+    """Per-shard histogram from the ``.meta.json`` sidecar, if it has one."""
+    sidecar = shard.with_suffix(".meta.json")
+    if not sidecar.exists():
+        return None
+    try:
+        payload = json.loads(sidecar.read_text(encoding="utf-8"))
+        counts = payload["stats"]["unigram_counts"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    if not isinstance(counts, list) or len(counts) != VOCAB_SIZE:
+        return None
+    return np.asarray(counts, dtype=np.int64)
 
 
 class StreamingWindowDataset(IterableDataset):

@@ -205,7 +205,9 @@ def build_batch_meta(
         num_positions=sum(table.column("n_positions").to_pylist()),
         duplicates_dropped=duplicates_dropped,
         file_sha256=hashlib.sha256(file_bytes).hexdigest(),
-        unigram_counts=unigram_histogram(table),
+        unigram_counts=(
+            unigram_histogram(table) if "packed" in table.column_names else None
+        ),
         date_min=dates[0] if dates else None,
         date_max=dates[-1] if dates else None,
         config={

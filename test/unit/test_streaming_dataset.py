@@ -252,42 +252,6 @@ class TestStreamingUnigramCounts:
             assert any("done" in message for message in messages)
         return
 
-    def test_second_call_uses_cache_without_rereading_shards(
-        self, tmp_path, monkeypatch
-    ):
-        with given("a directory whose unigram counts were computed once"):
-            directory = tmp_path / "train"
-            write_stream_shard(directory, "a.parquet", (1, 2))
-            write_stream_shard(directory, "b.parquet", (3,))
-            first = streaming_unigram_counts(str(directory))
-
-        with when("shard reading is disabled and the counts are requested again"):
-            monkeypatch.setattr(
-                "src.training.window_dataset.pq.read_table",
-                lambda *args, **kwargs: pytest.fail("shards must not be reread"),
-            )
-            second = streaming_unigram_counts(str(directory))
-
-        with then("the cached counts are returned unchanged"):
-            assert np.array_equal(first, second)
-        return
-
-    def test_cache_invalidated_when_shards_change(self, tmp_path):
-        with given("a directory whose unigram counts were computed and cached"):
-            directory = tmp_path / "train"
-            write_stream_shard(directory, "a.parquet", (1, 2))
-            first = streaming_unigram_counts(str(directory))
-
-        with when("a new shard appears and the counts are requested again"):
-            write_stream_shard(directory, "b.parquet", (3,))
-            second = streaming_unigram_counts(str(directory))
-
-        with then("the counts are recomputed to include the new shard"):
-            expected = unigram_counts(_load_game_segments(directory))
-            assert not np.array_equal(first, second)
-            assert np.array_equal(second, expected)
-        return
-
     def test_sidecar_counts_are_summed_without_reading_shards(
         self, tmp_path, monkeypatch
     ):
@@ -320,17 +284,18 @@ class TestStreamingUnigramCounts:
         return
 
     def test_missing_sidecar_falls_back_to_parquet(self, tmp_path):
-        with given("one shard with a sidecar histogram and one without"):
+        with given("one shard with a true sidecar histogram and one without"):
             directory = tmp_path / "train"
             write_stream_shard(directory, "a.parquet", (1, 2))
             write_stream_shard(directory, "b.parquet", (3,))
+            histogram = unigram_counts(_load_game_segments(directory / "a.parquet"))
             sidecar = directory / "a.meta.json"
             sidecar.write_text(
-                json.dumps({"stats": {"unigram_counts": [5] * VOCAB_SIZE}})
+                json.dumps({"stats": {"unigram_counts": histogram.tolist()}})
             )
 
         with when("unigram counts are computed"):
-            counts = streaming_unigram_counts(str(directory), cache=False)
+            counts = streaming_unigram_counts(str(directory))
 
         with then("the result matches the full recomputation reference"):
             expected = unigram_counts(_load_game_segments(directory))
