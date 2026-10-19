@@ -63,7 +63,9 @@ def mlm_breakdown(
     max_seq_len: int,
     max_segments: int,
     prior: np.ndarray,
+    bf16: bool | None = None,
 ) -> dict[str, dict[str, float]]:
+    enabled = (device.type == "cuda") if bf16 is None else bf16
     results = {}
     for mode, masking in MODE_CONFIGS.items():
         dataset = WindowDataset(
@@ -95,14 +97,17 @@ def mlm_breakdown(
         for start in range(0, len(indices), batch_size):
             samples = [dataset[int(i)] for i in indices[start : start + batch_size]]
             batch = {k: v.to(device) for k, v in collate_windows(samples).items()}
-            output = model(
-                batch["tokens"],
-                batch["segment_ids"],
-                padding_mask=batch["padding_mask"],
-                targets=batch["targets"],
-            )
-            valid = batch["targets"].ne(IGNORE_INDEX)
-            predictions = model.head(output["hidden_states"][valid]).argmax(-1)
+            with torch.autocast(
+                device_type=device.type, dtype=torch.bfloat16, enabled=enabled
+            ):
+                output = model(
+                    batch["tokens"],
+                    batch["segment_ids"],
+                    padding_mask=batch["padding_mask"],
+                    targets=batch["targets"],
+                )
+                valid = batch["targets"].ne(IGNORE_INDEX)
+                predictions = model.head(output["hidden_states"][valid]).argmax(-1)
             correct = predictions == batch["targets"][valid]
             targets = batch["targets"][valid]
             low, high = SLOT_CONTENT_BOUNDS
@@ -167,14 +172,21 @@ def embed_segments(
     segments: list[np.ndarray],
     device: torch.device,
     batch_size: int = 256,
+    bf16: bool | None = None,
 ) -> torch.Tensor:
+    enabled = (device.type == "cuda") if bf16 is None else bf16
     vectors = []
     for start in range(0, len(segments), batch_size):
         chunk = segments[start : start + batch_size]
         batch = {k: v.to(device) for k, v in collate_segments(chunk).items()}
-        pooled, _ = model.embed(
-            batch["tokens"], batch["segment_ids"], padding_mask=batch["padding_mask"]
-        )
+        with torch.autocast(
+            device_type=device.type, dtype=torch.bfloat16, enabled=enabled
+        ):
+            pooled, _ = model.embed(
+                batch["tokens"],
+                batch["segment_ids"],
+                padding_mask=batch["padding_mask"],
+            )
         vectors.append(pooled[:, 0, :].float().cpu())
     vectors = torch.cat(vectors)
     return torch.nn.functional.normalize(vectors, dim=-1)
@@ -462,6 +474,7 @@ def full_eval(
     seed: int = 17,
     plot_dir: str | Path | None = None,
     examples_dir: str | Path | None = None,
+    bf16: bool | None = None,
 ) -> dict[str, float]:
     was_training = model.training
     model.eval()
@@ -477,12 +490,13 @@ def full_eval(
         max_seq_len=max_seq_len,
         max_segments=max_segments,
         prior=prior,
+        bf16=bf16,
     ).items():
         for key, value in stats.items():
             metrics[f"{mode}_{key}"] = value
     segments = sample_segments(val_games, pool_size, seed)
     if len(segments) >= 8:
-        embeds = embed_segments(model, segments, device)
+        embeds = embed_segments(model, segments, device, bf16=bf16)
         boards, piece_counts, materials = board_metadata(segments)
         metrics.update(neighbor_stats(embeds, piece_counts, materials, seed))
         if examples_dir is not None:

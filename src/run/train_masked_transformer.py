@@ -448,6 +448,7 @@ def main() -> None:
                     seed=args.seed,
                     plot_dir=checkpoint_dir,
                     examples_dir=checkpoint_dir,
+                    bf16=bf16,
                 )
                 examples_path = checkpoint_dir / "neighbor_examples.json"
                 if examples_path.exists():
