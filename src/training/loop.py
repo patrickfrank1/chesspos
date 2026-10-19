@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import subprocess
 from dataclasses import asdict
 from pathlib import Path
@@ -30,6 +31,62 @@ def make_logger(path: str | None):
         return
 
     return log
+
+
+def rss_gigabytes() -> float:
+    """Return this process's resident set size in GiB."""
+    try:
+        with open("/proc/self/status", encoding="utf-8") as status:
+            for line in status:
+                if line.startswith("VmRSS:"):
+                    return int(line.split()[1]) / 1024**2
+    except OSError:
+        pass
+    import resource
+
+    return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024**2
+
+
+def cpu_load_average() -> float:
+    """Return the one-minute load average, or 0.0 when unavailable."""
+    try:
+        return os.getloadavg()[0]
+    except (AttributeError, OSError):
+        return 0.0
+
+
+def gpu_snapshot() -> dict[str, float] | None:
+    """Return VRAM usage and GPU utilization, or None without CUDA."""
+    if not torch.cuda.is_available():
+        return None
+    free, total = torch.cuda.mem_get_info()
+    snapshot = {
+        "vram_alloc_gb": torch.cuda.memory_allocated() / 1024**3,
+        "vram_used_gb": (total - free) / 1024**3,
+        "vram_total_gb": total / 1024**3,
+    }
+    try:
+        snapshot["gpu_util_pct"] = float(torch.cuda.utilization())
+    except Exception:
+        pass
+    return snapshot
+
+
+def system_snapshot() -> dict[str, float]:
+    """Collect CPU-side and (when present) GPU-side resource metrics."""
+    snapshot: dict[str, float] = {
+        "rss_gb": rss_gigabytes(),
+        "cpu_load": cpu_load_average(),
+        "n_cpus": float(os.cpu_count() or 1),
+    }
+    gpu = gpu_snapshot()
+    if gpu is not None:
+        snapshot.update(gpu)
+    return snapshot
+
+
+def format_system_snapshot(snapshot: dict[str, float]) -> str:
+    return " ".join(f"{key}={value:.2f}" for key, value in snapshot.items())
 
 
 def get_git_commit() -> str | None:

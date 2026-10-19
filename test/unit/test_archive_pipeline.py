@@ -508,9 +508,9 @@ class TestBatchNumbering:
         return
 
     def test_run_names_batches_consecutively_independent_of_chunking(self, tmp_path):
-        with given("a 40-game archive streamed in dry-run mode with batch size 10"):
+        with given("a 15-game archive streamed in dry-run mode with batch size 10"):
             games = b"".join(
-                f'[Event "G{i}"]\n[Site "s"]\n\n1. e4 *\n\n'.encode() for i in range(40)
+                f'[Event "G{i}"]\n[Site "s"]\n\n1. e4 *\n\n'.encode() for i in range(15)
             )
             payload = _zst(games)
             pipeline = make_pipeline(

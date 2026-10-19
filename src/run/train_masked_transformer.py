@@ -20,10 +20,12 @@ from src.training.checkpoint_hub import (
 from src.training.hf_data import download_split
 from src.training.loop import (
     evaluate,
+    format_system_snapshot,
     get_git_commit,
     lr_lambda,
     make_logger,
     save_checkpoint,
+    system_snapshot,
     write_eval_artifacts,
 )
 from src.training.mlflow_tracker import MLflowTracker, resolve_tracking_uri
@@ -384,6 +386,7 @@ def main() -> None:
                 f"lr={scheduler.get_last_lr()[0]:.2e} "
                 f"tokens/s={tokens_per_second:.0f}"
             )
+            log(f"step={step} system {format_system_snapshot(system_snapshot())}")
             tracker.log_metrics(
                 {
                     "loss": avg_loss,

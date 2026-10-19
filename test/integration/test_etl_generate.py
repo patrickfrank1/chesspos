@@ -77,3 +77,6 @@ class TestGenerate:
             assert counts == (10, 0)
             assert game_ids == [f"bbbbbbbb{i:04d}" for i in range(10)]
         return
+
+
+pytestmark = pytest.mark.integration

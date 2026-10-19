@@ -25,6 +25,7 @@ dev = [
     "ipywidgets>=8.1.8",
     "jupyter>=1.1.1",
     "pytest>=9.1.1",
+    "pytest-xdist>=3.8.0",
     "ruff>=0.15.22",
     "umap-learn>=0.5.11",
 ]
@@ -50,3 +51,6 @@ explicit = true
 
 [tool.pytest.ini_options]
 pythonpath = [".", "test"]
+markers = [
+    "integration: end-to-end tests that boot real Ray/ETL pipelines (deselect with -m 'not integration')",
+]
