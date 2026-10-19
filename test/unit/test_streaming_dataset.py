@@ -231,3 +231,20 @@ class TestStreamingUnigramCounts:
         with then("the counts are identical"):
             assert np.array_equal(streamed, preloaded)
         return
+
+    def test_progress_is_logged(self, tmp_path):
+        with given("a directory with two shards and a log collector"):
+            directory = tmp_path / "train"
+            write_stream_shard(directory, "a.parquet", (1, 2))
+            write_stream_shard(directory, "b.parquet", (3,))
+            messages: list[str] = []
+
+        with when("unigram counts are computed with a log callback"):
+            streaming_unigram_counts(str(directory), log=messages.append)
+
+        with then("progress messages cover start, per-shard progress, and finish"):
+            assert any("2 shards" in message for message in messages)
+            assert any("1/2" in message for message in messages)
+            assert any("2/2" in message for message in messages)
+            assert any("done" in message for message in messages)
+        return

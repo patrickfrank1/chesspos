@@ -268,17 +268,23 @@ def _split_segments(stream: np.ndarray) -> list[np.ndarray]:
     return segments
 
 
-def streaming_unigram_counts(data_dir: str | Path) -> np.ndarray:
+def streaming_unigram_counts(
+    data_dir: str | Path, log=None, log_every: int = 25
+) -> np.ndarray:
     """Compute token counts over a split without materializing games.
 
     Reads every shard once and accumulates a vocabulary-sized histogram of
     the raw packed tokens. Segment-level counts exclude the SEP framing
     tokens and the leading CLS of each game stream (interior CLS tokens are
     kept, matching :func:`_split_segments`), so those are subtracted to match
-    :func:`unigram_counts` over preloaded games.
+    :func:`unigram_counts` over preloaded games. ``log`` is an optional
+    callable receiving human-readable progress messages.
     """
+    log = log or (lambda message: None)
+    shards = sorted(Path(data_dir).rglob("*.parquet"))
+    log(f"unigram pass: {len(shards)} shards in {data_dir}")
     counts = np.zeros(VOCAB_SIZE, dtype=np.int64)
-    for shard in sorted(Path(data_dir).rglob("*.parquet")):
+    for index, shard in enumerate(shards, start=1):
         table = pq.read_table(shard, columns=["packed"])
         column = table.column("packed").combine_chunks()
         if len(column) == 0:
@@ -289,6 +295,9 @@ def streaming_unigram_counts(data_dir: str | Path) -> np.ndarray:
         counts[SEP] -= int((values == SEP).sum())
         leading_cls = int((values[offsets[:-1]] == CLS).sum())
         counts[CLS] -= leading_cls
+        if index == 1 or index % log_every == 0 or index == len(shards):
+            log(f"unigram pass: shard {index}/{len(shards)} done")
+    log(f"unigram pass: done, {int(counts.sum())} tokens counted")
     return counts
 
 

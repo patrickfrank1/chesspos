@@ -18,25 +18,38 @@ def download_split(
     split: str,
     cache_dir: str | None = None,
     max_bytes: int | None = None,
+    log=None,
 ) -> Path:
     """Download ``split`` of a dataset repo and return its local directory.
 
     With ``max_bytes`` set, only a deterministic, evenly spread subset of the
     split's Parquet shards (sized to fit the budget) is downloaded.
+    ``log`` is an optional callable receiving human-readable progress
+    messages; when omitted, progress is silent.
     """
+    log = log or (lambda message: None)
     if max_bytes is None:
         allow_patterns: list[str] = [f"{split}/**"]
+        log(f"downloading {repo_id} split={split} (unbounded) ...")
     else:
         shards = _list_split_shards(repo_id, split)
         if not shards:
             raise ValueError(f"no parquet shards found under {split}/ in {repo_id}")
+        total = sum(size for _, size in shards)
+        log(
+            f"downloading {repo_id} split={split}: {len(shards)} parquet "
+            f"shards, {total / 1024**3:.2f} GiB total; budget "
+            f"{max_bytes / 1024**3:.2f} GiB"
+        )
         allow_patterns = select_shard_subset(shards, max_bytes)
+        log(f"selected {len(allow_patterns)} of {len(shards)} shards")
     snapshot = snapshot_download(
         repo_id=repo_id,
         repo_type="dataset",
         allow_patterns=allow_patterns,
         cache_dir=cache_dir,
     )
+    log(f"downloaded {repo_id} split={split} to {Path(snapshot) / split}")
     return Path(snapshot) / split
 
 

@@ -106,6 +106,55 @@ class TestDownloadSplit:
         return
 
 
+class TestDownloadSplitLogging:
+    def test_logs_split_download_progress(self, hub_calls, tmp_path):
+        with given("a hub dataset download request and a log collector"):
+            messages: list[str] = []
+
+        with when("the train split is downloaded with a log callback"):
+            hf_data.download_split("user/chesspos", "train", log=messages.append)
+
+        with then(
+            "progress messages mention the repo split before and the "
+            "destination path after the download"
+        ):
+            assert any(
+                "user/chesspos" in message and "train" in message
+                for message in messages
+            )
+            assert any(
+                str(tmp_path / "snapshot" / "train") in message for message in messages
+            )
+        return
+
+    def test_logs_bounded_shard_selection(self, monkeypatch, tmp_path):
+        with given("a repo with three equal train shards and a log collector"):
+            files = [
+                FakeRepoFile("train/a.parquet", 100),
+                FakeRepoFile("train/b.parquet", 100),
+                FakeRepoFile("train/c.parquet", 100),
+                FakeRepoFile("test/t.parquet", 100),
+            ]
+            fake_api = FakeApi(files)
+            monkeypatch.setattr(hf_data, "HfApi", lambda **kwargs: fake_api)
+            monkeypatch.setattr(
+                hf_data,
+                "snapshot_download",
+                lambda repo_id, **kwargs: str(tmp_path / "snapshot"),
+            )
+            messages: list[str] = []
+
+        with when("the train split is downloaded with a 200-byte limit"):
+            hf_data.download_split(
+                "user/chesspos", "train", max_bytes=200, log=messages.append
+            )
+
+        with then("the log reports the shard inventory and the subset size"):
+            assert any("3 parquet shards" in message for message in messages)
+            assert any("2 of 3" in message for message in messages)
+        return
+
+
 def shard(path: str, size: int) -> tuple[str, int]:
     return (path, size)
 

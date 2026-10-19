@@ -146,7 +146,7 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def resolve_data_dirs(args: argparse.Namespace) -> tuple[Path, Path]:
+def resolve_data_dirs(args: argparse.Namespace, log=None) -> tuple[Path, Path]:
     """Resolve train/val data directories from args.
 
     With ``--data-repo`` both splits are snapshot-downloaded (train bounded
@@ -159,9 +159,13 @@ def resolve_data_dirs(args: argparse.Namespace) -> tuple[Path, Path]:
         None if args.data_limit_gb is None else int(args.data_limit_gb * 1024**3)
     )
     train_dir = download_split(
-        args.data_repo, "train", cache_dir=args.data_cache, max_bytes=max_bytes
+        args.data_repo,
+        "train",
+        cache_dir=args.data_cache,
+        max_bytes=max_bytes,
+        log=log,
     )
-    val_dir = download_split(args.data_repo, "test", cache_dir=args.data_cache)
+    val_dir = download_split(args.data_repo, "test", cache_dir=args.data_cache, log=log)
     return train_dir, val_dir
 
 
@@ -205,7 +209,7 @@ def main() -> None:
         f"device={device} params={n_params / 1e6:.2f}M bf16={bf16} compile={args.compile}"
     )
 
-    train_dir, val_dir = resolve_data_dirs(args)
+    train_dir, val_dir = resolve_data_dirs(args, log=log)
     if args.streaming:
         train_dataset = StreamingWindowDataset(
             WindowDatasetConfig(
@@ -218,7 +222,7 @@ def main() -> None:
         )
         if not args.no_freq_weighting:
             train_dataset.config.unigram_weights = inverse_frequency_weights(
-                streaming_unigram_counts(str(train_dir)), cap=args.freq_cap
+                streaming_unigram_counts(str(train_dir), log=log), cap=args.freq_cap
             )
             log("frequency-aware loss weighting enabled (streaming counts)")
     else:
@@ -234,7 +238,9 @@ def main() -> None:
                 unigram_counts(train_dataset.games), cap=args.freq_cap
             )
             log("frequency-aware loss weighting enabled")
+    log(f"loading val split from {val_dir} ...")
     val_games = _load_game_segments(Path(val_dir))
+    log(f"loaded {len(val_games)} val games")
     val_dataset = WindowDataset(
         WindowDatasetConfig(
             games=val_games,

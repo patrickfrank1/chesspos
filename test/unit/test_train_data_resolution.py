@@ -42,7 +42,9 @@ class TestResolveDataDirs:
             args = make_args(data_repo="user/chesspos")
             downloads: list[tuple] = []
 
-            def fake_download_split(repo_id, split, cache_dir=None, max_bytes=None):
+            def fake_download_split(
+                repo_id, split, cache_dir=None, max_bytes=None, log=None
+            ):
                 downloads.append((repo_id, split, cache_dir, max_bytes))
                 path = tmp_path / "snapshot" / split
                 path.mkdir(parents=True, exist_ok=True)
@@ -69,7 +71,9 @@ class TestResolveDataDirs:
             args = make_args(data_repo="user/chesspos", data_limit_gb=2)
             downloads: list[tuple] = []
 
-            def fake_download_split(repo_id, split, cache_dir=None, max_bytes=None):
+            def fake_download_split(
+                repo_id, split, cache_dir=None, max_bytes=None, log=None
+            ):
                 downloads.append((split, max_bytes))
                 path = tmp_path / "snapshot" / split
                 path.mkdir(parents=True, exist_ok=True)
@@ -97,7 +101,9 @@ class TestResolveDataDirs:
                 val_dir="/nonexistent/test",
             )
 
-            def fake_download_split(repo_id, split, cache_dir=None, max_bytes=None):
+            def fake_download_split(
+                repo_id, split, cache_dir=None, max_bytes=None, log=None
+            ):
                 path = tmp_path / split
                 path.mkdir(parents=True, exist_ok=True)
                 return path
@@ -117,7 +123,9 @@ class TestResolveDataDirs:
             args = make_args(data_repo="user/chesspos", data_cache=str(tmp_path / "c"))
             seen: list[str | None] = []
 
-            def fake_download_split(repo_id, split, cache_dir=None, max_bytes=None):
+            def fake_download_split(
+                repo_id, split, cache_dir=None, max_bytes=None, log=None
+            ):
                 seen.append(cache_dir)
                 path = tmp_path / split
                 path.mkdir(parents=True, exist_ok=True)

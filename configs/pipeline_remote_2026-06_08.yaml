@@ -1,0 +1,30 @@
+# Remote run: lichess standard rated 2026-06..2026-08, pushed to the same
+# Hub repo (64-slot token format). Machine is otherwise idle, so full
+# worker count.
+
+repo_name: "patrickfrank1/chess-positions"
+
+batch_size: 100000                           # Positions per batch
+train_ratio: 0.95                            # Train/test split
+
+dry_run: false                               # Push to HuggingFace Hub
+resume: false
+create_card: false
+
+archive_urls:
+  - https://database.lichess.org/standard/lichess_db_standard_rated_2026-06.pgn.zst
+  - https://database.lichess.org/standard/lichess_db_standard_rated_2026-07.pgn.zst
+  - https://database.lichess.org/standard/lichess_db_standard_rated_2026-08.pgn.zst
+chunk_target_mb: 256
+
+preprocessing:
+  worker_count: 12
+  memory_limit_mb: 4096
+  debug: false
+
+sampling:
+  tiers:
+    - {min_elo: 2200, rate: 1.0}             # 100% of games: both players rated >= 2200
+    - {min_elo: 1900, rate: 0.1}             # 10% of games: both players rated >= 1900
+    - {min_elo: 0, rate: 0.001}              # 0.1% of games: any rating (catch-all)
+  min_time_control_seconds: 300              # Exclude bullet games (base time < 5 min)
