@@ -13,6 +13,7 @@ from src.training.window_dataset import (
     StreamingWindowDataset,
     WindowDatasetConfig,
     _load_game_segments,
+    worker_skip_windows,
     collate_windows,
     streaming_unigram_counts,
     unigram_counts,
@@ -349,4 +350,123 @@ class TestStreamingPrefetch:
         with then("every game appears exactly once, no epoch wraparound"):
             expected = sorted(g.tobytes() for g in expected_packed_games(directory))
             assert sorted(signatures) == expected
+        return
+
+
+class TestStreamResume:
+    def test_worker_skip_windows_round_robin_math(self):
+        with given("five steps at batch size three over two workers"):
+            resume_step, batch_size, num_workers = 5, 3, 2
+
+        with when("each worker computes how many windows it already consumed"):
+            skip0 = worker_skip_windows(resume_step, batch_size, num_workers, 0)
+            skip1 = worker_skip_windows(resume_step, batch_size, num_workers, 1)
+
+        with then("the skips match the round-robin batch counts and sum to the total"):
+            assert (skip0, skip1) == (9, 6)
+            assert skip0 + skip1 == resume_step * batch_size
+        return
+
+    def test_worker_skip_windows_edge_cases(self):
+        with given("a resume helper"):
+            with when("the resume step is zero"):
+                skip = worker_skip_windows(0, 8, 4, 2)
+            with then("no windows are skipped on a fresh start"):
+                assert skip == 0
+
+            with when("there is a single process (num_workers=0)"):
+                skip = worker_skip_windows(7, 8, 0, 0)
+            with then("the skip covers every window consumed so far"):
+                assert skip == 7 * 8
+
+            with when("a worker whose batches all lie beyond the stop point"):
+                skip = worker_skip_windows(3, 8, 4, 3)
+            with then("that worker has consumed nothing yet"):
+                assert skip == 0
+        return
+
+    def test_resume_continues_stream_without_repeats(self, tmp_path):
+        with given("a seeded single-worker streaming dataset"):
+            directory = tmp_path / "train"
+            write_stream_shard(directory, "a.parquet", (1, 2, 3))
+            write_stream_shard(directory, "b.parquet", (4, 5, 6))
+
+            def uninterrupted(count):
+                dataset = StreamingWindowDataset(make_config(directory))
+                return [
+                    sample_signature(sample) for sample, _ in zip(dataset, range(count))
+                ]
+
+        with when("a run stops after four windows and a fresh dataset resumes"):
+            reference = uninterrupted(10)
+            resumed_dataset = StreamingWindowDataset(
+                make_config(directory, resume_step=4, batch_size=1, num_workers=1)
+            )
+            continuation = [
+                sample_signature(sample) for sample, _ in zip(resumed_dataset, range(6))
+            ]
+
+        with then("the continuation is exactly the uninterrupted tail, with no replay"):
+            assert continuation == reference[4:]
+        return
+
+    def test_resume_with_dataloader_matches_uninterrupted(self, tmp_path):
+        with given("a two-worker loader at batch size two"):
+            directory = tmp_path / "train"
+            for i in range(4):
+                write_stream_shard(directory, f"s{i}.parquet", range(i * 6, i * 6 + 6))
+
+            def run_batches(resume_step, count):
+                dataset = StreamingWindowDataset(
+                    make_config(
+                        directory,
+                        resume_step=resume_step,
+                        batch_size=2,
+                        num_workers=2,
+                    )
+                )
+                loader = DataLoader(
+                    dataset,
+                    batch_size=2,
+                    num_workers=2,
+                    collate_fn=collate_windows,
+                )
+                out = []
+                for batch in loader:
+                    out.append(batch["tokens"].numpy().tobytes())
+                    if len(out) == count:
+                        break
+                return out
+
+        with when("a run stops after five batches and a fresh loader resumes"):
+            reference = run_batches(0, 13)
+            continuation = run_batches(5, 8)
+
+        with then(
+            "the continued batches cover exactly the uninterrupted tail; "
+            "order may rotate within a worker cycle"
+        ):
+            assert sorted(continuation) == sorted(reference[5:13])
+        return
+
+    def test_resume_with_shuffle_buffer_matches_uninterrupted(self, tmp_path):
+        with given("a seeded streaming dataset with a shuffle buffer"):
+            directory = tmp_path / "train"
+            for i in range(4):
+                write_stream_shard(directory, f"s{i}.parquet", range(i * 6, i * 6 + 6))
+
+            def stream(count, **overrides):
+                dataset = StreamingWindowDataset(make_config(directory, **overrides))
+                return [
+                    sample_signature(sample) for sample, _ in zip(dataset, range(count))
+                ]
+
+        with when("a run stops after five windows and a fresh dataset resumes"):
+            reference = stream(12, shuffle_buffer=4)
+            continuation = stream(
+                7, shuffle_buffer=4, resume_step=5, batch_size=1, num_workers=1
+            )
+
+        with then("the continuation matches the uninterrupted tail through the buffer"):
+            assert continuation == reference[5:]
         return

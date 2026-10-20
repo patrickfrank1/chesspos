@@ -35,6 +35,32 @@ class WindowDatasetConfig:
     unigram_weights: np.ndarray | None = None
     shuffle_buffer: int = 0
     prefetch_shards: int = 0
+    resume_step: int = 0
+    batch_size: int = 1
+    num_workers: int = 1
+
+
+def worker_skip_windows(
+    resume_step: int, batch_size: int, num_workers: int, worker_id: int
+) -> int:
+    """Windows this worker already consumed within the first ``resume_step`` steps.
+
+    A DataLoader with ``num_workers`` serves batches round-robin: batch ``i``
+    comes from worker ``i % num_workers``. After ``resume_step`` steps the
+    worker has produced ``ceil((resume_step - worker_id) / num_workers)``
+    batches, i.e. that many times ``batch_size`` windows. With a single
+    process (``num_workers <= 1``) the skip covers every window consumed so
+    far. An exact stream position further requires the same ``num_workers``
+    as the original run. The resumed loader restarts its round-robin at
+    worker 0, so batch order may rotate within one worker cycle; the window
+    multiset is preserved exactly.
+    """
+    if resume_step <= 0 or worker_id >= resume_step:
+        return 0
+    if num_workers <= 1:
+        return resume_step * batch_size
+    batches = (resume_step - worker_id - 1) // num_workers + 1
+    return batches * batch_size
 
 
 def build_mode_pattern(masking: MaskingConfig, period: int = 20) -> list[str]:
@@ -377,9 +403,21 @@ class StreamingWindowDataset(IterableDataset):
         return all_indices[info.id :: info.num_workers]
 
     def __iter__(self):
-        worker_indices = self._worker_shard_indices()
         info = torch.utils.data.get_worker_info()
         worker_id = 0 if info is None else info.id
+        skip = worker_skip_windows(
+            self.config.resume_step,
+            self.config.batch_size,
+            self.config.num_workers,
+            worker_id,
+        )
+        stream = self._iter_windows(worker_id, self._worker_shard_indices())
+        for _ in range(skip):
+            next(stream, None)
+        yield from stream
+        return
+
+    def _iter_windows(self, worker_id: int, worker_indices: list[int]):
         rng = np.random.default_rng(
             None if self.config.seed is None else self.config.seed + worker_id
         )

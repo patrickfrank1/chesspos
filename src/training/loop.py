@@ -72,6 +72,25 @@ def cpu_load_average() -> float:
         return 0.0
 
 
+def _nvidia_smi_utilization() -> float | None:
+    """Read GPU utilization via the nvidia-smi CLI (fallback for missing pynvml)."""
+    try:
+        result = subprocess.run(
+            [
+                "nvidia-smi",
+                "--query-gpu=utilization.gpu",
+                "--format=csv,noheader,nounits",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=True,
+        )
+        return float(result.stdout.strip().splitlines()[0])
+    except Exception:
+        return None
+
+
 def gpu_snapshot() -> dict[str, float] | None:
     """Return VRAM usage and GPU utilization, or None without CUDA."""
     if not torch.cuda.is_available():
@@ -85,7 +104,9 @@ def gpu_snapshot() -> dict[str, float] | None:
     try:
         snapshot["gpu_util_pct"] = float(torch.cuda.utilization())
     except Exception:
-        pass
+        util = _nvidia_smi_utilization()
+        if util is not None:
+            snapshot["gpu_util_pct"] = util
     return snapshot
 
 

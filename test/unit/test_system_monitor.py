@@ -1,4 +1,5 @@
 import torch
+from types import SimpleNamespace
 
 from bdd import given, then, when
 from src.training.loop import (
@@ -118,4 +119,59 @@ class TestFormatSystemSnapshot:
             assert (
                 line == "rss_gb=1.50 cpu_load=2.00 vram_used_gb=6.00 gpu_util_pct=97.00"
             )
+        return
+
+    def test_gpu_util_falls_back_to_nvidia_smi(self, monkeypatch):
+        with given("a CUDA machine without a working torch.cuda.utilization"):
+            monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+            monkeypatch.setattr(
+                torch.cuda, "mem_get_info", lambda: (2 * 1024**3, 8 * 1024**3)
+            )
+            monkeypatch.setattr(
+                torch.cuda, "memory_allocated", lambda *a, **k: 1 * 1024**3
+            )
+
+            def broken_utilization(*a, **k):
+                raise RuntimeError("pynvml module not found")
+
+            monkeypatch.setattr(torch.cuda, "utilization", broken_utilization)
+            fake = SimpleNamespace(stdout="97\n", returncode=0)
+            monkeypatch.setattr(
+                "src.training.loop.subprocess.run", lambda *a, **k: fake
+            )
+
+        with when("a gpu snapshot is taken"):
+            snapshot = gpu_snapshot()
+
+        with then("utilization is recovered from nvidia-smi"):
+            assert snapshot["gpu_util_pct"] == 97.0
+            assert snapshot["vram_total_gb"] == 8.0
+        return
+
+    def test_gpu_util_absent_when_all_sources_fail(self, monkeypatch):
+        with given("a CUDA machine where every utilization source fails"):
+            monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+            monkeypatch.setattr(
+                torch.cuda, "mem_get_info", lambda: (2 * 1024**3, 8 * 1024**3)
+            )
+            monkeypatch.setattr(
+                torch.cuda, "memory_allocated", lambda *a, **k: 1 * 1024**3
+            )
+            monkeypatch.setattr(
+                torch.cuda,
+                "utilization",
+                lambda *a, **k: (_ for _ in ()).throw(RuntimeError("no pynvml")),
+            )
+
+            def broken_run(*a, **k):
+                raise FileNotFoundError("nvidia-smi missing")
+
+            monkeypatch.setattr("src.training.loop.subprocess.run", broken_run)
+
+        with when("a gpu snapshot is taken"):
+            snapshot = gpu_snapshot()
+
+        with then("the snapshot is valid but has no utilization key"):
+            assert "gpu_util_pct" not in snapshot
+            assert snapshot["vram_total_gb"] == 8.0
         return

@@ -10,6 +10,7 @@ import torch
 from torch.utils.data import DataLoader
 
 from src.evaluation.eval_suite import full_eval
+from src.modeling.masking import MaskingConfig
 from src.modeling.transformer import MaskedStreamTransformer, TransformerConfig
 from src.training.checkpoint_hub import (
     build_metadata,
@@ -165,7 +166,56 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--compile", action="store_true")
     parser.add_argument("--log-file", default=None)
     parser.add_argument("--seed", type=int, default=17)
+    _masking_defaults = MaskingConfig()
+    parser.add_argument(
+        "--p-random",
+        type=float,
+        default=_masking_defaults.p_random,
+        help="Probability weight for random-token masking mode",
+    )
+    parser.add_argument(
+        "--p-board",
+        type=float,
+        default=_masking_defaults.p_board,
+        help="Probability weight for whole-board masking mode",
+    )
+    parser.add_argument(
+        "--p-span",
+        type=float,
+        default=_masking_defaults.p_span,
+        help="Probability weight for span masking mode",
+    )
     return parser.parse_args()
+
+
+def masking_config(args: argparse.Namespace) -> MaskingConfig:
+    """Build the MaskingConfig implied by the parsed masking probability args."""
+    return MaskingConfig(
+        p_random=args.p_random, p_board=args.p_board, p_span=args.p_span
+    )
+
+
+def streaming_train_config(
+    args: argparse.Namespace, data_dir: str, start_step: int
+) -> WindowDatasetConfig:
+    """Build the streaming train dataset config, resuming the data stream.
+
+    With ``start_step > 0`` each DataLoader worker fast-forwards its
+    deterministic stream to the position the checkpoint left off, so a
+    resumed run continues on fresh data instead of replaying from the start.
+    """
+    return WindowDatasetConfig(
+        data_dir=data_dir,
+        max_seq_len=args.max_seq_len,
+        max_segments=args.max_segments,
+        masking=masking_config(args),
+        seed=args.seed,
+        shuffle_buffer=args.shuffle_buffer,
+        prefetch_shards=args.prefetch_shards,
+        resume_step=start_step,
+        batch_size=args.batch_size,
+        num_workers=args.num_workers,
+    )
 
 
 def resolve_data_dirs(args: argparse.Namespace, log=None) -> tuple[Path, Path]:
@@ -233,14 +283,7 @@ def main() -> None:
     train_dir, val_dir = resolve_data_dirs(args, log=log)
     if args.streaming:
         train_dataset = StreamingWindowDataset(
-            WindowDatasetConfig(
-                data_dir=str(train_dir),
-                max_seq_len=args.max_seq_len,
-                max_segments=args.max_segments,
-                seed=args.seed,
-                shuffle_buffer=args.shuffle_buffer,
-                prefetch_shards=args.prefetch_shards,
-            )
+            streaming_train_config(args, data_dir=str(train_dir), start_step=start_step)
         )
         if not args.no_freq_weighting:
             train_dataset.config.unigram_weights = inverse_frequency_weights(
@@ -253,6 +296,7 @@ def main() -> None:
                 data_dir=str(train_dir),
                 max_seq_len=args.max_seq_len,
                 max_segments=args.max_segments,
+                masking=masking_config(args),
             )
         )
         if not args.no_freq_weighting:
@@ -268,6 +312,7 @@ def main() -> None:
             games=val_games,
             max_seq_len=args.max_seq_len,
             max_segments=args.max_segments,
+            masking=masking_config(args),
             seed=args.seed,
         )
     )
