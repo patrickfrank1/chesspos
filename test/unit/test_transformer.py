@@ -4,12 +4,13 @@ import torch
 from torch import nn
 
 from bdd import given, then, when
-from src.dataset.token_stream import EMPTY, SEP, VOCAB_SIZE
+from src.dataset.token_stream import CLS, EMPTY, N_SLOTS, SEGMENT_LEN, SEP, VOCAB_SIZE
 from src.modeling.masking import IGNORE_INDEX, MaskingConfig, mask_stream
 from src.modeling.transformer import (
     MaskedStreamTransformer,
     TransformerBlock,
     TransformerConfig,
+    slot_indices,
 )
 from src.modeling.varlen import cu_seqlens, flatten_valid, scatter_valid
 from src.training.window_dataset import collate_windows
@@ -580,6 +581,138 @@ class TestTransformer:
                 assert torch.allclose(pooled[row, s], expected, atol=1e-6)
             assert mask[row, : len(real_segments)].all()
             assert not mask[row, len(real_segments) :].any()
+        return
+
+
+def content_positions(tokens, segment_ids, padding_mask):
+    """Positions of non-structural, non-pad tokens grouped by segment id."""
+    row = tokens[0]
+    groups: dict[int, list[int]] = {}
+    for position in torch.nonzero(padding_mask[0]).flatten().tolist():
+        if int(row[position]) in (CLS, SEP):
+            continue
+        groups.setdefault(int(segment_ids[0][position]), []).append(position)
+    return groups
+
+
+def swapped_tokens_batch(batch):
+    """A copy of the batch with two different content tokens of one segment swapped."""
+    tokens = batch["tokens"].clone()
+    for positions in content_positions(
+        tokens, batch["segment_ids"], batch["padding_mask"]
+    ).values():
+        for i, left in enumerate(positions):
+            for right in positions[i + 1 :]:
+                if tokens[0, left] != tokens[0, right]:
+                    tokens[0, left], tokens[0, right] = (
+                        tokens[0, right],
+                        tokens[0, left],
+                    )
+                    return tokens
+    raise AssertionError("no swappable content token pair found")
+
+
+class TestSlotEmbedding:
+    def test_model_has_slot_embedding(self):
+        with given("a transformer config"):
+            config = TransformerConfig()
+
+        with then("the model embeds one slot per content position plus structure"):
+            model = MaskedStreamTransformer(config)
+            assert model.slot_embedding.weight.shape == (
+                SEGMENT_LEN + 1,
+                config.d_model,
+            )
+        return
+
+    def test_slot_indices_match_segment_layout(self):
+        with given("a collated batch and the slot index helper"):
+            batch = tiny_batch(n_segments=4, batch=1)
+
+        with when("slot indices are computed for every token"):
+            slots = slot_indices(batch["tokens"], batch["segment_ids"])
+
+        with then(
+            "structural tokens get the structural index and content tokens are "
+            "indexed by their offset within the segment"
+        ):
+            tokens = batch["tokens"][0]
+            segment_ids = batch["segment_ids"][0]
+            for position in torch.nonzero(batch["padding_mask"][0]).flatten().tolist():
+                token = int(tokens[position])
+                if token in (CLS, SEP):
+                    assert int(slots[0, position]) == SEGMENT_LEN
+                else:
+                    group_start = int(
+                        torch.nonzero(segment_ids == segment_ids[position])[0]
+                    )
+                    expected = position - group_start - 1
+                    assert int(slots[0, position]) == expected
+                    assert 0 <= expected < SEGMENT_LEN
+        return
+
+    def test_fully_masked_segment_gets_distinct_per_square_states(self):
+        with given("a board-masked stream of 10 boards and a default-config model"):
+            tokens = make_stream(random_game_factory(3), n_boards=10)
+            masked, targets, weights = mask_stream(
+                tokens,
+                MaskingConfig(p_random=0.0, p_board=1.0, p_span=0.0),
+                np.random.default_rng(0),
+            )
+            batch = collate_windows(
+                [{"tokens": masked, "targets": targets, "weights": weights}]
+            )
+            model = MaskedStreamTransformer(TINY_CONFIG)
+            model.eval()
+
+        with when("the model runs a forward pass over the masked stream"):
+            with torch.no_grad():
+                hidden = model(
+                    batch["tokens"], batch["segment_ids"], batch["padding_mask"]
+                )["hidden_states"]
+
+        with then("masked squares within one segment receive distinct hidden states"):
+            sep_positions = np.flatnonzero(tokens == SEP)
+            flags = segment_flags(targets, sep_positions)
+            fully_masked = int(np.flatnonzero(flags)[0])
+            start = 1 if fully_masked == 0 else int(sep_positions[fully_masked - 1]) + 1
+            square_positions = range(start, start + N_SLOTS)
+            states = hidden[0, list(square_positions)]
+            assert not torch.allclose(states[0], states[1])
+            assert not torch.allclose(states[0], states[-1])
+        return
+
+    def test_swapping_tokens_within_a_segment_changes_outputs(self):
+        with given("a tiny default-config model and a collated batch"):
+            model = MaskedStreamTransformer(TINY_CONFIG)
+            model.eval()
+            batch = tiny_batch()
+            swapped = swapped_tokens_batch(batch)
+
+        with when("the model runs on the original and the swapped batch"):
+            with torch.no_grad():
+                base = model(
+                    batch["tokens"], batch["segment_ids"], batch["padding_mask"]
+                )["hidden_states"]
+                other = model(swapped, batch["segment_ids"], batch["padding_mask"])[
+                    "hidden_states"
+                ]
+
+        with then("the hidden states at the swapped positions differ"):
+            assert not torch.allclose(base, other)
+        return
+
+    def test_slot_indices_stay_in_bounds_for_ragged_padded_batches(self):
+        with given("a collated batch with ragged row lengths"):
+            batch = tiny_batch(n_segments=4, batch=2)
+
+        with when("slot indices are computed for every position including padding"):
+            slots = slot_indices(batch["tokens"], batch["segment_ids"])
+
+        with then("every index is a valid slot embedding row"):
+            assert slots.shape == batch["tokens"].shape
+            assert int(slots.min()) >= 0
+            assert int(slots.max()) <= SEGMENT_LEN
         return
 
 

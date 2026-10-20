@@ -193,6 +193,29 @@ during hf_hub download (CDN serves brotli-compressed small files, e.g.
 changed `.meta.json` sidecars) = Brotli too old for httpx2. Fix:
 `pip install -U Brotli` (≥1.2 accepts `output_buffer_limit`).
 
+**HF_TOKEN scope on the box:** plain ssh shells have **no** `HF_TOKEN` —
+only the watchdog exports it for the trainer. Any `hf` CLI call made over
+a bare ssh session (bucket sync, downloads) fails with
+`401 Unauthorized ... xet-write-token`. Source it from the box's token
+file without printing:
+
+```bash
+ssh ... 'export HF_TOKEN=$(cat /root/.hf_token); hf buckets sync ...'
+```
+
+**One-shot shutdown pattern** (operator offline): a local detached script
+(`setsid nohup`, session leader so it survives the agent session) that
+sleeps, then over ssh: kill watchdog → kill trainer → grace for in-flight
+uploads → `hf buckets sync` checkpoints + logs → verify exit codes →
+`vastai destroy instance <ID> -y --api-key "$VASTAI_API_KEY"` (sourced
+from local `.env`). On any sync failure: leave the pod running, skip
+destroy, log everything. Instance id: `vastai show instances --raw` via
+the `--api-key` per-call pattern (the CLI alone 403s; plain ssh port may
+differ from the API's ssh proxy host/port). Keep the step count checked:
+a watchdog auto-resume run can finish `--steps` ahead of schedule, and
+the trainer uploads its final checkpoint itself ("uploaded last to ...").
+Teardown template: `/tmp/opencode/shutdown_d256l3.sh` (2026-10-19).
+
 Batch sizing: a 25M model at batch 64 used 24/47 GB; a 2.4M model at
 batch 256 used 41/47 GB. Scale `--batch-size` to VRAM. Unigram pass
 runs instantly from `.meta.json` sidecar histograms when the dataset

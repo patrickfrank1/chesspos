@@ -6,7 +6,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-from src.dataset.token_stream import CLS, SEP, VOCAB_SIZE
+from src.dataset.token_stream import CLS, PAD, SEGMENT_LEN, SEP, VOCAB_SIZE
 from src.modeling.masking import IGNORE_INDEX
 from src.modeling.varlen import (
     cu_seqlens,
@@ -16,6 +16,33 @@ from src.modeling.varlen import (
 )
 
 IGNORE_TOKENS = (CLS, SEP)
+STRUCTURAL_SLOT = SEGMENT_LEN
+
+
+def slot_indices(tokens: torch.Tensor, segment_ids: torch.Tensor) -> torch.Tensor:
+    """Map every token to its slot within the segment's fixed content layout.
+
+    Content tokens are indexed by their offset inside the 67-token block
+    (squares 0-63, turn 64, castle 65, en-passant 66); structural tokens
+    (CLS/SEP) and padding map to ``STRUCTURAL_SLOT``. Without this index the
+    trunk's attention is permutation-equivariant over each segment, so a fully
+    masked board would receive one identical prediction for every square.
+    """
+    positions = torch.arange(tokens.shape[1], device=tokens.device)
+    is_group_start = torch.ones_like(segment_ids, dtype=torch.bool)
+    is_group_start[:, 1:] = segment_ids[:, 1:] != segment_ids[:, :-1]
+    group_start = torch.cummax(
+        torch.where(
+            is_group_start,
+            positions.unsqueeze(0).expand_as(segment_ids),
+            torch.zeros_like(segment_ids),
+        ),
+        dim=1,
+    ).values
+    offset = positions.unsqueeze(0) - group_start
+    structural = (tokens == CLS) | (tokens == SEP) | (tokens == PAD)
+    content = (offset - 1).clamp(0, SEGMENT_LEN - 1)
+    return torch.where(structural, STRUCTURAL_SLOT, content)
 
 
 @dataclass
@@ -74,6 +101,7 @@ class MaskedStreamTransformer(nn.Module):
         self.config = config
         self.token_embedding = nn.Embedding(config.vocab_size, config.d_model)
         self.segment_embedding = nn.Embedding(config.max_segments + 1, config.d_model)
+        self.slot_embedding = nn.Embedding(SEGMENT_LEN + 1, config.d_model)
         self.blocks = nn.ModuleList(
             TransformerBlock(config) for _ in range(config.n_layers)
         )
@@ -105,7 +133,11 @@ class MaskedStreamTransformer(nn.Module):
         segment_ids: torch.Tensor,
         padding_mask: torch.Tensor,
     ) -> torch.Tensor:
-        x = self.token_embedding(tokens) + self.segment_embedding(segment_ids)
+        x = (
+            self.token_embedding(tokens)
+            + self.segment_embedding(segment_ids)
+            + self.slot_embedding(slot_indices(tokens, segment_ids))
+        )
         cu, max_seqlen = cu_seqlens(padding_mask)
         flat = flatten_valid(x, padding_mask)
         for block in self.blocks:
