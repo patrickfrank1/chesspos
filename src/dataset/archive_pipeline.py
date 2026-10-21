@@ -434,6 +434,11 @@ class ArchivePipeline:
                     output_dir=output_dir,
                     local_path=local_path,
                 )
+                # Free the disk space of the processed archive immediately:
+                # monthly lichess archives are tens of GB, so letting them
+                # accumulate in the prefetch dir exhausts the disk.
+                if local_path is not None:
+                    Path(local_path).unlink(missing_ok=True)
                 result.processed.append(item.archive_id)
         return result
 

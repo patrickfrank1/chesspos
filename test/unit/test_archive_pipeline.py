@@ -853,6 +853,74 @@ class TestPrefetch:
             assert events.index("download:test-b") < events.index("process:test-a")
         return
 
+    def test_run_deletes_processed_prefetched_archives(self, tmp_path):
+        with given(
+            "a pipeline over three archive URLs and a fake downloader writing "
+            "the prefetched payloads"
+        ):
+            payloads = {
+                "test-a": _zst(
+                    b'[Event "A"]\n[Site "s"]\n[Result "1-0"]\n\n1. e4 *\n\n'
+                ),
+                "test-b": _zst(
+                    b'[Event "B"]\n[Site "s"]\n[Result "1-0"]\n\n1. d4 *\n\n'
+                ),
+                "test-c": _zst(
+                    b'[Event "C"]\n[Site "s"]\n[Result "1-0"]\n\n1. Nf3 *\n\n'
+                ),
+            }
+            seen: dict[str, str | None] = {}
+
+            def fake_download(url, dest):
+                archive_id = Path(dest).stem.replace(".pgn", "")
+                Path(dest).write_bytes(payloads[archive_id])
+                return
+
+            pipeline = make_pipeline(
+                data_path=None,
+                archive_urls=[
+                    "https://x/test-a.pgn.zst",
+                    "https://x/test-b.pgn.zst",
+                    "https://x/test-c.pgn.zst",
+                ],
+            )
+            original_process = pipeline._process
+
+            def spy_process(item, *args, **kwargs):
+                seen[item.archive_id] = kwargs.get("local_path")
+                if item.archive_id == "test-a":
+                    # The first archive streams directly, without a local file.
+                    assert seen["test-a"] is None
+                elif item.archive_id == "test-b":
+                    # The prefetched archive must still exist while it is read.
+                    assert seen["test-b"] is not None
+                    assert Path(seen["test-b"]).exists()
+                else:
+                    # By the time the next archive processes, the previous
+                    # prefetched file must already be deleted.
+                    assert seen["test-b"] is not None
+                    assert not Path(seen["test-b"]).exists()
+                return original_process(item, *args, **kwargs)
+
+            pipeline._process = spy_process
+
+        with when("the pipeline runs in dry-run mode"):
+            with (
+                patch(
+                    "src.dataset.archive_pipeline.download_file",
+                    side_effect=fake_download,
+                ),
+                patch(
+                    "src.dataset.archive_pipeline.urllib.request.urlopen",
+                    side_effect=lambda url: io.BytesIO(payloads["test-a"]),
+                ),
+            ):
+                result = pipeline.run(dry_run=True, output_dir=str(tmp_path))
+
+        with then("all three archives are processed"):
+            assert result.processed == ["test-a", "test-b", "test-c"]
+        return
+
 
 class TestOpenPgnStream:
     def test_local_pgn_is_passed_through_unmodified(self, tmp_path):
