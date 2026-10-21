@@ -7,11 +7,10 @@ import numpy as np
 from src.dataset.token_stream import (
     CASTLE_BASE,
     CLS,
+    EMPTY,
     EP_BASE,
     MASK,
-    PIECE_SQUARE_BASE,
     SEP,
-    TURN_BLACK,
     TURN_WHITE,
     VOCAB_SIZE,
 )
@@ -37,10 +36,10 @@ class MaskingConfig:
 
 
 TOKEN_CLASS_RANGES = (
-    (PIECE_SQUARE_BASE, VOCAB_SIZE),
-    (EP_BASE, EP_BASE + 16),
-    (CASTLE_BASE, CASTLE_BASE + 16),
-    (TURN_WHITE, TURN_BLACK + 1),
+    (EMPTY, TURN_WHITE),
+    (TURN_WHITE, CASTLE_BASE),
+    (CASTLE_BASE, EP_BASE),
+    (EP_BASE, VOCAB_SIZE),
 )
 
 

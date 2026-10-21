@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import subprocess
 from dataclasses import asdict
 from pathlib import Path
@@ -16,7 +17,24 @@ from pathlib import Path
 import torch
 from torch.utils.data import DataLoader
 
+from src.modeling.masking import IGNORE_INDEX
 from src.modeling.transformer import MaskedStreamTransformer, TransformerConfig
+
+
+def use_fused_adamw(device: torch.device) -> bool:
+    """Whether the fused CUDA AdamW kernel can be used on ``device``."""
+    return device.type == "cuda" and torch.cuda.is_available()
+
+
+def apply_compile(model: torch.nn.Module, enabled: bool) -> torch.nn.Module:
+    """Wrap ``model`` with torch.compile when enabled.
+
+    ``dynamic=True`` lets the varlen valid-token count vary across batches
+    without triggering a recompilation for every new shape.
+    """
+    if not enabled:
+        return model
+    return torch.compile(model, dynamic=True)
 
 
 def make_logger(path: str | None):
@@ -30,6 +48,83 @@ def make_logger(path: str | None):
         return
 
     return log
+
+
+def rss_gigabytes() -> float:
+    """Return this process's resident set size in GiB."""
+    try:
+        with open("/proc/self/status", encoding="utf-8") as status:
+            for line in status:
+                if line.startswith("VmRSS:"):
+                    return int(line.split()[1]) / 1024**2
+    except OSError:
+        pass
+    import resource
+
+    return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024**2
+
+
+def cpu_load_average() -> float:
+    """Return the one-minute load average, or 0.0 when unavailable."""
+    try:
+        return os.getloadavg()[0]
+    except (AttributeError, OSError):
+        return 0.0
+
+
+def _nvidia_smi_utilization() -> float | None:
+    """Read GPU utilization via the nvidia-smi CLI (fallback for missing pynvml)."""
+    try:
+        result = subprocess.run(
+            [
+                "nvidia-smi",
+                "--query-gpu=utilization.gpu",
+                "--format=csv,noheader,nounits",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=True,
+        )
+        return float(result.stdout.strip().splitlines()[0])
+    except Exception:
+        return None
+
+
+def gpu_snapshot() -> dict[str, float] | None:
+    """Return VRAM usage and GPU utilization, or None without CUDA."""
+    if not torch.cuda.is_available():
+        return None
+    free, total = torch.cuda.mem_get_info()
+    snapshot = {
+        "vram_alloc_gb": torch.cuda.memory_allocated() / 1024**3,
+        "vram_used_gb": (total - free) / 1024**3,
+        "vram_total_gb": total / 1024**3,
+    }
+    try:
+        snapshot["gpu_util_pct"] = float(torch.cuda.utilization())
+    except Exception:
+        util = _nvidia_smi_utilization()
+        if util is not None:
+            snapshot["gpu_util_pct"] = util
+    return snapshot
+
+
+def system_snapshot() -> dict[str, float]:
+    """Collect CPU-side and (when present) GPU-side resource metrics."""
+    snapshot: dict[str, float] = {
+        "rss_gb": rss_gigabytes(),
+        "cpu_load": cpu_load_average(),
+        "n_cpus": float(os.cpu_count() or 1),
+    }
+    gpu = gpu_snapshot()
+    if gpu is not None:
+        snapshot.update(gpu)
+    return snapshot
+
+
+def format_system_snapshot(snapshot: dict[str, float]) -> str:
+    return " ".join(f"{key}={value:.2f}" for key, value in snapshot.items())
 
 
 def get_git_commit() -> str | None:
@@ -96,9 +191,9 @@ def evaluate(
                 targets=batch["targets"],
             )
         losses.append(output["loss"].item())
-        valid = batch["targets"].ne(-100)
-        predictions = output["logits"].argmax(-1)
-        correct += (predictions[valid] == batch["targets"][valid]).sum().item()
+        valid = batch["targets"].ne(IGNORE_INDEX)
+        predictions = model.head(output["hidden_states"][valid]).argmax(-1)
+        correct += (predictions == batch["targets"][valid]).sum().item()
         total += valid.sum().item()
     model.train()
     loss = sum(losses) / max(1, len(losses))

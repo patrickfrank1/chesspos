@@ -38,5 +38,29 @@ jobs:
       - name: Ruff lint
         run: uv run ruff check .
 
-      - name: Pytest
-        run: uv run pytest -ra
+      - name: Pytest (unit)
+        run: uv run pytest -m "not integration" -ra -n auto --dist loadgroup
+
+  test-integration:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version-file: .python-version
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --frozen --all-groups --extra cpu
+
+      - name: Pytest (integration)
+        run: uv run pytest -m "integration" -ra

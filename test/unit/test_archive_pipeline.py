@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pyarrow as pa
+import pytest
 import zstandard
 
 from bdd import given, then, when
@@ -28,17 +29,22 @@ from src.dataset.config import (
 )
 from src.dataset.source import WorkItem
 
+# These tests boot real local Ray instances; keep them in one xdist worker
+# (with --dist loadgroup) so parallel Ray clusters cannot collide on ports.
+pytestmark = pytest.mark.xdist_group("ray")
+
 
 def make_pipeline(
     debug: bool = False,
     data_path: str | None = "/tmp",
     archive_urls: list[str] | None = None,
     worker_count: int = 1,
+    batch_size: int = 10,
 ) -> ArchivePipeline:
     return ArchivePipeline(
         dataset_config=DatasetConfig(
             repo_name="test/chesspos-test",
-            batch_size=10,
+            batch_size=batch_size,
             train_ratio=0.8,
             data_path=data_path,
         ),
@@ -508,13 +514,15 @@ class TestBatchNumbering:
         return
 
     def test_run_names_batches_consecutively_independent_of_chunking(self, tmp_path):
-        with given("a 40-game archive streamed in dry-run mode with batch size 10"):
+        with given("a 15-game archive streamed in dry-run mode with batch size 10"):
             games = b"".join(
-                f'[Event "G{i}"]\n[Site "s"]\n\n1. e4 *\n\n'.encode() for i in range(40)
+                f'[Event "G{i}"]\n[Site "s"]\n\n1. e4 *\n\n'.encode() for i in range(15)
             )
             payload = _zst(games)
             pipeline = make_pipeline(
-                data_path=None, archive_urls=["https://x/test-a.pgn.zst"]
+                data_path=None,
+                archive_urls=["https://x/test-a.pgn.zst"],
+                batch_size=5,
             )
 
         with when("the pipeline runs to completion"):

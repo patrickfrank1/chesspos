@@ -1,11 +1,18 @@
 import numpy as np
 import pytest
 import torch
+from torch import nn
 
 from bdd import given, then, when
-from src.dataset.token_stream import SEP
+from src.dataset.token_stream import CLS, EMPTY, N_SLOTS, SEGMENT_LEN, SEP, VOCAB_SIZE
 from src.modeling.masking import IGNORE_INDEX, MaskingConfig, mask_stream
-from src.modeling.transformer import MaskedStreamTransformer, TransformerConfig
+from src.modeling.transformer import (
+    MaskedStreamTransformer,
+    TransformerBlock,
+    TransformerConfig,
+    slot_indices,
+)
+from src.modeling.varlen import cu_seqlens, flatten_valid, scatter_valid
 from src.training.window_dataset import collate_windows
 
 
@@ -45,7 +52,7 @@ def segment_flags(targets, sep_positions):
 
 class TestMaskStream:
     def test_random_mode_masks_segment_tokens(self):
-        from src.dataset.token_stream import TURN_WHITE
+        from src.dataset.token_stream import EMPTY
 
         with given("a packed token stream and random-only masking"):
             tokens = make_stream(random_game_factory(1))
@@ -61,7 +68,7 @@ class TestMaskStream:
         with then("only non-structural tokens are masked and targets keep originals"):
             changed = np.flatnonzero(targets != IGNORE_INDEX)
             assert changed.size > 0
-            assert np.all(tokens[changed] >= TURN_WHITE)
+            assert np.all(tokens[changed] >= EMPTY)
             structural = np.flatnonzero((tokens == 3) | (tokens == 2))
             assert np.all(targets[structural] == IGNORE_INDEX)
             assert np.all(masked[structural] == tokens[structural])
@@ -69,7 +76,7 @@ class TestMaskStream:
         return
 
     def test_random_mode_rate(self):
-        from src.dataset.token_stream import TURN_WHITE
+        from src.dataset.token_stream import EMPTY
 
         with given("a packed token stream and random-only masking at rate 0.3"):
             tokens = make_stream(random_game_factory(2))
@@ -79,7 +86,7 @@ class TestMaskStream:
             _, targets, _ = mask_stream(tokens, config, np.random.default_rng(0))
 
         with then("a fraction of the maskable tokens is masked"):
-            n_maskable = int((tokens >= TURN_WHITE).sum())
+            n_maskable = int((tokens >= EMPTY).sum())
             n_masked = int((targets != IGNORE_INDEX).sum())
             assert 0.2 * n_maskable <= n_masked <= 0.4 * n_maskable
         return
@@ -184,11 +191,13 @@ class TestMaskStream:
             masked, targets, _ = mask_stream(tokens, config, np.random.default_rng(0))
 
         with then("replacements follow the 80/10/10 mask/random/keep split"):
-            changed = np.flatnonzero((targets != IGNORE_INDEX) & (targets >= 38))
+            changed = np.flatnonzero((targets != IGNORE_INDEX) & (targets >= EMPTY))
             assert changed.size > 200
             mask_frac = float((masked[changed] == 1).mean())
             random_frac = float(
-                ((masked[changed] >= 38) & (masked[changed] != targets[changed])).mean()
+                (
+                    (masked[changed] >= EMPTY) & (masked[changed] != targets[changed])
+                ).mean()
             )
             keep_frac = float((masked[changed] == targets[changed]).mean())
             assert mask_frac == pytest.approx(0.8, abs=0.1)
@@ -199,8 +208,8 @@ class TestMaskStream:
     def test_scalar_replacement_stays_in_token_class(self):
         from src.dataset.token_stream import (
             CASTLE_BASE,
+            EMPTY,
             EP_BASE,
-            PIECE_SQUARE_BASE,
             TURN_WHITE,
         )
 
@@ -211,10 +220,10 @@ class TestMaskStream:
 
         with when("every replaced token is bucketed by its token class"):
             replaced = {
+                EMPTY: [],
                 TURN_WHITE: [],
                 CASTLE_BASE: [],
                 EP_BASE: [],
-                PIECE_SQUARE_BASE: [],
             }
             for seed in range(60):
                 tokens = make_stream(random_game_factory(seed), n_boards=8)
@@ -224,19 +233,25 @@ class TestMaskStream:
                 for pos in np.flatnonzero(targets != IGNORE_INDEX):
                     low, _ = next(
                         (lo, hi)
-                        for lo, hi in ((4, 6), (6, 22), (22, 38), (38, 806))
+                        for lo, hi in (
+                            (EMPTY, TURN_WHITE),
+                            (TURN_WHITE, CASTLE_BASE),
+                            (CASTLE_BASE, EP_BASE),
+                            (EP_BASE, VOCAB_SIZE),
+                        )
                         if lo <= targets[pos] < hi
                     )
                     if masked[pos] != 1 and masked[pos] != targets[pos]:
                         replaced[low].append(int(masked[pos]))
 
         with then("each class only receives replacements from its own range"):
+            assert replaced[EMPTY], "expected random-replaced slot tokens"
             assert replaced[TURN_WHITE], "expected random-replaced turn tokens"
             assert replaced[CASTLE_BASE], "expected random-replaced castle tokens"
-            assert all(4 <= v < 6 for v in replaced[TURN_WHITE])
-            assert all(6 <= v < 22 for v in replaced[CASTLE_BASE])
-            assert all(22 <= v < 38 for v in replaced[EP_BASE])
-            assert all(38 <= v < 806 for v in replaced[PIECE_SQUARE_BASE])
+            assert all(EMPTY <= v < TURN_WHITE for v in replaced[EMPTY])
+            assert all(TURN_WHITE <= v < CASTLE_BASE for v in replaced[TURN_WHITE])
+            assert all(CASTLE_BASE <= v < EP_BASE for v in replaced[CASTLE_BASE])
+            assert all(EP_BASE <= v < VOCAB_SIZE for v in replaced[EP_BASE])
         return
 
     def test_deterministic_with_same_seed(self):
@@ -290,7 +305,7 @@ TINY_CONFIG = TransformerConfig(
     n_layers=2,
     d_ff=64,
     dropout=0.0,
-    max_seq_len=64,
+    max_seq_len=512,
     max_segments=16,
 )
 
@@ -320,8 +335,19 @@ def tiny_batch(n_segments=3, batch=2, seed=0):
     return collate_windows(samples)
 
 
+def supervised_batch():
+    """A tiny batch with real supervised targets at six positions."""
+    batch = tiny_batch()
+    targets = batch["targets"].clone()
+    for row, positions in ((0, (2, 5, 8)), (1, (1, 4, 9))):
+        for position in positions:
+            targets[row, position] = batch["tokens"][row, position]
+    batch["targets"] = targets
+    return batch
+
+
 class TestTransformer:
-    def test_forward_shapes_and_loss(self):
+    def test_forward_with_targets_returns_loss_without_logits(self):
         with given("a tiny masked stream transformer in eval mode and a batch"):
             model = MaskedStreamTransformer(TINY_CONFIG)
             model.eval()
@@ -335,9 +361,31 @@ class TestTransformer:
                 targets=batch["targets"],
             )
 
-        with then("logits span the vocabulary and the loss is finite"):
-            assert output["logits"].shape == (*batch["tokens"].shape, 806)
+        with then("the loss is finite and no full logits tensor is materialized"):
+            assert "logits" not in output
             assert torch.isfinite(output["loss"])
+            assert output["hidden_states"].shape == (
+                *batch["tokens"].shape,
+                TINY_CONFIG.d_model,
+            )
+        return
+
+    def test_forward_without_targets_returns_full_logits(self):
+        with given("a tiny masked stream transformer in eval mode and a batch"):
+            model = MaskedStreamTransformer(TINY_CONFIG)
+            model.eval()
+            batch = tiny_batch()
+
+        with when("the model runs a forward pass without targets"):
+            output = model(
+                batch["tokens"],
+                batch["segment_ids"],
+                padding_mask=batch["padding_mask"],
+            )
+
+        with then("logits span the padded sequence and the vocabulary"):
+            assert output["logits"].shape == (*batch["tokens"].shape, VOCAB_SIZE)
+            assert torch.isfinite(output["logits"]).all()
         return
 
     def test_padding_does_not_change_real_outputs(self):
@@ -388,28 +436,83 @@ class TestTransformer:
             assert loss.item() == 0.0
         return
 
+    def test_head_runs_only_on_supervised_positions(self):
+        with given("a tiny model whose head records how many rows it sees"):
+            model = MaskedStreamTransformer(TINY_CONFIG)
+            model.eval()
+            batch = supervised_batch()
+
+            class RecordingHead(nn.Module):
+                def __init__(self, inner: nn.Module):
+                    super().__init__()
+                    self.inner = inner
+                    self.row_counts: list[int] = []
+
+                def forward(self, x: torch.Tensor) -> torch.Tensor:
+                    self.row_counts.append(x.shape[0])
+                    return self.inner(x)
+
+            recording = RecordingHead(model.head)
+            model.head = recording
+
+        with when("the model runs a forward pass with targets"):
+            with torch.no_grad():
+                model(
+                    batch["tokens"],
+                    batch["segment_ids"],
+                    padding_mask=batch["padding_mask"],
+                    targets=batch["targets"],
+                )
+
+        with then("the head saw exactly the supervised rows in a single call"):
+            supervised = int(batch["targets"].ne(IGNORE_INDEX).sum())
+            assert recording.row_counts == [supervised]
+        return
+
     def test_weighted_loss_matches_manual_weighted_mean(self):
-        with given("synthetic logits, targets, and per-target weights"):
-            logits = torch.zeros(1, 3, 10)
-            logits[0, 0, 3] = 100.0
-            logits[0, 1, 5] = 100.0
-            targets = torch.tensor([[2, 5, IGNORE_INDEX]])
-            weights = torch.tensor([[10.0, 1.0, 0.0]])
+        with given(
+            "a tiny model with a recording head, targets, and per-target weights"
+        ):
+            model = MaskedStreamTransformer(TINY_CONFIG)
+            model.eval()
+            batch = supervised_batch()
+            weights = (batch["targets"] != IGNORE_INDEX).float() + 1.0
 
-        with when("the weighted and unweighted losses are computed"):
-            weighted = MaskedStreamTransformer._loss(logits, targets, weights)
-            unweighted = MaskedStreamTransformer._loss(logits, targets)
+            recorded: dict[str, torch.Tensor] = {}
 
-        with then("the weighted loss equals the manually computed weighted mean"):
-            ce0 = torch.nn.functional.cross_entropy(
-                logits[0, 0].unsqueeze(0), targets[0, 0].unsqueeze(0)
+            class RecordingHead(nn.Module):
+                def __init__(self, inner: nn.Module):
+                    super().__init__()
+                    self.inner = inner
+
+                def forward(self, x: torch.Tensor) -> torch.Tensor:
+                    logits = self.inner(x)
+                    recorded["logits"] = logits
+                    return logits
+
+            model.head = RecordingHead(model.head)
+
+        with when("the weighted loss is computed"):
+            with torch.no_grad():
+                weighted = model(
+                    batch["tokens"],
+                    batch["segment_ids"],
+                    padding_mask=batch["padding_mask"],
+                    targets=batch["targets"],
+                    weights=weights,
+                )["loss"]
+
+        with then(
+            "it equals the manually computed weighted mean over the recorded logits"
+        ):
+            logits = recorded["logits"]
+            targets = batch["targets"][batch["targets"] != IGNORE_INDEX]
+            w = weights[batch["targets"] != IGNORE_INDEX]
+            per_token = torch.nn.functional.cross_entropy(
+                logits, targets, reduction="none"
             )
-            ce1 = torch.nn.functional.cross_entropy(
-                logits[0, 1].unsqueeze(0), targets[0, 1].unsqueeze(0)
-            )
-            expected = (10.0 * ce0 + 1.0 * ce1) / 11.0
+            expected = (per_token * w).sum() / w.sum()
             assert weighted.item() == pytest.approx(expected.item(), rel=1e-4)
-            assert weighted.item() != pytest.approx(unweighted.item(), rel=1e-3)
         return
 
     def test_forward_accepts_weights(self):
@@ -478,4 +581,244 @@ class TestTransformer:
                 assert torch.allclose(pooled[row, s], expected, atol=1e-6)
             assert mask[row, : len(real_segments)].all()
             assert not mask[row, len(real_segments) :].any()
+        return
+
+
+def content_positions(tokens, segment_ids, padding_mask):
+    """Positions of non-structural, non-pad tokens grouped by segment id."""
+    row = tokens[0]
+    groups: dict[int, list[int]] = {}
+    for position in torch.nonzero(padding_mask[0]).flatten().tolist():
+        if int(row[position]) in (CLS, SEP):
+            continue
+        groups.setdefault(int(segment_ids[0][position]), []).append(position)
+    return groups
+
+
+def swapped_tokens_batch(batch):
+    """A copy of the batch with two different content tokens of one segment swapped."""
+    tokens = batch["tokens"].clone()
+    for positions in content_positions(
+        tokens, batch["segment_ids"], batch["padding_mask"]
+    ).values():
+        for i, left in enumerate(positions):
+            for right in positions[i + 1 :]:
+                if tokens[0, left] != tokens[0, right]:
+                    tokens[0, left], tokens[0, right] = (
+                        tokens[0, right],
+                        tokens[0, left],
+                    )
+                    return tokens
+    raise AssertionError("no swappable content token pair found")
+
+
+class TestSlotEmbedding:
+    def test_model_has_slot_embedding(self):
+        with given("a transformer config"):
+            config = TransformerConfig()
+
+        with then("the model embeds one slot per content position plus structure"):
+            model = MaskedStreamTransformer(config)
+            assert model.slot_embedding.weight.shape == (
+                SEGMENT_LEN + 1,
+                config.d_model,
+            )
+        return
+
+    def test_slot_indices_match_segment_layout(self):
+        with given("a collated batch and the slot index helper"):
+            batch = tiny_batch(n_segments=4, batch=1)
+
+        with when("slot indices are computed for every token"):
+            slots = slot_indices(batch["tokens"], batch["segment_ids"])
+
+        with then(
+            "structural tokens get the structural index and content tokens are "
+            "indexed by their offset within the segment"
+        ):
+            tokens = batch["tokens"][0]
+            segment_ids = batch["segment_ids"][0]
+            for position in torch.nonzero(batch["padding_mask"][0]).flatten().tolist():
+                token = int(tokens[position])
+                if token in (CLS, SEP):
+                    assert int(slots[0, position]) == SEGMENT_LEN
+                else:
+                    group_start = int(
+                        torch.nonzero(segment_ids == segment_ids[position])[0]
+                    )
+                    expected = position - group_start - 1
+                    assert int(slots[0, position]) == expected
+                    assert 0 <= expected < SEGMENT_LEN
+        return
+
+    def test_fully_masked_segment_gets_distinct_per_square_states(self):
+        with given("a board-masked stream of 10 boards and a default-config model"):
+            tokens = make_stream(random_game_factory(3), n_boards=10)
+            masked, targets, weights = mask_stream(
+                tokens,
+                MaskingConfig(p_random=0.0, p_board=1.0, p_span=0.0),
+                np.random.default_rng(0),
+            )
+            batch = collate_windows(
+                [{"tokens": masked, "targets": targets, "weights": weights}]
+            )
+            model = MaskedStreamTransformer(TINY_CONFIG)
+            model.eval()
+
+        with when("the model runs a forward pass over the masked stream"):
+            with torch.no_grad():
+                hidden = model(
+                    batch["tokens"], batch["segment_ids"], batch["padding_mask"]
+                )["hidden_states"]
+
+        with then("masked squares within one segment receive distinct hidden states"):
+            sep_positions = np.flatnonzero(tokens == SEP)
+            flags = segment_flags(targets, sep_positions)
+            fully_masked = int(np.flatnonzero(flags)[0])
+            start = 1 if fully_masked == 0 else int(sep_positions[fully_masked - 1]) + 1
+            square_positions = range(start, start + N_SLOTS)
+            states = hidden[0, list(square_positions)]
+            assert not torch.allclose(states[0], states[1])
+            assert not torch.allclose(states[0], states[-1])
+        return
+
+    def test_swapping_tokens_within_a_segment_changes_outputs(self):
+        with given("a tiny default-config model and a collated batch"):
+            model = MaskedStreamTransformer(TINY_CONFIG)
+            model.eval()
+            batch = tiny_batch()
+            swapped = swapped_tokens_batch(batch)
+
+        with when("the model runs on the original and the swapped batch"):
+            with torch.no_grad():
+                base = model(
+                    batch["tokens"], batch["segment_ids"], batch["padding_mask"]
+                )["hidden_states"]
+                other = model(swapped, batch["segment_ids"], batch["padding_mask"])[
+                    "hidden_states"
+                ]
+
+        with then("the hidden states at the swapped positions differ"):
+            assert not torch.allclose(base, other)
+        return
+
+    def test_slot_indices_stay_in_bounds_for_ragged_padded_batches(self):
+        with given("a collated batch with ragged row lengths"):
+            batch = tiny_batch(n_segments=4, batch=2)
+
+        with when("slot indices are computed for every position including padding"):
+            slots = slot_indices(batch["tokens"], batch["segment_ids"])
+
+        with then("every index is a valid slot embedding row"):
+            assert slots.shape == batch["tokens"].shape
+            assert int(slots.min()) >= 0
+            assert int(slots.max()) <= SEGMENT_LEN
+        return
+
+
+VARLEN_MASK = [
+    [1, 1, 1, 1, 0, 0],
+    [1, 1, 0, 0, 0, 0],
+    [1, 1, 1, 1, 1, 1],
+]
+
+
+class TestVarlenAttention:
+    def test_cu_seqlens_from_padding_mask(self):
+        with given("a padding mask for a batch of three rows"):
+            padding_mask = torch.tensor(VARLEN_MASK, dtype=torch.bool)
+
+        with when("cumulative segment offsets are computed"):
+            cu, max_seqlen = cu_seqlens(padding_mask)
+
+        with then("offsets delimit each row's valid tokens in row-major order"):
+            assert cu.tolist() == [0, 4, 6, 12]
+            assert max_seqlen == 6
+            assert cu.dtype == torch.int32
+        return
+
+    def test_flatten_valid_gathers_rows_in_order(self):
+        with given("a padded hidden tensor and its padding mask"):
+            x = torch.arange(18.0).reshape(3, 6, 1)
+            padding_mask = torch.tensor(VARLEN_MASK, dtype=torch.bool)
+
+        with when("valid tokens are flattened"):
+            flat = flatten_valid(x, padding_mask)
+
+        with then("flat holds only the valid tokens in row-major order"):
+            assert flat.shape == (12, 1)
+            expected = [
+                value
+                for row, value_row in enumerate(x.reshape(3, 6).tolist())
+                for kept, value in zip(VARLEN_MASK[row], value_row)
+                if kept
+            ]
+            assert flat.ravel().tolist() == expected
+        return
+
+    def test_scatter_valid_restores_padded_layout(self):
+        with given(
+            "a padded hidden tensor, its padding mask, and the flattened valid tokens"
+        ):
+            x = torch.arange(18.0).reshape(3, 6, 1)
+            padding_mask = torch.tensor(VARLEN_MASK, dtype=torch.bool)
+            flat = flatten_valid(x, padding_mask)
+
+        with when("the flat tokens are scattered back into a padded tensor"):
+            restored = scatter_valid(flat, padding_mask)
+
+        with then("valid positions are restored and pad positions are zeroed"):
+            assert restored.shape == x.shape
+            assert torch.equal(restored, x * padding_mask.unsqueeze(-1))
+        return
+
+    def test_block_attends_only_within_segments(self):
+        with given("a tiny transformer block and a flat input of two segments"):
+            block = TransformerBlock(TINY_CONFIG)
+            block.eval()
+            cu = torch.tensor([0, 4, 9], dtype=torch.int32)
+            max_seqlen = 5
+            x = torch.randn(9, TINY_CONFIG.d_model)
+
+        with when("the block runs forward over the flat segments"):
+            with torch.no_grad():
+                out = block(x, cu, max_seqlen)
+
+        with then("each segment's output equals running the block on it alone"):
+            for start, end in ((0, 4), (4, 9)):
+                with torch.no_grad():
+                    alone = block(
+                        x[start:end],
+                        torch.tensor([0, end - start], dtype=torch.int32),
+                        end - start,
+                    )
+                assert torch.allclose(out[start:end], alone, atol=1e-5)
+        return
+
+    def test_trunk_runs_blocks_on_flattened_valid_tokens(self):
+        with given("a tiny model and a padded batch whose blocks record their inputs"):
+            model = MaskedStreamTransformer(TINY_CONFIG)
+            model.eval()
+            batch = tiny_batch()
+            seen = []
+
+            def record(self, x, cu, max_seqlen):
+                seen.append((x.dim(), int(cu[-1])))
+                return x
+
+            for layer in model.blocks:
+                layer.forward = record.__get__(layer)
+
+        with when("the trunk runs forward with a padding mask"):
+            with torch.no_grad():
+                model._trunk(
+                    batch["tokens"], batch["segment_ids"], batch["padding_mask"]
+                )
+
+        with then("every block saw a flat tensor covering exactly the valid tokens"):
+            assert len(seen) == len(model.blocks)
+            valid_total = int(batch["padding_mask"].sum())
+            for dim, covered in seen:
+                assert dim == 2
+                assert covered == valid_total
         return

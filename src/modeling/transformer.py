@@ -6,10 +6,43 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-from src.dataset.token_stream import CLS, SEP, PIECE_SQUARE_BASE, VOCAB_SIZE
+from src.dataset.token_stream import CLS, PAD, SEGMENT_LEN, SEP, VOCAB_SIZE
 from src.modeling.masking import IGNORE_INDEX
+from src.modeling.varlen import (
+    cu_seqlens,
+    flatten_valid,
+    scatter_valid,
+    varlen_attention,
+)
 
 IGNORE_TOKENS = (CLS, SEP)
+STRUCTURAL_SLOT = SEGMENT_LEN
+
+
+def slot_indices(tokens: torch.Tensor, segment_ids: torch.Tensor) -> torch.Tensor:
+    """Map every token to its slot within the segment's fixed content layout.
+
+    Content tokens are indexed by their offset inside the 67-token block
+    (squares 0-63, turn 64, castle 65, en-passant 66); structural tokens
+    (CLS/SEP) and padding map to ``STRUCTURAL_SLOT``. Without this index the
+    trunk's attention is permutation-equivariant over each segment, so a fully
+    masked board would receive one identical prediction for every square.
+    """
+    positions = torch.arange(tokens.shape[1], device=tokens.device)
+    is_group_start = torch.ones_like(segment_ids, dtype=torch.bool)
+    is_group_start[:, 1:] = segment_ids[:, 1:] != segment_ids[:, :-1]
+    group_start = torch.cummax(
+        torch.where(
+            is_group_start,
+            positions.unsqueeze(0).expand_as(segment_ids),
+            torch.zeros_like(segment_ids),
+        ),
+        dim=1,
+    ).values
+    offset = positions.unsqueeze(0) - group_start
+    structural = (tokens == CLS) | (tokens == SEP) | (tokens == PAD)
+    content = (offset - 1).clamp(0, SEGMENT_LEN - 1)
+    return torch.where(structural, STRUCTURAL_SLOT, content)
 
 
 @dataclass
@@ -22,29 +55,6 @@ class TransformerConfig:
     dropout: float = 0.1
     max_seq_len: int = 2048
     max_segments: int = 128
-    piece_square_base: int = PIECE_SQUARE_BASE
-    n_pieces: int = 12
-    n_squares: int = 64
-
-
-class FactorizedTokenEmbedding(nn.Module):
-    def __init__(self, config: TransformerConfig):
-        super().__init__()
-        self.piece_square_base = config.piece_square_base
-        self.piece = nn.Embedding(config.n_pieces, config.d_model)
-        self.square = nn.Embedding(config.n_squares, config.d_model)
-        self.state = nn.Embedding(config.piece_square_base, config.d_model)
-        return
-
-    def forward(self, tokens: torch.Tensor) -> torch.Tensor:
-        is_piece = tokens >= self.piece_square_base
-        offset = (tokens - self.piece_square_base).clamp_min(0)
-        piece_index = torch.where(is_piece, offset // 64, torch.zeros_like(offset))
-        square_index = torch.where(is_piece, offset % 64, torch.zeros_like(offset))
-        state_index = tokens.clamp(0, self.piece_square_base - 1)
-        piece_emb = self.piece(piece_index) + self.square(square_index)
-        state_emb = self.state(state_index)
-        return torch.where(is_piece.unsqueeze(-1), piece_emb, state_emb)
 
 
 class TransformerBlock(nn.Module):
@@ -60,20 +70,27 @@ class TransformerBlock(nn.Module):
         self.fc_out = nn.Linear(config.d_ff, config.d_model)
         return
 
-    def forward(self, x: torch.Tensor, attn_mask: torch.Tensor) -> torch.Tensor:
-        batch, length, d_model = x.shape
+    def forward(
+        self, x: torch.Tensor, cu: torch.Tensor, max_seqlen: int
+    ) -> torch.Tensor:
+        """Run the block over flat valid tokens ``[T, d_model]``.
+
+        ``cu`` delimits each row's valid run so attention never crosses rows;
+        see :mod:`src.modeling.varlen`.
+        """
+        d_model = x.shape[-1]
         h = self.ln_attn(x)
-        qkv = self.qkv(h).view(batch, length, 3, self.n_heads, d_model // self.n_heads)
-        q, k, v = qkv.permute(2, 0, 3, 1, 4).unbind(0)
-        attended = F.scaled_dot_product_attention(
+        qkv = self.qkv(h).view(-1, 3, self.n_heads, d_model // self.n_heads)
+        q, k, v = qkv.permute(1, 0, 2, 3).unbind(0)
+        attended = varlen_attention(
             q,
             k,
             v,
-            attn_mask=attn_mask,
+            cu,
+            max_seqlen,
             dropout_p=self.dropout if self.training else 0.0,
         )
-        attended = attended.transpose(1, 2).reshape(batch, length, d_model)
-        x = x + self.attn_out(attended)
+        x = x + self.attn_out(attended.reshape(x.shape[0], d_model))
         x = x + self.fc_out(F.gelu(self.fc_in(self.ln_ffn(x))))
         return x
 
@@ -82,8 +99,9 @@ class MaskedStreamTransformer(nn.Module):
     def __init__(self, config: TransformerConfig):
         super().__init__()
         self.config = config
-        self.token_embedding = FactorizedTokenEmbedding(config)
+        self.token_embedding = nn.Embedding(config.vocab_size, config.d_model)
         self.segment_embedding = nn.Embedding(config.max_segments + 1, config.d_model)
+        self.slot_embedding = nn.Embedding(SEGMENT_LEN + 1, config.d_model)
         self.blocks = nn.ModuleList(
             TransformerBlock(config) for _ in range(config.n_layers)
         )
@@ -102,11 +120,12 @@ class MaskedStreamTransformer(nn.Module):
         if padding_mask is None:
             padding_mask = tokens.ne(0)
         hidden = self._trunk(tokens, segment_ids, padding_mask)
-        logits = self.head(hidden)
-        output = {"logits": logits, "hidden_states": hidden}
-        if targets is not None:
-            output["loss"] = self._loss(logits, targets, weights)
-        return output
+        if targets is None:
+            return {"logits": self.head(hidden), "hidden_states": hidden}
+        return {
+            "loss": self._loss(hidden, targets, weights),
+            "hidden_states": hidden,
+        }
 
     def _trunk(
         self,
@@ -114,33 +133,37 @@ class MaskedStreamTransformer(nn.Module):
         segment_ids: torch.Tensor,
         padding_mask: torch.Tensor,
     ) -> torch.Tensor:
-        batch, length = tokens.shape
-        x = self.token_embedding(tokens) + self.segment_embedding(segment_ids)
-        key_allowed = padding_mask[:, None, None, :]
-        eye = torch.eye(length, dtype=torch.bool, device=tokens.device)
-        attn_mask = key_allowed | eye
+        x = (
+            self.token_embedding(tokens)
+            + self.segment_embedding(segment_ids)
+            + self.slot_embedding(slot_indices(tokens, segment_ids))
+        )
+        cu, max_seqlen = cu_seqlens(padding_mask)
+        flat = flatten_valid(x, padding_mask)
         for block in self.blocks:
-            x = block(x, attn_mask)
-        return self.ln_final(x)
+            flat = block(flat, cu, max_seqlen)
+        return scatter_valid(self.ln_final(flat), padding_mask)
 
-    @staticmethod
     def _loss(
-        logits: torch.Tensor,
+        self,
+        hidden: torch.Tensor,
         targets: torch.Tensor,
         weights: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        per_token = F.cross_entropy(
-            logits.view(-1, logits.size(-1)),
-            targets.view(-1),
-            ignore_index=IGNORE_INDEX,
-            reduction="none",
-        )
-        valid = targets.ne(IGNORE_INDEX).view(-1)
+        """Supervised loss computed only at positions with targets.
+
+        The vocabulary head runs solely on supervised rows (masked tokens);
+        ignored positions (unmasked tokens, CLS/SEP, padding) never reach the
+        head or the cross-entropy.
+        """
+        valid = targets.ne(IGNORE_INDEX)
         if not valid.any():
-            return logits.new_zeros(())
-        per_token = per_token[valid]
+            return hidden.new_zeros(())
+        flat_hidden = hidden[valid]
+        logits = self.head(flat_hidden)
+        per_token = F.cross_entropy(logits, targets[valid], reduction="none")
         if weights is not None:
-            w = weights.reshape(-1)[valid].to(per_token.dtype)
+            w = weights[valid].to(per_token.dtype)
             total = w.sum()
             if total > 0:
                 return (per_token * w).sum() / total

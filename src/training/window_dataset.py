@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import json
 import os
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
+from queue import Queue
+from threading import Thread
 
 import numpy as np
 import pyarrow.parquet as pq
@@ -31,6 +34,33 @@ class WindowDatasetConfig:
     balanced_modes: bool = True
     unigram_weights: np.ndarray | None = None
     shuffle_buffer: int = 0
+    prefetch_shards: int = 0
+    resume_step: int = 0
+    batch_size: int = 1
+    num_workers: int = 1
+
+
+def worker_skip_windows(
+    resume_step: int, batch_size: int, num_workers: int, worker_id: int
+) -> int:
+    """Windows this worker already consumed within the first ``resume_step`` steps.
+
+    A DataLoader with ``num_workers`` serves batches round-robin: batch ``i``
+    comes from worker ``i % num_workers``. After ``resume_step`` steps the
+    worker has produced ``ceil((resume_step - worker_id) / num_workers)``
+    batches, i.e. that many times ``batch_size`` windows. With a single
+    process (``num_workers <= 1``) the skip covers every window consumed so
+    far. An exact stream position further requires the same ``num_workers``
+    as the original run. The resumed loader restarts its round-robin at
+    worker 0, so batch order may rotate within one worker cycle; the window
+    multiset is preserved exactly.
+    """
+    if resume_step <= 0 or worker_id >= resume_step:
+        return 0
+    if num_workers <= 1:
+        return resume_step * batch_size
+    batches = (resume_step - worker_id - 1) // num_workers + 1
+    return batches * batch_size
 
 
 def build_mode_pattern(masking: MaskingConfig, period: int = 20) -> list[str]:
@@ -111,9 +141,30 @@ def _sample_segments(
         return [segments[start]]
     if u < config.p_single + config.p_few:
         k = int(rng.integers(config.few_min, min(config.few_max, n) + 1))
-        start = int(rng.integers(n - k + 1))
-        return segments[start : start + k]
+        return _sample_few(segments, rng, config, k)
     return _sample_full(segments, rng, config)
+
+
+def _sample_few(
+    segments: list[np.ndarray],
+    rng: np.random.Generator,
+    config: WindowDatasetConfig,
+    k: int,
+) -> list[np.ndarray]:
+    """Sample up to k consecutive segments without exceeding the token budget."""
+    budget = config.max_seq_len - 1
+    start = int(rng.integers(len(segments) - k + 1))
+    chosen: list[np.ndarray] = []
+    used = 0
+    for i in range(start, min(start + k, len(segments))):
+        cost = int(len(segments[i])) + 1
+        if chosen and used + cost > budget:
+            break
+        chosen.append(segments[i])
+        used += cost
+    if not chosen:
+        chosen = [segments[start][: budget - 1]]
+    return chosen
 
 
 def _sample_full(
@@ -247,28 +298,74 @@ def _split_segments(stream: np.ndarray) -> list[np.ndarray]:
     return segments
 
 
-def streaming_unigram_counts(data_dir: str | Path) -> np.ndarray:
+def _shard_counts(shard: Path) -> np.ndarray:
+    """Per-shard token histogram with SEP and leading-CLS framing removed."""
+    counts = np.zeros(VOCAB_SIZE, dtype=np.int64)
+    table = pq.read_table(shard, columns=["packed"])
+    column = table.column("packed").combine_chunks()
+    if len(column) == 0:
+        return counts
+    offsets = np.asarray(column.offsets)
+    values = column.flatten().to_numpy(zero_copy_only=False).astype(np.int16)
+    counts += np.bincount(values, minlength=VOCAB_SIZE)
+    counts[SEP] -= int((values == SEP).sum())
+    counts[CLS] -= int((values[offsets[:-1]] == CLS).sum())
+    return counts
+
+
+def streaming_unigram_counts(
+    data_dir: str | Path,
+    log=None,
+    log_every: int = 25,
+    max_workers: int | None = None,
+) -> np.ndarray:
     """Compute token counts over a split without materializing games.
 
-    Reads every shard once and accumulates a vocabulary-sized histogram of
-    the raw packed tokens. Segment-level counts exclude the SEP framing
-    tokens and the leading CLS of each game stream (interior CLS tokens are
-    kept, matching :func:`_split_segments`), so those are subtracted to match
-    :func:`unigram_counts` over preloaded games.
+    Shards whose ``.meta.json`` sidecar carries a ``unigram_counts``
+    histogram (recorded at ETL time) are summed directly without touching
+    the parquet files. Remaining shards are counted with a parallel parquet
+    pass (mirroring :func:`unigram_counts` semantics: SEP framing tokens and
+    each stream's leading CLS excluded). ``log`` is an optional callable
+    receiving human-readable progress messages.
     """
+    log = log or (lambda message: None)
+    shards = sorted(Path(data_dir).rglob("*.parquet"))
+    log(f"unigram pass: {len(shards)} shards in {data_dir}")
     counts = np.zeros(VOCAB_SIZE, dtype=np.int64)
-    for shard in sorted(Path(data_dir).rglob("*.parquet")):
-        table = pq.read_table(shard, columns=["packed"])
-        column = table.column("packed").combine_chunks()
-        if len(column) == 0:
-            continue
-        offsets = np.asarray(column.offsets)
-        values = column.flatten().to_numpy(zero_copy_only=False).astype(np.int16)
-        counts += np.bincount(values, minlength=VOCAB_SIZE)
-        counts[SEP] -= int((values == SEP).sum())
-        leading_cls = int((values[offsets[:-1]] == CLS).sum())
-        counts[CLS] -= leading_cls
+    missing: list[Path] = []
+    for shard in shards:
+        sidecar = _sidecar_counts(shard)
+        if sidecar is None:
+            missing.append(shard)
+        else:
+            counts += sidecar
+    if not missing:
+        log(f"unigram pass: done, {int(counts.sum())} tokens counted (from sidecars)")
+        return counts
+    log(f"unigram pass: {len(missing)} shards without sidecar histograms")
+    workers = max_workers or min(len(missing), os.cpu_count() or 1)
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        for index, shard_count in enumerate(pool.map(_shard_counts, missing), start=1):
+            counts += shard_count
+            if index == 1 or index % log_every == 0 or index == len(missing):
+                log(f"unigram pass: shard {index}/{len(missing)} done")
+    log(f"unigram pass: done, {int(counts.sum())} tokens counted")
     return counts
+
+
+def _sidecar_counts(shard: Path) -> np.ndarray | None:
+    """Per-shard histogram from the ``.meta.json`` sidecar, if it has one."""
+    sidecar = shard.with_suffix(".meta.json")
+    if not sidecar.exists():
+        return None
+    try:
+        payload = json.loads(sidecar.read_text(encoding="utf-8"))
+        counts = payload["stats"]["unigram_counts"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    if not isinstance(counts, list) or len(counts) != VOCAB_SIZE:
+        return None
+    return np.asarray(counts, dtype=np.int64)
 
 
 class StreamingWindowDataset(IterableDataset):
@@ -306,9 +403,21 @@ class StreamingWindowDataset(IterableDataset):
         return all_indices[info.id :: info.num_workers]
 
     def __iter__(self):
-        worker_indices = self._worker_shard_indices()
         info = torch.utils.data.get_worker_info()
         worker_id = 0 if info is None else info.id
+        skip = worker_skip_windows(
+            self.config.resume_step,
+            self.config.batch_size,
+            self.config.num_workers,
+            worker_id,
+        )
+        stream = self._iter_windows(worker_id, self._worker_shard_indices())
+        for _ in range(skip):
+            next(stream, None)
+        yield from stream
+        return
+
+    def _iter_windows(self, worker_id: int, worker_indices: list[int]):
         rng = np.random.default_rng(
             None if self.config.seed is None else self.config.seed + worker_id
         )
@@ -317,8 +426,15 @@ class StreamingWindowDataset(IterableDataset):
         epoch = 0
         while True:
             order = rng.permutation(worker_indices)
-            for shard_index in order:
-                for segments in _load_game_segments(self.shards[shard_index]):
+            shard_iter = (
+                self._prefetched_shards(order)
+                if self.config.prefetch_shards > 0
+                else (
+                    (index, _load_game_segments(self.shards[index])) for index in order
+                )
+            )
+            for _, games in shard_iter:
+                for segments in games:
                     if self.config.shuffle_buffer > 1:
                         if len(buffer) >= self.config.shuffle_buffer:
                             game = buffer.pop(int(rng.integers(len(buffer))))
@@ -333,6 +449,38 @@ class StreamingWindowDataset(IterableDataset):
                 yield self._window(game, rng, mode_counter)
                 mode_counter += 1
             epoch += 1
+        return
+
+    def _prefetched_shards(self, order: np.ndarray):
+        """Yield ``(shard_index, games)`` while preloading ahead in a thread pool.
+
+        A bounded queue holds up to ``prefetch_shards`` decoded shards per
+        worker, decoupling parquet IO + decode from window building so the
+        consumer never waits on the next shard load. The bound caps the
+        cache's memory footprint.
+        """
+        queue: Queue = Queue(maxsize=self.config.prefetch_shards)
+        end = object()
+
+        def producer() -> None:
+            try:
+                for index in order:
+                    queue.put((index, _load_game_segments(self.shards[index])))
+                queue.put(end)
+            except Exception as error:  # surface producer failures to consumer
+                queue.put(error)
+            return
+
+        thread = Thread(target=producer, daemon=True)
+        thread.start()
+        while True:
+            item = queue.get()
+            if item is end:
+                break
+            if isinstance(item, Exception):
+                raise item
+            yield item
+        thread.join()
         return
 
     def _window(

@@ -1,15 +1,19 @@
+import json
+
 import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
+import pytest
 import torch
 from types import SimpleNamespace
 
 from bdd import given, then, when
-from src.dataset.token_stream import CLS, SEP
+from src.dataset.token_stream import CLS, EMPTY, SEP, VOCAB_SIZE
 from src.training.window_dataset import (
     StreamingWindowDataset,
     WindowDatasetConfig,
     _load_game_segments,
+    worker_skip_windows,
     collate_windows,
     streaming_unigram_counts,
     unigram_counts,
@@ -25,7 +29,7 @@ def write_stream_shard(directory, name, seeds, n_boards=3, board_len=8):
         stream = []
         for _ in range(n_boards):
             stream.append(CLS)
-            stream.extend(rng.integers(2, 700, size=board_len).tolist())
+            stream.extend(rng.integers(EMPTY, VOCAB_SIZE, size=board_len).tolist())
             stream.append(SEP)
         streams.append(stream)
     directory.mkdir(parents=True, exist_ok=True)
@@ -230,4 +234,239 @@ class TestStreamingUnigramCounts:
 
         with then("the counts are identical"):
             assert np.array_equal(streamed, preloaded)
+        return
+
+    def test_progress_is_logged(self, tmp_path):
+        with given("a directory with two shards and a log collector"):
+            directory = tmp_path / "train"
+            write_stream_shard(directory, "a.parquet", (1, 2))
+            write_stream_shard(directory, "b.parquet", (3,))
+            messages: list[str] = []
+
+        with when("unigram counts are computed with a log callback"):
+            streaming_unigram_counts(str(directory), log=messages.append)
+
+        with then("progress messages cover start, per-shard progress, and finish"):
+            assert any("2 shards" in message for message in messages)
+            assert any("1/2" in message for message in messages)
+            assert any("2/2" in message for message in messages)
+            assert any("done" in message for message in messages)
+        return
+
+    def test_sidecar_counts_are_summed_without_reading_shards(
+        self, tmp_path, monkeypatch
+    ):
+        with given("shards whose sidecars each carry a unigram histogram"):
+            directory = tmp_path / "train"
+            write_stream_shard(directory, "a.parquet", (1, 2))
+            write_stream_shard(directory, "b.parquet", (3,))
+            histograms = {
+                "a.parquet": [10] * VOCAB_SIZE,
+                "b.parquet": [20] * VOCAB_SIZE,
+            }
+            for name, histogram in histograms.items():
+                sidecar = directory / name.replace(".parquet", ".meta.json")
+                sidecar.write_text(json.dumps({"stats": {"unigram_counts": histogram}}))
+            messages: list[str] = []
+
+        with when("shard reading is disabled and counts are requested"):
+            monkeypatch.setattr(
+                "src.training.window_dataset.pq.read_table",
+                lambda *args, **kwargs: pytest.fail("shards must not be reread"),
+            )
+            counts = streaming_unigram_counts(str(directory), log=messages.append)
+
+        with then("the sidecar histograms are summed directly"):
+            expected = np.zeros(VOCAB_SIZE, dtype=np.int64)
+            for histogram in histograms.values():
+                expected += np.asarray(histogram, dtype=np.int64)
+            assert np.array_equal(counts, expected)
+            assert any("sidecar" in message for message in messages)
+        return
+
+    def test_missing_sidecar_falls_back_to_parquet(self, tmp_path):
+        with given("one shard with a true sidecar histogram and one without"):
+            directory = tmp_path / "train"
+            write_stream_shard(directory, "a.parquet", (1, 2))
+            write_stream_shard(directory, "b.parquet", (3,))
+            histogram = unigram_counts(_load_game_segments(directory / "a.parquet"))
+            sidecar = directory / "a.meta.json"
+            sidecar.write_text(
+                json.dumps({"stats": {"unigram_counts": histogram.tolist()}})
+            )
+
+        with when("unigram counts are computed"):
+            counts = streaming_unigram_counts(str(directory))
+
+        with then("the result matches the full recomputation reference"):
+            expected = unigram_counts(_load_game_segments(directory))
+            assert np.array_equal(counts, expected)
+        return
+
+
+class TestStreamingPrefetch:
+    def test_prefetch_keeps_epoch_content_identical(self, tmp_path):
+        with given("a streaming dataset with a two-shard lookahead cache"):
+            directory = tmp_path / "train"
+            write_stream_shard(directory, "a.parquet", (1, 2, 3))
+            write_stream_shard(directory, "b.parquet", (4, 5, 6))
+            dataset = StreamingWindowDataset(make_config(directory, prefetch_shards=2))
+
+        with when("one full epoch is consumed"):
+            samples = []
+            for sample in dataset:
+                samples.append(sample_signature(sample))
+                if len(samples) == len(dataset):
+                    break
+
+        with then("the samples are exactly the packed games, as a multiset"):
+            expected = sorted(g.tobytes() for g in expected_packed_games(directory))
+            assert sorted(samples) == expected
+        return
+
+    def test_prefetch_works_across_workers(self, tmp_path):
+        with given("a two-worker loader over a prefetched streaming dataset"):
+            directory = tmp_path / "train"
+            write_stream_shard(directory, "a.parquet", (1, 2, 3))
+            write_stream_shard(directory, "b.parquet", (4, 5, 6))
+            write_stream_shard(directory, "c.parquet", (7, 8, 9))
+            write_stream_shard(directory, "d.parquet", (10, 11, 12))
+            dataset = StreamingWindowDataset(make_config(directory, prefetch_shards=2))
+            loader = DataLoader(
+                dataset,
+                batch_size=2,
+                num_workers=2,
+                collate_fn=collate_windows,
+            )
+
+        with when("one full epoch (12 games) is consumed across two workers"):
+            signatures = []
+            for batch in loader:
+                for row in batch["tokens"].numpy().astype(np.int16):
+                    signatures.append(np.trim_zeros(row, "b").tobytes())
+                if len(signatures) >= len(dataset):
+                    break
+
+        with then("every game appears exactly once, no epoch wraparound"):
+            expected = sorted(g.tobytes() for g in expected_packed_games(directory))
+            assert sorted(signatures) == expected
+        return
+
+
+class TestStreamResume:
+    def test_worker_skip_windows_round_robin_math(self):
+        with given("five steps at batch size three over two workers"):
+            resume_step, batch_size, num_workers = 5, 3, 2
+
+        with when("each worker computes how many windows it already consumed"):
+            skip0 = worker_skip_windows(resume_step, batch_size, num_workers, 0)
+            skip1 = worker_skip_windows(resume_step, batch_size, num_workers, 1)
+
+        with then("the skips match the round-robin batch counts and sum to the total"):
+            assert (skip0, skip1) == (9, 6)
+            assert skip0 + skip1 == resume_step * batch_size
+        return
+
+    def test_worker_skip_windows_edge_cases(self):
+        with given("a resume helper"):
+            with when("the resume step is zero"):
+                skip = worker_skip_windows(0, 8, 4, 2)
+            with then("no windows are skipped on a fresh start"):
+                assert skip == 0
+
+            with when("there is a single process (num_workers=0)"):
+                skip = worker_skip_windows(7, 8, 0, 0)
+            with then("the skip covers every window consumed so far"):
+                assert skip == 7 * 8
+
+            with when("a worker whose batches all lie beyond the stop point"):
+                skip = worker_skip_windows(3, 8, 4, 3)
+            with then("that worker has consumed nothing yet"):
+                assert skip == 0
+        return
+
+    def test_resume_continues_stream_without_repeats(self, tmp_path):
+        with given("a seeded single-worker streaming dataset"):
+            directory = tmp_path / "train"
+            write_stream_shard(directory, "a.parquet", (1, 2, 3))
+            write_stream_shard(directory, "b.parquet", (4, 5, 6))
+
+            def uninterrupted(count):
+                dataset = StreamingWindowDataset(make_config(directory))
+                return [
+                    sample_signature(sample) for sample, _ in zip(dataset, range(count))
+                ]
+
+        with when("a run stops after four windows and a fresh dataset resumes"):
+            reference = uninterrupted(10)
+            resumed_dataset = StreamingWindowDataset(
+                make_config(directory, resume_step=4, batch_size=1, num_workers=1)
+            )
+            continuation = [
+                sample_signature(sample) for sample, _ in zip(resumed_dataset, range(6))
+            ]
+
+        with then("the continuation is exactly the uninterrupted tail, with no replay"):
+            assert continuation == reference[4:]
+        return
+
+    def test_resume_with_dataloader_matches_uninterrupted(self, tmp_path):
+        with given("a two-worker loader at batch size two"):
+            directory = tmp_path / "train"
+            for i in range(4):
+                write_stream_shard(directory, f"s{i}.parquet", range(i * 6, i * 6 + 6))
+
+            def run_batches(resume_step, count):
+                dataset = StreamingWindowDataset(
+                    make_config(
+                        directory,
+                        resume_step=resume_step,
+                        batch_size=2,
+                        num_workers=2,
+                    )
+                )
+                loader = DataLoader(
+                    dataset,
+                    batch_size=2,
+                    num_workers=2,
+                    collate_fn=collate_windows,
+                )
+                out = []
+                for batch in loader:
+                    out.append(batch["tokens"].numpy().tobytes())
+                    if len(out) == count:
+                        break
+                return out
+
+        with when("a run stops after five batches and a fresh loader resumes"):
+            reference = run_batches(0, 13)
+            continuation = run_batches(5, 8)
+
+        with then(
+            "the continued batches cover exactly the uninterrupted tail; "
+            "order may rotate within a worker cycle"
+        ):
+            assert sorted(continuation) == sorted(reference[5:13])
+        return
+
+    def test_resume_with_shuffle_buffer_matches_uninterrupted(self, tmp_path):
+        with given("a seeded streaming dataset with a shuffle buffer"):
+            directory = tmp_path / "train"
+            for i in range(4):
+                write_stream_shard(directory, f"s{i}.parquet", range(i * 6, i * 6 + 6))
+
+            def stream(count, **overrides):
+                dataset = StreamingWindowDataset(make_config(directory, **overrides))
+                return [
+                    sample_signature(sample) for sample, _ in zip(dataset, range(count))
+                ]
+
+        with when("a run stops after five windows and a fresh dataset resumes"):
+            reference = stream(12, shuffle_buffer=4)
+            continuation = stream(
+                7, shuffle_buffer=4, resume_step=5, batch_size=1, num_workers=1
+            )
+
+        with then("the continuation matches the uninterrupted tail through the buffer"):
+            assert continuation == reference[5:]
         return

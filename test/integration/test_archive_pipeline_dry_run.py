@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
 
+import pytest
 import zstandard
 
 from bdd import given, then, when
@@ -156,3 +157,6 @@ class TestArchivePipelineDryRun:
             assert sum(m["stats"]["duplicates_dropped"] for m in metas) == 1
             assert not list(output_dir.rglob("*.pgn"))
         return
+
+
+pytestmark = pytest.mark.integration

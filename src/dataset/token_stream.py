@@ -10,13 +10,19 @@ MASK = 1
 SEP = 2
 CLS = 3
 
-TURN_WHITE = 4
-TURN_BLACK = 5
+EMPTY = 4
+PIECE_BASE = 5
 
-CASTLE_BASE = 6
-EP_BASE = 22
-PIECE_SQUARE_BASE = 38
-VOCAB_SIZE = 806
+TURN_WHITE = 17
+TURN_BLACK = 18
+
+CASTLE_BASE = 19
+EP_BASE = 35
+EP_NONE = EP_BASE
+
+N_SLOTS = 64
+SEGMENT_LEN = N_SLOTS + 3
+VOCAB_SIZE = 52
 
 _PIECE_INDEX = {
     chess.PAWN: 0,
@@ -29,21 +35,20 @@ _PIECE_INDEX = {
 _PIECE_TYPES = {index: piece_type for piece_type, index in _PIECE_INDEX.items()}
 
 
-def piece_square_id(piece: chess.Piece, square: int) -> int:
+def piece_id(piece: chess.Piece) -> int:
     piece_index = _PIECE_INDEX[piece.piece_type]
     if piece.color == chess.BLACK:
         piece_index += 6
-    return PIECE_SQUARE_BASE + 64 * piece_index + square
+    return PIECE_BASE + piece_index
 
 
-def parse_piece_square(token: int) -> tuple[chess.Piece, int]:
-    offset = token - PIECE_SQUARE_BASE
-    if offset < 0 or offset >= VOCAB_SIZE - PIECE_SQUARE_BASE:
-        raise ValueError(f"Token {token} is not a piece-square token")
-    piece_index, square = divmod(offset, 64)
+def parse_piece(token: int) -> chess.Piece:
+    piece_index = token - PIECE_BASE
+    if not 0 <= piece_index <= 11:
+        raise ValueError(f"Token {token} is not a piece token")
     color = chess.BLACK if piece_index >= 6 else chess.WHITE
     piece_type = _PIECE_TYPES[piece_index % 6]
-    return chess.Piece(piece_type, color), square
+    return chess.Piece(piece_type, color)
 
 
 def castle_token(board: chess.Board) -> int:
@@ -75,83 +80,78 @@ def parse_castle_token(token: int) -> str:
     return symbols
 
 
-def ep_token(board: chess.Board) -> int | None:
+def ep_token(board: chess.Board) -> int:
     if not board.has_legal_en_passant():
-        return None
+        return EP_NONE
     return ep_square_token(board.ep_square)
 
 
 def ep_square_token(square: int) -> int:
     rank = chess.square_rank(square)
     if rank == 2:
-        return EP_BASE + (square - chess.A3)
+        return EP_BASE + 1 + (square - chess.A3)
     if rank == 5:
-        return EP_BASE + 8 + (square - chess.A6)
+        return EP_BASE + 1 + 8 + (square - chess.A6)
     raise ValueError(
         f"Square {chess.square_name(square)} is not a reachable en-passant target"
     )
 
 
-def parse_ep_token(token: int) -> int:
+def parse_ep_token(token: int) -> int | None:
     index = token - EP_BASE
-    if index < 0 or index > 15:
+    if not 0 <= index <= 16:
         raise ValueError(f"Token {token} is not an en-passant token")
-    return chess.A3 + index if index < 8 else chess.A6 + (index - 8)
+    if index == 0:
+        return None
+    if index <= 8:
+        return chess.A3 + (index - 1)
+    return chess.A6 + (index - 9)
 
 
 @dataclass
 class TokenStreamEncoder:
     def encode(self, board: chess.Board) -> np.ndarray:
-        tokens = [TURN_WHITE if board.turn else TURN_BLACK, castle_token(board)]
-        ep = ep_token(board)
-        if ep is not None:
-            tokens.append(ep)
+        tokens = np.empty(SEGMENT_LEN, dtype=np.int16)
         piece_map = board.piece_map()
-        tokens.extend(
-            piece_square_id(piece, square)
-            for square, piece in sorted(piece_map.items())
-        )
-        return np.array(tokens, dtype=np.int16)
+        for square in range(N_SLOTS):
+            piece = piece_map.get(square)
+            tokens[square] = EMPTY if piece is None else piece_id(piece)
+        tokens[N_SLOTS] = TURN_WHITE if board.turn else TURN_BLACK
+        tokens[N_SLOTS + 1] = castle_token(board)
+        tokens[N_SLOTS + 2] = ep_token(board)
+        return tokens
 
     def encode_batch(self, boards: list[chess.Board]) -> tuple[np.ndarray, np.ndarray]:
         segments = [self.encode(board) for board in boards]
         if not segments:
             return np.empty((0, 0), dtype=np.int16), np.empty(0, dtype=np.int32)
-        lengths = np.array([len(segment) for segment in segments], dtype=np.int32)
-        padded = np.full((len(segments), int(lengths.max())), PAD, dtype=np.int16)
-        for i, segment in enumerate(segments):
-            padded[i, : len(segment)] = segment
-        return padded, lengths
+        lengths = np.full(len(segments), SEGMENT_LEN, dtype=np.int32)
+        return np.stack(segments), lengths
 
     def decode(self, data: np.ndarray) -> chess.Board:
         tokens = [int(token) for token in np.asarray(data).ravel()]
-        if len(tokens) < 2:
+        if len(tokens) != SEGMENT_LEN:
             raise ValueError(
-                "A token stream segment needs at least a TURN and a CASTLE token"
+                f"A slot segment must have exactly {SEGMENT_LEN} tokens, "
+                f"got {len(tokens)}"
             )
 
-        turn = tokens[0]
+        pieces: dict[int, chess.Piece] = {}
+        for square in range(N_SLOTS):
+            token = tokens[square]
+            if token == EMPTY:
+                continue
+            pieces[square] = parse_piece(token)
+
+        turn = tokens[N_SLOTS]
         if turn not in (TURN_WHITE, TURN_BLACK):
             raise ValueError(f"Expected a TURN token, got {turn}")
 
-        castle = tokens[1]
+        castle = tokens[N_SLOTS + 1]
         if not CASTLE_BASE <= castle < CASTLE_BASE + 16:
             raise ValueError(f"Expected a CASTLE token, got {castle}")
 
-        index = 2
-        ep_square = None
-        if len(tokens) > index and EP_BASE <= tokens[index] < EP_BASE + 16:
-            ep_square = parse_ep_token(tokens[index])
-            index += 1
-
-        pieces: dict[int, chess.Piece] = {}
-        for token in tokens[index:]:
-            piece, square = parse_piece_square(token)
-            if square in pieces:
-                raise ValueError(
-                    f"Duplicate piece-square token for {chess.square_name(square)}"
-                )
-            pieces[square] = piece
+        ep_square = parse_ep_token(tokens[N_SLOTS + 2])
 
         board = chess.Board()
         board.clear()

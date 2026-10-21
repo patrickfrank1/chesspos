@@ -4,6 +4,7 @@ from pathlib import Path
 import chess
 import pyarrow as pa
 import pyarrow.parquet as pq
+import pytest
 import ray
 
 from bdd import given, then, when
@@ -41,8 +42,8 @@ class TestRayTrainFit:
         with given("a tiny local dataset split into train and test parquet shards"):
             train_dir = tmp_path / "train"
             val_dir = tmp_path / "test"
-            write_split(train_dir, n_games=8)
-            write_split(val_dir, n_games=4)
+            write_split(train_dir, n_games=4)
+            write_split(val_dir, n_games=2)
             config = RayTrainingConfig(
                 train_dir=str(train_dir),
                 val_dir=str(val_dir),
@@ -90,3 +91,6 @@ class TestRayTrainFit:
             assert result.metrics["step"] == 2
             assert result.checkpoint is not None
         return
+
+
+pytestmark = pytest.mark.integration

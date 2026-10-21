@@ -10,6 +10,7 @@ import torch
 from torch.utils.data import DataLoader
 
 from src.evaluation.eval_suite import full_eval
+from src.modeling.masking import MaskingConfig
 from src.modeling.transformer import MaskedStreamTransformer, TransformerConfig
 from src.training.checkpoint_hub import (
     build_metadata,
@@ -19,11 +20,15 @@ from src.training.checkpoint_hub import (
 )
 from src.training.hf_data import download_split
 from src.training.loop import (
+    apply_compile,
     evaluate,
+    format_system_snapshot,
     get_git_commit,
     lr_lambda,
     make_logger,
     save_checkpoint,
+    system_snapshot,
+    use_fused_adamw,
     write_eval_artifacts,
 )
 from src.training.mlflow_tracker import MLflowTracker, resolve_tracking_uri
@@ -114,6 +119,24 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--eval-pool-size", type=int, default=1024)
     parser.add_argument("--eval-counterfactual", type=int, default=256)
     parser.add_argument(
+        "--prefetch-shards",
+        type=int,
+        default=2,
+        help="Shards preloaded ahead per streaming worker (0 disables; "
+        "only used with --streaming). Bounds the decoded-shard cache.",
+    )
+    parser.add_argument(
+        "--prefetch-factor",
+        type=int,
+        default=4,
+        help="Batches prefetched per DataLoader worker",
+    )
+    parser.add_argument(
+        "--no-pin-memory",
+        action="store_true",
+        help="Disable pinned memory for host-to-device batch transfers",
+    )
+    parser.add_argument(
         "--no-freq-weighting",
         action="store_true",
         help="Disable inverse-unigram-frequency loss weighting",
@@ -143,10 +166,59 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--compile", action="store_true")
     parser.add_argument("--log-file", default=None)
     parser.add_argument("--seed", type=int, default=17)
+    _masking_defaults = MaskingConfig()
+    parser.add_argument(
+        "--p-random",
+        type=float,
+        default=_masking_defaults.p_random,
+        help="Probability weight for random-token masking mode",
+    )
+    parser.add_argument(
+        "--p-board",
+        type=float,
+        default=_masking_defaults.p_board,
+        help="Probability weight for whole-board masking mode",
+    )
+    parser.add_argument(
+        "--p-span",
+        type=float,
+        default=_masking_defaults.p_span,
+        help="Probability weight for span masking mode",
+    )
     return parser.parse_args()
 
 
-def resolve_data_dirs(args: argparse.Namespace) -> tuple[Path, Path]:
+def masking_config(args: argparse.Namespace) -> MaskingConfig:
+    """Build the MaskingConfig implied by the parsed masking probability args."""
+    return MaskingConfig(
+        p_random=args.p_random, p_board=args.p_board, p_span=args.p_span
+    )
+
+
+def streaming_train_config(
+    args: argparse.Namespace, data_dir: str, start_step: int
+) -> WindowDatasetConfig:
+    """Build the streaming train dataset config, resuming the data stream.
+
+    With ``start_step > 0`` each DataLoader worker fast-forwards its
+    deterministic stream to the position the checkpoint left off, so a
+    resumed run continues on fresh data instead of replaying from the start.
+    """
+    return WindowDatasetConfig(
+        data_dir=data_dir,
+        max_seq_len=args.max_seq_len,
+        max_segments=args.max_segments,
+        masking=masking_config(args),
+        seed=args.seed,
+        shuffle_buffer=args.shuffle_buffer,
+        prefetch_shards=args.prefetch_shards,
+        resume_step=start_step,
+        batch_size=args.batch_size,
+        num_workers=args.num_workers,
+    )
+
+
+def resolve_data_dirs(args: argparse.Namespace, log=None) -> tuple[Path, Path]:
     """Resolve train/val data directories from args.
 
     With ``--data-repo`` both splits are snapshot-downloaded (train bounded
@@ -159,9 +231,13 @@ def resolve_data_dirs(args: argparse.Namespace) -> tuple[Path, Path]:
         None if args.data_limit_gb is None else int(args.data_limit_gb * 1024**3)
     )
     train_dir = download_split(
-        args.data_repo, "train", cache_dir=args.data_cache, max_bytes=max_bytes
+        args.data_repo,
+        "train",
+        cache_dir=args.data_cache,
+        max_bytes=max_bytes,
+        log=log,
     )
-    val_dir = download_split(args.data_repo, "test", cache_dir=args.data_cache)
+    val_dir = download_split(args.data_repo, "test", cache_dir=args.data_cache, log=log)
     return train_dir, val_dir
 
 
@@ -198,27 +274,20 @@ def main() -> None:
 
     model = MaskedStreamTransformer(model_config).to(device)
     raw_model = model
-    if args.compile:
-        model = torch.compile(model)
+    model = apply_compile(model, args.compile)
     n_params = sum(p.numel() for p in model.parameters())
     log(
         f"device={device} params={n_params / 1e6:.2f}M bf16={bf16} compile={args.compile}"
     )
 
-    train_dir, val_dir = resolve_data_dirs(args)
+    train_dir, val_dir = resolve_data_dirs(args, log=log)
     if args.streaming:
         train_dataset = StreamingWindowDataset(
-            WindowDatasetConfig(
-                data_dir=str(train_dir),
-                max_seq_len=args.max_seq_len,
-                max_segments=args.max_segments,
-                seed=args.seed,
-                shuffle_buffer=args.shuffle_buffer,
-            )
+            streaming_train_config(args, data_dir=str(train_dir), start_step=start_step)
         )
         if not args.no_freq_weighting:
             train_dataset.config.unigram_weights = inverse_frequency_weights(
-                streaming_unigram_counts(str(train_dir)), cap=args.freq_cap
+                streaming_unigram_counts(str(train_dir), log=log), cap=args.freq_cap
             )
             log("frequency-aware loss weighting enabled (streaming counts)")
     else:
@@ -227,6 +296,7 @@ def main() -> None:
                 data_dir=str(train_dir),
                 max_seq_len=args.max_seq_len,
                 max_segments=args.max_segments,
+                masking=masking_config(args),
             )
         )
         if not args.no_freq_weighting:
@@ -234,12 +304,15 @@ def main() -> None:
                 unigram_counts(train_dataset.games), cap=args.freq_cap
             )
             log("frequency-aware loss weighting enabled")
+    log(f"loading val split from {val_dir} ...")
     val_games = _load_game_segments(Path(val_dir))
+    log(f"loaded {len(val_games)} val games")
     val_dataset = WindowDataset(
         WindowDatasetConfig(
             games=val_games,
             max_seq_len=args.max_seq_len,
             max_segments=args.max_segments,
+            masking=masking_config(args),
             seed=args.seed,
         )
     )
@@ -295,6 +368,7 @@ def main() -> None:
         log(f"uploaded {remote_name} to {args.upload_bucket}/{args.upload_prefix}")
         return
 
+    pin_memory = not args.no_pin_memory and device.type == "cuda"
     train_loader = DataLoader(
         train_dataset,
         batch_size=args.batch_size,
@@ -303,6 +377,8 @@ def main() -> None:
         collate_fn=collate_windows,
         drop_last=True,
         persistent_workers=args.num_workers > 0,
+        pin_memory=pin_memory,
+        prefetch_factor=args.prefetch_factor if args.num_workers > 0 else None,
     )
     val_loader = DataLoader(
         val_dataset,
@@ -311,10 +387,15 @@ def main() -> None:
         num_workers=args.num_workers,
         collate_fn=collate_windows,
         persistent_workers=args.num_workers > 0,
+        pin_memory=pin_memory,
+        prefetch_factor=args.prefetch_factor if args.num_workers > 0 else None,
     )
 
     optimizer = torch.optim.AdamW(
-        model.parameters(), lr=args.lr, weight_decay=args.weight_decay
+        model.parameters(),
+        lr=args.lr,
+        weight_decay=args.weight_decay,
+        fused=use_fused_adamw(device),
     )
     scheduler = torch.optim.lr_scheduler.LambdaLR(
         optimizer,
@@ -350,7 +431,7 @@ def main() -> None:
             train_iter = iter(train_loader)
             batch = next(train_iter)
 
-        batch = {k: v.to(device) for k, v in batch.items()}
+        batch = {k: v.to(device, non_blocking=pin_memory) for k, v in batch.items()}
         with autocast():
             output = model(
                 batch["tokens"],
@@ -378,6 +459,7 @@ def main() -> None:
                 f"lr={scheduler.get_last_lr()[0]:.2e} "
                 f"tokens/s={tokens_per_second:.0f}"
             )
+            log(f"step={step} system {format_system_snapshot(system_snapshot())}")
             tracker.log_metrics(
                 {
                     "loss": avg_loss,
@@ -411,6 +493,7 @@ def main() -> None:
                     seed=args.seed,
                     plot_dir=checkpoint_dir,
                     examples_dir=checkpoint_dir,
+                    bf16=bf16,
                 )
                 examples_path = checkpoint_dir / "neighbor_examples.json"
                 if examples_path.exists():
