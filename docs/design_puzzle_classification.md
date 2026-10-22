@@ -61,14 +61,19 @@ position sequence
     -> frozen MaskedStreamTransformer
     -> per-position embeddings (model.embed, mean over each 67-token segment)
     -> mean pooling over positions in the sampled sequence
-    -> Linear(d_model, 1)
+    -> Linear(d_model, hidden_dim) -> GELU -> Dropout
+    -> Linear(hidden_dim, 1)
     -> sigmoid -> P(theme present)
 ```
 
 The encoder is frozen and kept in evaluation mode. Only the head is trained.
 Mean pooling is masked: padded positions and structural tokens never
-contribute. The head has no LayerNorm, so `d_model=1` is well-defined for
-tests. Dropout is configurable and defaults to 0.
+contribute. The head has one hidden layer with GELU activation; its width is
+set by `--head-hidden-dim` (default 256). Passing `hidden_dim=None` in the
+config restores the single-`Linear` form so checkpoints saved before the
+hidden layer remain loadable. The head has no LayerNorm, so `d_model=1` is
+well-defined for tests. Dropout is configurable and defaults to 0 and is
+applied before the projection and before the final classifier.
 
 The head is parameterized by `d_model`, so it works with any foundation
 checkpoint whose embedding width differs from 512.
@@ -204,7 +209,7 @@ storage-layer change, not an algorithmic one.
 FEN -> TokenStreamEncoder -> one 67-token segment
     -> CLS + segment + SEP
     -> frozen encoder -> mean-pooled sequence vector
-    -> linear head -> sigmoid -> probability
+    -> two-layer head -> sigmoid -> probability
 ```
 
 This is the length-1 case of the training input.

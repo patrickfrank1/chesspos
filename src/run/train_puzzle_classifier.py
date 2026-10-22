@@ -51,6 +51,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--positive-fraction", type=float, default=0.5)
     parser.add_argument("--val-ratio", type=float, default=0.1)
     parser.add_argument("--dropout", type=float, default=0.0)
+    parser.add_argument("--head-hidden-dim", type=int, default=256)
     parser.add_argument("--pos-weight", type=float, default=None)
     parser.add_argument("--num-workers", type=int, default=4)
     parser.add_argument("--log-every", type=int, default=100)
@@ -244,7 +245,9 @@ def main() -> int:
     encoder = load_frozen_encoder(args.checkpoint, device)
     head = MeanPoolingClassifier(
         MeanPoolingClassifierConfig(
-            d_model=encoder.config.d_model, dropout=args.dropout
+            d_model=encoder.config.d_model,
+            dropout=args.dropout,
+            hidden_dim=args.head_hidden_dim,
         )
     ).to(device)
     model = FrozenEncoderClassifier(encoder, head).to(device)

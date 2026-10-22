@@ -12,12 +12,15 @@ from src.modeling.transformer import MaskedStreamTransformer
 class MeanPoolingClassifierConfig:
     d_model: int
     dropout: float = 0.0
+    hidden_dim: int | None = None
 
     def __post_init__(self):
         if self.d_model <= 0:
             raise ValueError("d_model must be positive")
         if not 0 <= self.dropout < 1:
             raise ValueError("dropout must be in [0, 1)")
+        if self.hidden_dim is not None and self.hidden_dim <= 0:
+            raise ValueError("hidden_dim must be positive")
         return
 
 
@@ -28,7 +31,13 @@ class MeanPoolingClassifier(nn.Module):
         super().__init__()
         self.config = config
         self.dropout = nn.Dropout(config.dropout)
-        self.classifier = nn.Linear(config.d_model, 1)
+        self.activation = nn.GELU()
+        if config.hidden_dim is None:
+            self.projection = None
+            self.classifier = nn.Linear(config.d_model, 1)
+        else:
+            self.projection = nn.Linear(config.d_model, config.hidden_dim)
+            self.classifier = nn.Linear(config.hidden_dim, 1)
         return
 
     def forward(
@@ -41,7 +50,10 @@ class MeanPoolingClassifier(nn.Module):
             pooled = (embeddings * weights).sum(dim=1) / weights.sum(dim=1).clamp_min(
                 1.0
             )
-        return self.classifier(self.dropout(pooled)).squeeze(-1)
+        hidden = self.dropout(pooled)
+        if self.projection is not None:
+            hidden = self.dropout(self.activation(self.projection(hidden)))
+        return self.classifier(hidden).squeeze(-1)
 
 
 class FrozenEncoderClassifier(nn.Module):

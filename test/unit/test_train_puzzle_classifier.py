@@ -380,3 +380,29 @@ class TestTrainingSmoke:
             probability = classify_fen(model, chess.STARTING_FEN, torch.device("cpu"))
             assert 0.0 <= probability <= 1.0
         return
+
+
+class TestHeadHiddenDimOption:
+    def test_defaults_to_a_two_layer_head(self):
+        with given("no head hidden dimension on the command line"):
+            argv = ["train_puzzle_classifier.py"]
+
+        with when("the arguments are parsed"):
+            with patch("sys.argv", argv):
+                args = parse_args()
+
+        with then("the head defaults to a two-layer width of 256"):
+            assert args.head_hidden_dim == 256
+        return
+
+    def test_accepts_a_custom_hidden_dim(self):
+        with given("an explicit head hidden dimension"):
+            argv = ["train_puzzle_classifier.py", "--head-hidden-dim", "128"]
+
+        with when("the arguments are parsed"):
+            with patch("sys.argv", argv):
+                args = parse_args()
+
+        with then("the hidden width is available to the head config"):
+            assert args.head_hidden_dim == 128
+        return

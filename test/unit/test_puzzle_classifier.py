@@ -4,6 +4,7 @@ import chess
 import numpy as np
 import pytest
 import torch
+import torch.nn.functional as torch_functional
 
 from bdd import given, then, when
 from src.dataset.token_stream import (
@@ -147,4 +148,109 @@ class TestFrozenEncoderClassifier:
 
         with then("the deterministic output is identical"):
             torch.testing.assert_close(first, second)
+        return
+
+
+class TestTwoLayerHead:
+    def test_hidden_layer_shapes_follow_the_config(self):
+        with given("a two-layer head with d_model=4 and hidden_dim=3"):
+            head = MeanPoolingClassifier(
+                MeanPoolingClassifierConfig(d_model=4, hidden_dim=3)
+            )
+            embeddings = torch.randn(2, 5, 4)
+            mask = torch.ones(2, 5, dtype=torch.bool)
+
+        with when("the head runs on matching embeddings"):
+            logits = head(embeddings, mask)
+
+        with then(
+            "the projection feeds d_model in and the classifier reads hidden_dim"
+        ):
+            assert head.projection.in_features == 4
+            assert head.projection.out_features == 3
+            assert head.classifier.in_features == 3
+            assert logits.shape == (2,)
+        return
+
+    def test_forward_applies_the_hidden_layer_before_the_classifier(self):
+        with given("a two-layer head with an explicit hidden activation"):
+            torch.manual_seed(0)
+            head = MeanPoolingClassifier(
+                MeanPoolingClassifierConfig(d_model=2, hidden_dim=3)
+            )
+            embeddings = torch.tensor([[[0.5, -1.0], [2.0, 0.25]]])
+            mask = torch.ones(1, 2, dtype=torch.bool)
+
+        with when("the head pools and classifies the sequence"):
+            logits = head(embeddings, mask)
+
+        with then("the output is classifier(gelu(projection(mean)))"):
+            pooled = embeddings.mean(dim=1)
+            hidden = torch_functional.gelu(head.projection(pooled))
+            expected = head.classifier(hidden).squeeze(-1)
+            torch.testing.assert_close(logits, expected)
+        return
+
+    def test_masking_still_applies_with_a_hidden_layer(self):
+        with given("a two-layer head and padded positions"):
+            head = MeanPoolingClassifier(
+                MeanPoolingClassifierConfig(d_model=2, hidden_dim=4)
+            )
+            embeddings = torch.tensor([[[1.0, 1.0], [2.0, 2.0], [99.0, 99.0]]])
+            mask = torch.tensor([[True, True, False]], dtype=torch.bool)
+
+        with when("the padded position changes"):
+            logits = head(embeddings, mask)
+            changed = embeddings.clone()
+            changed[0, 2] = -999.0
+
+        with then("the logits are unchanged"):
+            torch.testing.assert_close(head(changed, mask), logits)
+        return
+
+    def test_single_layer_head_remains_available(self):
+        with given("a head without a hidden dimension"):
+            head = MeanPoolingClassifier(MeanPoolingClassifierConfig(d_model=8))
+
+        with when("the head is inspected"):
+            has_projection = head.projection is not None
+            in_features = head.classifier.in_features
+
+        with then("the projection is skipped and d_model feeds the classifier"):
+            assert has_projection is False
+            assert in_features == 8
+        return
+
+    @pytest.mark.parametrize("hidden_dim", [0, -2])
+    def test_rejects_non_positive_hidden_dim(self, hidden_dim):
+        with given(f"a hidden dimension of {hidden_dim}"):
+            error = None
+
+        with when("the configuration is validated"):
+            try:
+                MeanPoolingClassifierConfig(d_model=4, hidden_dim=hidden_dim)
+            except ValueError as exc:
+                error = exc
+
+        with then("the invalid hidden dimension is rejected"):
+            assert error is not None
+        return
+
+    def test_hidden_layer_receives_gradients(self):
+        with given("a frozen encoder with a two-layer head"):
+            encoder = tiny_encoder()
+            head = MeanPoolingClassifier(
+                MeanPoolingClassifierConfig(d_model=1, hidden_dim=4)
+            )
+            model = FrozenEncoderClassifier(encoder, head)
+            tokens, segment_ids, padding_mask = batch_from_boards()
+
+        with when("a training step is run"):
+            model.train()
+            logits = model(tokens, segment_ids, padding_mask)
+            logits.sum().backward()
+
+        with then("both head layers have gradients"):
+            assert model.head.projection.weight.grad is not None
+            assert model.head.classifier.weight.grad is not None
         return
