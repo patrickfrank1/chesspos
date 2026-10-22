@@ -47,6 +47,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dropout", type=float, default=0.0)
     parser.add_argument("--pos-weight", type=float, default=None)
     parser.add_argument("--num-workers", type=int, default=4)
+    parser.add_argument("--log-every", type=int, default=100)
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--device", default=None)
     parser.add_argument("--seed", type=int, default=17)
@@ -107,11 +108,14 @@ def train_epoch(
     optimizer: torch.optim.Optimizer,
     device: torch.device,
     pos_weight: torch.Tensor | None,
+    epoch: int = 1,
+    log_every: int = 0,
 ) -> float:
     model.train()
     total_loss = 0.0
     total_examples = 0
-    for batch in loader:
+    total_batches = len(loader)
+    for step, batch in enumerate(loader, start=1):
         tokens = batch["tokens"].to(device, non_blocking=True)
         segment_ids = batch["segment_ids"].to(device, non_blocking=True)
         padding_mask = batch["padding_mask"].to(device, non_blocking=True)
@@ -128,6 +132,13 @@ def train_epoch(
 
         total_loss += float(loss.item()) * labels.shape[0]
         total_examples += labels.shape[0]
+        if log_every > 0 and step % log_every == 0:
+            print(
+                f"epoch={epoch} step={step}/{total_batches} "
+                f"loss={total_loss / total_examples:.4f} "
+                f"lr={optimizer.param_groups[0]['lr']:.2e}",
+                flush=True,
+            )
     return total_loss / max(1, total_examples)
 
 
@@ -251,7 +262,15 @@ def main() -> int:
             num_workers=args.num_workers,
             device=device,
         )
-        train_loss = train_epoch(model, train_loader, optimizer, device, pos_weight)
+        train_loss = train_epoch(
+            model,
+            train_loader,
+            optimizer,
+            device,
+            pos_weight,
+            epoch=epoch,
+            log_every=args.log_every,
+        )
         metrics, val_loss = evaluate(model, val_loader, device)
         print(
             f"epoch={epoch} train_loss={train_loss:.4f} val_loss={val_loss:.4f} "

@@ -12,7 +12,10 @@ import torch
 
 from bdd import given, then, when
 from src.dataset.puzzle_variants import (
+    EpochPlan,
     PuzzleRecord,
+    PuzzleVariantDataset,
+    collate_variants,
     load_puzzle_records,
     split_for_puzzle,
 )
@@ -23,7 +26,11 @@ from src.modeling.puzzle_classifier import (
 )
 from src.modeling.transformer import MaskedStreamTransformer, TransformerConfig
 from src.run.classify_position import classify_fen, load_classifier
-from src.run.train_puzzle_classifier import build_validation_plan
+from src.run.train_puzzle_classifier import (
+    build_validation_plan,
+    train_epoch,
+)
+from src.modeling.puzzle_classifier import FrozenEncoderClassifier
 
 
 def make_training_parquet(path: Path) -> None:
@@ -138,6 +145,80 @@ class TestLoadRecords:
 
         with then("only the requested number is returned"):
             assert len(records) == 7
+        return
+
+
+class TestStepLogging:
+    def test_train_epoch_logs_every_n_steps(self, capsys):
+        with given("a tiny frozen-encoder model and a plan of eight samples"):
+            encoder = MaskedStreamTransformer(tiny_config()).eval()
+            head = MeanPoolingClassifier(MeanPoolingClassifierConfig(d_model=1))
+            model = FrozenEncoderClassifier(encoder, head)
+            records = [make_record(f"p-{i}", 2, i % 2) for i in range(8)]
+            plan = EpochPlan(
+                puzzle_index=np.arange(8, dtype=np.int32),
+                start=np.zeros(8, dtype=np.int16),
+                end=np.zeros(8, dtype=np.int16),
+                label=np.array([i % 2 for i in range(8)], dtype=np.int8),
+            )
+            loader = torch.utils.data.DataLoader(
+                PuzzleVariantDataset(records, plan),
+                batch_size=2,
+                collate_fn=collate_variants,
+            )
+            optimizer = torch.optim.AdamW(model.head.parameters(), lr=1e-3)
+
+        with when("one epoch trains with log_every=2 on epoch 3"):
+            train_epoch(
+                model,
+                loader,
+                optimizer,
+                torch.device("cpu"),
+                pos_weight=None,
+                epoch=3,
+                log_every=2,
+            )
+
+        with then("a log line is printed every two steps with running loss"):
+            output = capsys.readouterr().out
+            assert output.count("epoch=3 step=") == 2
+            assert "step=2/4" in output
+            assert "step=4/4" in output
+            assert "loss=" in output
+        return
+
+    def test_train_epoch_does_not_log_when_log_every_is_zero(self, capsys):
+        with given("a tiny frozen-encoder model and a plan of four samples"):
+            encoder = MaskedStreamTransformer(tiny_config()).eval()
+            head = MeanPoolingClassifier(MeanPoolingClassifierConfig(d_model=1))
+            model = FrozenEncoderClassifier(encoder, head)
+            records = [make_record(f"p-{i}", 2, i % 2) for i in range(4)]
+            plan = EpochPlan(
+                puzzle_index=np.arange(4, dtype=np.int32),
+                start=np.zeros(4, dtype=np.int16),
+                end=np.zeros(4, dtype=np.int16),
+                label=np.array([0, 1, 0, 1], dtype=np.int8),
+            )
+            loader = torch.utils.data.DataLoader(
+                PuzzleVariantDataset(records, plan),
+                batch_size=2,
+                collate_fn=collate_variants,
+            )
+            optimizer = torch.optim.AdamW(model.head.parameters(), lr=1e-3)
+
+        with when("one epoch trains with log_every=0"):
+            train_epoch(
+                model,
+                loader,
+                optimizer,
+                torch.device("cpu"),
+                pos_weight=None,
+                epoch=1,
+                log_every=0,
+            )
+
+        with then("no step log lines are printed"):
+            assert capsys.readouterr().out == ""
         return
 
 
