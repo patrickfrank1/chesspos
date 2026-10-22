@@ -28,6 +28,7 @@ from src.modeling.transformer import MaskedStreamTransformer, TransformerConfig
 from src.run.classify_position import classify_fen, load_classifier
 from src.run.train_puzzle_classifier import (
     build_validation_plan,
+    parse_args,
     train_epoch,
 )
 from src.modeling.puzzle_classifier import FrozenEncoderClassifier
@@ -219,6 +220,119 @@ class TestStepLogging:
 
         with then("no step log lines are printed"):
             assert capsys.readouterr().out == ""
+        return
+
+
+class TestFocalLossOptions:
+    def test_parse_args_exposes_the_focal_settings(self):
+        with given("command line flags selecting focal loss"):
+            argv = [
+                "train_puzzle_classifier.py",
+                "--loss",
+                "focal",
+                "--focal-gamma",
+                "2.5",
+                "--focal-alpha",
+                "0.75",
+            ]
+
+        with when("the arguments are parsed"):
+            with patch("sys.argv", argv):
+                args = parse_args()
+
+        with then("the focal settings are available to the trainer"):
+            assert args.loss == "focal"
+            assert args.focal_gamma == 2.5
+            assert args.focal_alpha == 0.75
+        return
+
+    def test_training_with_focal_loss_writes_a_classifier_checkpoint(self, tmp_path):
+        with given("a tiny encoder, a small labeled shard and focal loss selected"):
+            save_encoder_checkpoint(tmp_path / "encoder.pt")
+            make_training_parquet(tmp_path / "part.parquet")
+            argv = [
+                "train_puzzle_classifier.py",
+                "--data-dir",
+                str(tmp_path),
+                "--theme",
+                "sacrifice",
+                "--checkpoint",
+                str(tmp_path / "encoder.pt"),
+                "--output-dir",
+                str(tmp_path / "out"),
+                "--epochs",
+                "1",
+                "--batch-size",
+                "8",
+                "--num-workers",
+                "0",
+                "--device",
+                "cpu",
+                "--val-ratio",
+                "0.2",
+                "--loss",
+                "focal",
+                "--focal-gamma",
+                "2.0",
+                "--focal-alpha",
+                "0.5",
+            ]
+
+        with when("the training entry point runs"):
+            import src.run.train_puzzle_classifier as cli
+
+            with patch("sys.argv", argv):
+                exit_code = cli.main()
+
+        with then("best.pt exists and loads as an inference classifier"):
+            assert exit_code == 0
+            checkpoint = tmp_path / "out" / "best.pt"
+            assert checkpoint.exists()
+            model = load_classifier(str(checkpoint), torch.device("cpu"))
+            probability = classify_fen(model, chess.STARTING_FEN, torch.device("cpu"))
+            assert 0.0 <= probability <= 1.0
+        return
+
+    def test_training_calibrates_focal_parameters_when_omitted(self, tmp_path, capsys):
+        with given("focal loss selected without explicit gamma or alpha"):
+            save_encoder_checkpoint(tmp_path / "encoder.pt")
+            make_training_parquet(tmp_path / "part.parquet")
+            argv = [
+                "train_puzzle_classifier.py",
+                "--data-dir",
+                str(tmp_path),
+                "--theme",
+                "sacrifice",
+                "--checkpoint",
+                str(tmp_path / "encoder.pt"),
+                "--output-dir",
+                str(tmp_path / "out"),
+                "--epochs",
+                "1",
+                "--batch-size",
+                "8",
+                "--num-workers",
+                "0",
+                "--device",
+                "cpu",
+                "--val-ratio",
+                "0.2",
+                "--loss",
+                "focal",
+            ]
+
+        with when("the training entry point runs"):
+            import src.run.train_puzzle_classifier as cli
+
+            with patch("sys.argv", argv):
+                exit_code = cli.main()
+
+        with then("the calibrated parameters are reported and training succeeds"):
+            assert exit_code == 0
+            output = capsys.readouterr().out
+            assert "loss=focal" in output
+            assert "focal_gamma=" in output
+            assert "focal_alpha=" in output
         return
 
 

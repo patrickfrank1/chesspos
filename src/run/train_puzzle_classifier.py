@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 from dataclasses import asdict
 from pathlib import Path
 
@@ -24,6 +25,11 @@ from src.modeling.puzzle_classifier import (
     MeanPoolingClassifierConfig,
 )
 from src.modeling.transformer import MaskedStreamTransformer, TransformerConfig
+from src.training.losses import (
+    FocalLossConfig,
+    focal_loss_with_logits,
+    resolve_focal_loss,
+)
 from src.training.puzzle_metrics import binary_metrics
 
 
@@ -48,6 +54,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--pos-weight", type=float, default=None)
     parser.add_argument("--num-workers", type=int, default=4)
     parser.add_argument("--log-every", type=int, default=100)
+    parser.add_argument("--loss", choices=("bce", "focal"), default="bce")
+    parser.add_argument(
+        "--focal-gamma",
+        type=float,
+        default=None,
+        help="Focal modulating exponent; calibrated from train labels when omitted",
+    )
+    parser.add_argument(
+        "--focal-alpha",
+        type=float,
+        default=None,
+        help="Positive-class weight; calibrated from train labels when omitted",
+    )
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--device", default=None)
     parser.add_argument("--seed", type=int, default=17)
@@ -110,6 +129,7 @@ def train_epoch(
     pos_weight: torch.Tensor | None,
     epoch: int = 1,
     log_every: int = 0,
+    focal: FocalLossConfig | None = None,
 ) -> float:
     model.train()
     total_loss = 0.0
@@ -122,9 +142,14 @@ def train_epoch(
         labels = batch["labels"].to(device, non_blocking=True)
 
         logits = model(tokens, segment_ids, padding_mask)
-        loss = nn.functional.binary_cross_entropy_with_logits(
-            logits, labels, pos_weight=pos_weight
-        )
+        if focal is None:
+            loss = nn.functional.binary_cross_entropy_with_logits(
+                logits, labels, pos_weight=pos_weight
+            )
+        else:
+            loss = focal_loss_with_logits(
+                logits, labels, gamma=focal.gamma, alpha=focal.alpha
+            )
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.head.parameters(), 1.0)
@@ -245,6 +270,10 @@ def main() -> int:
         if args.pos_weight is not None
         else None
     )
+    class_counts = Counter(record.label for record in train_records)
+    focal = resolve_focal_loss(
+        args.loss, class_counts, args.focal_gamma, args.focal_alpha
+    )
 
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -252,8 +281,10 @@ def main() -> int:
 
     print(
         f"records={len(records)} train={len(train_records)} val={len(val_records)} "
-        f"theme={args.theme} device={device}"
+        f"theme={args.theme} device={device} loss={args.loss}"
     )
+    if focal is not None:
+        print(f"focal_gamma={focal.gamma:.4f} focal_alpha={focal.alpha:.4f}")
     for epoch in range(1, args.epochs + 1):
         plan = planner.next_epoch()
         train_loader = make_loader(

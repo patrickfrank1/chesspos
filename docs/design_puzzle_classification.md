@@ -89,6 +89,13 @@ A start/stop span head was considered and rejected; see §5.
 - Loss: `BCEWithLogitsLoss`, evaluated on one logit per sampled sequence.
 - Optional `pos_weight` is available but is not used by default because
   training plans are 50/50.
+- `--loss focal` opts into binary focal loss
+  (`src/training/losses.py`). When `--focal-gamma`/`--focal-alpha` are
+  omitted they are calibrated from the training label distribution:
+  `alpha = 1 - prevalence` balances the expected per-class contribution and
+  `gamma = min(2, log2(imbalance_ratio))` maps imbalance severity onto the
+  usual 0-2 range. Validation loss always remains BCE so values stay
+  comparable across runs and loss settings.
 - Metrics: AUROC, PR-AUC (average precision), F1/precision/recall/accuracy at
   the validation-optimal threshold. PR-AUC is the primary metric because the
   natural prevalence is low and accuracy is misleading.
@@ -324,16 +331,17 @@ catastrophic forgetting on a small downstream dataset. The frozen encoder is
 the "foundation model" premise of the project. Fine-tuning remains a future
 experiment.
 
-### 5.8 Focal loss or positive weighting
+### 5.8 Positive weighting and focal loss
 
 **Idea:** counter the 7.5% positive prevalence with `pos_weight`, focal loss, or
 weighted sampling.
 
-**Why rejected for the initial version:** the rolling plan already produces
-50/50 training batches. Plain BCE is therefore balanced in expectation.
-`--pos-weight` is exposed for experiments, but focal loss adds untuned
-hyperparameters. AUROC and PR-AUC are reported so imbalance-sensitive behavior
-is visible.
+**Status:** BCE remains the default because the rolling plan already produces
+50/50 training batches, so plain BCE is balanced in expectation. Both
+`--pos-weight` and `--loss focal` are exposed as opt-in experiments. Focal
+parameters are calibrated from the training label distribution unless given
+explicitly. Validation loss stays BCE for comparability. AUROC and PR-AUC are
+reported so imbalance-sensitive behavior is visible.
 
 ### 5.9 Enumerating every positive variant per epoch
 
@@ -381,11 +389,13 @@ multiple binary models are straightforward.
 |---|---|
 | `src/dataset/puzzle_variants.py` | Variant space, `RollingVariantPlanner`, epoch plans, split, dataset, collate, parquet loader |
 | `src/modeling/puzzle_classifier.py` | `MeanPoolingClassifier`, `FrozenEncoderClassifier` |
+| `src/training/losses.py` | Focal loss and label-distribution calibration |
 | `src/training/puzzle_metrics.py` | AUROC, PR-AUC, threshold metrics |
 | `src/run/train_puzzle_classifier.py` | Frozen-encoder training CLI and checkpointing |
 | `src/run/classify_position.py` | FEN and per-position PGN inference |
 | `test/unit/test_puzzle_variants.py` | Variant space, rolling cursor, plans, dataset, collate, split |
 | `test/unit/test_puzzle_classifier.py` | Mean pooling, masking, `d_model` parameterization, frozen encoder |
+| `test/unit/test_focal_loss.py` | Focal loss values, reductions, calibration, overrides |
 | `test/unit/test_puzzle_metrics.py` | Ranking and threshold metrics |
 | `test/unit/test_train_puzzle_classifier.py` | Loader, validation plan, training smoke test |
 | `test/unit/test_classify_position.py` | FEN, window, and PGN inference |
