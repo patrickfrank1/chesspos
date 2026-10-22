@@ -307,6 +307,7 @@ def main() -> int:
             pos_weight,
             epoch=epoch,
             log_every=args.log_every,
+            focal=focal,
         )
         metrics, val_loss = evaluate(model, val_loader, device)
         print(

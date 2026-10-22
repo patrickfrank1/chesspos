@@ -432,3 +432,59 @@ class TestPoolingOption:
         with then("the pooling mode is available to the head config"):
             assert args.pooling == "mean"
         return
+
+
+class TestFocalLossWiring:
+    def test_main_passes_the_focal_config_to_train_epoch(self, tmp_path, monkeypatch):
+        with given("a tiny labeled shard with focal loss selected"):
+            save_encoder_checkpoint(tmp_path / "encoder.pt")
+            make_training_parquet(tmp_path / "part.parquet")
+            argv = [
+                "train_puzzle_classifier.py",
+                "--data-dir",
+                str(tmp_path),
+                "--theme",
+                "sacrifice",
+                "--checkpoint",
+                str(tmp_path / "encoder.pt"),
+                "--output-dir",
+                str(tmp_path / "out"),
+                "--epochs",
+                "1",
+                "--batch-size",
+                "8",
+                "--num-workers",
+                "0",
+                "--device",
+                "cpu",
+                "--val-ratio",
+                "0.2",
+                "--loss",
+                "focal",
+                "--focal-gamma",
+                "2.0",
+                "--focal-alpha",
+                "0.75",
+            ]
+            import src.run.train_puzzle_classifier as cli
+
+            captured: dict[str, object] = {}
+            original = cli.train_epoch
+
+            def spy(*args, **kwargs):
+                captured.update(kwargs)
+                return original(*args, **kwargs)
+
+            monkeypatch.setattr(cli, "train_epoch", spy)
+
+        with when("the training entry point runs"):
+            with patch("sys.argv", argv):
+                exit_code = cli.main()
+
+        with then("the configured focal loss reaches the training epoch"):
+            assert exit_code == 0
+            focal = captured.get("focal")
+            assert focal is not None
+            assert focal.gamma == 2.0
+            assert focal.alpha == 0.75
+        return
