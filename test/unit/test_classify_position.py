@@ -9,8 +9,8 @@ import torch
 from bdd import given, then, when
 from src.dataset.token_stream import VOCAB_SIZE
 from src.modeling.puzzle_classifier import (
-    MeanPoolingClassifier,
-    MeanPoolingClassifierConfig,
+    PoolingClassifier,
+    PoolingClassifierConfig,
 )
 from src.modeling.transformer import MaskedStreamTransformer, TransformerConfig
 from src.run.classify_position import (
@@ -37,7 +37,7 @@ def tiny_config() -> TransformerConfig:
 def save_classifier_checkpoint(path: Path) -> None:
     config = tiny_config()
     encoder = MaskedStreamTransformer(config)
-    head = MeanPoolingClassifier(MeanPoolingClassifierConfig(d_model=1))
+    head = PoolingClassifier(PoolingClassifierConfig(d_model=1))
     torch.save(
         {
             "encoder_config": asdict(config),

@@ -12,8 +12,8 @@ from src.dataset.puzzle_variants import collate_variants, pack_segments
 from src.dataset.token_stream import TokenStreamEncoder
 from src.modeling.puzzle_classifier import (
     FrozenEncoderClassifier,
-    MeanPoolingClassifier,
-    MeanPoolingClassifierConfig,
+    PoolingClassifier,
+    PoolingClassifierConfig,
 )
 from src.modeling.transformer import MaskedStreamTransformer, TransformerConfig
 
@@ -42,9 +42,7 @@ def load_classifier(path: str, device: torch.device) -> FrozenEncoderClassifier:
     checkpoint = torch.load(path, map_location="cpu", weights_only=False)
     encoder = MaskedStreamTransformer(TransformerConfig(**checkpoint["encoder_config"]))
     encoder.load_state_dict(checkpoint["encoder_state"])
-    head = MeanPoolingClassifier(
-        MeanPoolingClassifierConfig(**checkpoint["head_config"])
-    )
+    head = PoolingClassifier(PoolingClassifierConfig(**checkpoint["head_config"]))
     head.load_state_dict(checkpoint["head_state"])
     model = FrozenEncoderClassifier(encoder, head)
     return model.to(device).eval()

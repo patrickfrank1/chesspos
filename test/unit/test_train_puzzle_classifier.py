@@ -21,8 +21,8 @@ from src.dataset.puzzle_variants import (
 )
 from src.dataset.token_stream import VOCAB_SIZE, TokenStreamEncoder, pack_stream
 from src.modeling.puzzle_classifier import (
-    MeanPoolingClassifier,
-    MeanPoolingClassifierConfig,
+    PoolingClassifier,
+    PoolingClassifierConfig,
 )
 from src.modeling.transformer import MaskedStreamTransformer, TransformerConfig
 from src.run.classify_position import classify_fen, load_classifier
@@ -85,7 +85,7 @@ def save_encoder_checkpoint(path: Path) -> None:
 def save_classifier_checkpoint(path: Path) -> None:
     config = tiny_config()
     encoder = MaskedStreamTransformer(config)
-    head = MeanPoolingClassifier(MeanPoolingClassifierConfig(d_model=1))
+    head = PoolingClassifier(PoolingClassifierConfig(d_model=1))
     torch.save(
         {
             "encoder_config": asdict(config),
@@ -153,7 +153,7 @@ class TestStepLogging:
     def test_train_epoch_logs_every_n_steps(self, capsys):
         with given("a tiny frozen-encoder model and a plan of eight samples"):
             encoder = MaskedStreamTransformer(tiny_config()).eval()
-            head = MeanPoolingClassifier(MeanPoolingClassifierConfig(d_model=1))
+            head = PoolingClassifier(PoolingClassifierConfig(d_model=1))
             model = FrozenEncoderClassifier(encoder, head)
             records = [make_record(f"p-{i}", 2, i % 2) for i in range(8)]
             plan = EpochPlan(
@@ -191,7 +191,7 @@ class TestStepLogging:
     def test_train_epoch_does_not_log_when_log_every_is_zero(self, capsys):
         with given("a tiny frozen-encoder model and a plan of four samples"):
             encoder = MaskedStreamTransformer(tiny_config()).eval()
-            head = MeanPoolingClassifier(MeanPoolingClassifierConfig(d_model=1))
+            head = PoolingClassifier(PoolingClassifierConfig(d_model=1))
             model = FrozenEncoderClassifier(encoder, head)
             records = [make_record(f"p-{i}", 2, i % 2) for i in range(4)]
             plan = EpochPlan(
@@ -405,4 +405,30 @@ class TestHeadHiddenDimOption:
 
         with then("the hidden width is available to the head config"):
             assert args.head_hidden_dim == 128
+        return
+
+
+class TestPoolingOption:
+    def test_defaults_to_attention_pooling(self):
+        with given("no pooling mode on the command line"):
+            argv = ["train_puzzle_classifier.py"]
+
+        with when("the arguments are parsed"):
+            with patch("sys.argv", argv):
+                args = parse_args()
+
+        with then("the training run uses attention pooling"):
+            assert args.pooling == "attention"
+        return
+
+    def test_accepts_mean_pooling_for_the_ablation(self):
+        with given("an explicit mean pooling mode"):
+            argv = ["train_puzzle_classifier.py", "--pooling", "mean"]
+
+        with when("the arguments are parsed"):
+            with patch("sys.argv", argv):
+                args = parse_args()
+
+        with then("the pooling mode is available to the head config"):
+            assert args.pooling == "mean"
         return

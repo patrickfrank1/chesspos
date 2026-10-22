@@ -21,8 +21,8 @@ from src.dataset.puzzle_variants import (
 )
 from src.modeling.puzzle_classifier import (
     FrozenEncoderClassifier,
-    MeanPoolingClassifier,
-    MeanPoolingClassifierConfig,
+    PoolingClassifier,
+    PoolingClassifierConfig,
 )
 from src.modeling.transformer import MaskedStreamTransformer, TransformerConfig
 from src.training.losses import (
@@ -52,6 +52,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--val-ratio", type=float, default=0.1)
     parser.add_argument("--dropout", type=float, default=0.0)
     parser.add_argument("--head-hidden-dim", type=int, default=256)
+    parser.add_argument("--pooling", choices=("mean", "attention"), default="attention")
     parser.add_argument("--pos-weight", type=float, default=None)
     parser.add_argument("--num-workers", type=int, default=4)
     parser.add_argument("--log-every", type=int, default=100)
@@ -243,11 +244,12 @@ def main() -> int:
         raise ValueError("validation split is empty; increase --limit")
 
     encoder = load_frozen_encoder(args.checkpoint, device)
-    head = MeanPoolingClassifier(
-        MeanPoolingClassifierConfig(
+    head = PoolingClassifier(
+        PoolingClassifierConfig(
             d_model=encoder.config.d_model,
             dropout=args.dropout,
             hidden_dim=args.head_hidden_dim,
+            pooling=args.pooling,
         )
     ).to(device)
     model = FrozenEncoderClassifier(encoder, head).to(device)
@@ -284,7 +286,8 @@ def main() -> int:
 
     print(
         f"records={len(records)} train={len(train_records)} val={len(val_records)} "
-        f"theme={args.theme} device={device} loss={args.loss}"
+        f"theme={args.theme} device={device} loss={args.loss} "
+        f"pooling={args.pooling}"
     )
     if focal is not None:
         print(f"focal_gamma={focal.gamma:.4f} focal_alpha={focal.alpha:.4f}")

@@ -60,16 +60,22 @@ position sequence
     -> CLS + segments + SEP
     -> frozen MaskedStreamTransformer
     -> per-position embeddings (model.embed, mean over each 67-token segment)
-    -> mean pooling over positions in the sampled sequence
+    -> attention pooling over positions in the sampled sequence
+       (learned query; mean pooling available via `--pooling mean`)
     -> Linear(d_model, hidden_dim) -> GELU -> Dropout
     -> Linear(hidden_dim, 1)
     -> sigmoid -> P(theme present)
 ```
 
 The encoder is frozen and kept in evaluation mode. Only the head is trained.
-Mean pooling is masked: padded positions and structural tokens never
-contribute. The head has one hidden layer with GELU activation; its width is
-set by `--head-hidden-dim` (default 256). Passing `hidden_dim=None` in the
+Pooling is masked: padded positions and structural tokens never contribute.
+The default is attention pooling: a learned `d_model` query scores each
+position (`h · q / sqrt(d_model)`), a masked softmax normalizes the scores, and
+the sequence vector is the weighted sum of the position embeddings. The query
+is zero-initialized, so training starts at uniform (mean) attention. Mean
+pooling remains available via `--pooling mean` for the ablation. A fully
+masked row pools to zero. The head has one hidden layer with GELU activation;
+its width is set by `--head-hidden-dim` (default 256). Passing `hidden_dim=None` in the
 config restores the single-`Linear` form so checkpoints saved before the
 hidden layer remain loadable. The head has no LayerNorm, so `d_model=1` is
 well-defined for tests. Dropout is configurable and defaults to 0 and is
@@ -208,7 +214,7 @@ storage-layer change, not an algorithmic one.
 ```
 FEN -> TokenStreamEncoder -> one 67-token segment
     -> CLS + segment + SEP
-    -> frozen encoder -> mean-pooled sequence vector
+    -> frozen encoder -> pooled sequence vector (attention by default)
     -> two-layer head -> sigmoid -> probability
 ```
 
@@ -306,10 +312,12 @@ sequence-level semantics, and cannot detect motifs that appear later.
 
 **Idea:** learn a query over position embeddings and pool with attention.
 
-**Why rejected for the initial version:** it adds parameters on top of a frozen
-encoder, can overfit the 7.5% positive class, and is less transparent than
-mean pooling. Mean pooling was chosen for robustness and simplicity. Attention
-pooling remains a reasonable ablation once the baseline is established.
+**Status:** adopted after the mean-pooling baseline underfit (loss stayed near
+the base rate). The implementation uses a single learned query vector (only
+`d_model` extra parameters), scaled dot-product scores, and a masked softmax.
+Zero initialization reproduces uniform/mean attention at step 0, limiting the
+overfitting risk that motivated the original rejection. Mean pooling remains
+available through `--pooling mean` for a controlled ablation.
 
 ### 5.5 CLS-token pooling
 
@@ -393,13 +401,13 @@ multiple binary models are straightforward.
 | Path | Responsibility |
 |---|---|
 | `src/dataset/puzzle_variants.py` | Variant space, `RollingVariantPlanner`, epoch plans, split, dataset, collate, parquet loader |
-| `src/modeling/puzzle_classifier.py` | `MeanPoolingClassifier`, `FrozenEncoderClassifier` |
+| `src/modeling/puzzle_classifier.py` | `PoolingClassifier`, `FrozenEncoderClassifier` |
 | `src/training/losses.py` | Focal loss and label-distribution calibration |
 | `src/training/puzzle_metrics.py` | AUROC, PR-AUC, threshold metrics |
 | `src/run/train_puzzle_classifier.py` | Frozen-encoder training CLI and checkpointing |
 | `src/run/classify_position.py` | FEN and per-position PGN inference |
 | `test/unit/test_puzzle_variants.py` | Variant space, rolling cursor, plans, dataset, collate, split |
-| `test/unit/test_puzzle_classifier.py` | Mean pooling, masking, `d_model` parameterization, frozen encoder |
+| `test/unit/test_puzzle_classifier.py` | Mean/attention pooling, masking, `d_model` parameterization, frozen encoder |
 | `test/unit/test_focal_loss.py` | Focal loss values, reductions, calibration, overrides |
 | `test/unit/test_puzzle_metrics.py` | Ranking and threshold metrics |
 | `test/unit/test_train_puzzle_classifier.py` | Loader, validation plan, training smoke test |
@@ -455,7 +463,7 @@ PR-AUC.
 1. Add a shard-streaming record store for full-corpus training.
 2. Add span post-processing (threshold + contiguous grouping) and span-level
    metrics for game scanning.
-3. Compare mean pooling against attention pooling and full fine-tuning.
+3. Compare the attention head against mean pooling and full fine-tuning.
 4. Evaluate per-position precision/recall on held-out full games.
 5. Add probability calibration if decisions need calibrated scores.
 6. Extend to multi-theme or multi-task heads once the binary baseline is
