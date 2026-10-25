@@ -87,6 +87,50 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--dropout", type=float, default=None)
     parser.add_argument("--max-seq-len", dest="max_seq_len", type=int, default=None)
     parser.add_argument("--max-segments", dest="max_segments", type=int, default=None)
+    parser.add_argument("--p-random", dest="p_random", type=float, default=None)
+    parser.add_argument("--p-board", dest="p_board", type=float, default=None)
+    parser.add_argument("--p-span", dest="p_span", type=float, default=None)
+    parser.add_argument("--p-rect", dest="p_rect", type=float, default=None)
+    parser.add_argument(
+        "--rect-min-rate", dest="rect_min_rate", type=float, default=None
+    )
+    parser.add_argument(
+        "--rect-max-rate", dest="rect_max_rate", type=float, default=None
+    )
+    parser.add_argument("--rect-min-side", dest="rect_min_side", type=int, default=None)
+    parser.add_argument("--rect-max-side", dest="rect_max_side", type=int, default=None)
+    parser.add_argument(
+        "--no-rect-sync",
+        dest="rect_synchronize",
+        action="store_false",
+        default=None,
+        help="Mask independent rectangles per segment",
+    )
+    parser.add_argument("--mlm-weight", dest="mlm_weight", type=float, default=None)
+    parser.add_argument("--inv-weight", dest="inv_weight", type=float, default=None)
+    parser.add_argument("--var-weight", dest="var_weight", type=float, default=None)
+    parser.add_argument("--cov-weight", dest="cov_weight", type=float, default=None)
+    parser.add_argument("--nce-weight", dest="nce_weight", type=float, default=None)
+    parser.add_argument(
+        "--nce-temperature", dest="nce_temperature", type=float, default=None
+    )
+    parser.add_argument("--vicreg-gamma", dest="vicreg_gamma", type=float, default=None)
+    parser.add_argument("--vicreg-eps", dest="vicreg_eps", type=float, default=None)
+    parser.add_argument("--aux-warmup", dest="aux_warmup", type=int, default=None)
+    parser.add_argument(
+        "--retrieval-benchmark", dest="retrieval_benchmark", default=None
+    )
+    parser.add_argument(
+        "--retrieval-benchmark-revision",
+        dest="retrieval_benchmark_revision",
+        default=None,
+    )
+    parser.add_argument(
+        "--retrieval-batch-size", dest="retrieval_batch_size", type=int, default=None
+    )
+    parser.add_argument(
+        "--token-rank-tokens", dest="token_rank_tokens", type=int, default=None
+    )
     parser.add_argument(
         "--dataloader-workers",
         dest="dataloader_workers",

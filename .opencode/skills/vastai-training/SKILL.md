@@ -162,7 +162,9 @@ squares across the window's segments); geometry is on by default
 geometry weights to zero for the MLM-only baseline. The loop logs `mlm_loss`,
 `inv_loss`, `var_loss`, `cov_loss`, `nce_loss`, `token_rank_effective`, and
 with `--retrieval-benchmark <repo> --retrieval-benchmark-revision main`,
-`retrieval_*`. Ray training (`train_ray.py`) still runs the old MLM-only loop.
+`retrieval_*`. Ray training (`train_ray.py`) exposes the same masking/loss
+flags and YAML keys; multi-worker DDP requires `inv_weight=0` and
+`nce_weight=0` because the context-removal views are single-worker only.
 
 ## 2. Launching
 

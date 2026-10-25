@@ -53,6 +53,15 @@ class TestResolveConfig:
             assert config.dropout == 0.1
             assert config.max_seq_len == 2048
             assert config.max_segments == 128
+            assert config.p_rect == 1.0
+            assert config.p_random == 0.0
+            assert config.p_board == 0.0
+            assert config.p_span == 0.0
+            assert config.inv_weight == 0.1
+            assert config.var_weight == 0.1
+            assert config.cov_weight == 0.01
+            assert config.nce_weight == 0.0
+            assert config.retrieval_benchmark is None
             assert config.dataloader_workers == 4
             assert config.log_every == 20
             assert config.eval_every == 1_000
@@ -72,6 +81,63 @@ class TestResolveConfig:
             assert config.data_repo is None
         return
 
+    def test_default_masking_and_loss_configs(self, monkeypatch):
+        with given("no CLI arguments and no YAML"):
+            monkeypatch.setattr("torch.cuda.is_available", lambda: False)
+            config = resolve_config(parse_args([]))
+
+        with when("the masking and loss configs are built"):
+            masking = config.masking_config()
+            losses = config.auxiliary_config()
+
+        with then("rectangle masking and VICReg are on, InfoNCE is off"):
+            assert masking.p_rect == 1.0
+            assert masking.p_random == 0.0
+            assert masking.rect_synchronize is True
+            assert losses.inv_weight == 0.1
+            assert losses.var_weight == 0.1
+            assert losses.cov_weight == 0.01
+            assert losses.nce_weight == 0.0
+        return
+
+    def test_legacy_masking_flag_disables_rect(self):
+        with given("a legacy board-masking CLI flag without --p-rect"):
+            args = parse_args(["--p-board", "1"])
+
+        with when("the config is resolved"):
+            config = resolve_config(args)
+
+        with then("rectangle masking is automatically disabled"):
+            assert config.p_board == 1.0
+            assert config.p_rect == 0.0
+        return
+
+    def test_loss_flags_override(self):
+        with given("explicit loss weight CLI flags"):
+            args = parse_args(
+                [
+                    "--inv-weight",
+                    "0",
+                    "--var-weight",
+                    "0.2",
+                    "--nce-weight",
+                    "0.3",
+                    "--aux-warmup",
+                    "50",
+                ]
+            )
+
+        with when("the config is resolved"):
+            config = resolve_config(args)
+
+        with then("the overrides reach the auxiliary config"):
+            losses = config.auxiliary_config()
+            assert losses.inv_weight == 0.0
+            assert losses.var_weight == 0.2
+            assert losses.nce_weight == 0.3
+            assert losses.warmup_steps == 50
+        return
+
     def test_yaml_overrides_defaults(self, tmp_path):
         with given("a YAML config with a training section"):
             yaml_path = tmp_path / "training.yaml"
@@ -89,6 +155,29 @@ class TestResolveConfig:
             assert config.steps == 500
             assert config.batch_size == 4
             assert config.data_repo == "user/chess-positions"
+        return
+
+    def test_yaml_masking_and_loss_overrides(self, tmp_path):
+        with given("a YAML config with masking and loss settings"):
+            yaml_path = tmp_path / "training.yaml"
+            yaml_path.write_text(
+                "training:\n"
+                "  p_rect: 0.0\n"
+                "  p_span: 1.0\n"
+                "  nce_weight: 0.2\n"
+                "  aux_warmup: 10\n"
+            )
+
+        with when("the config is resolved from the YAML"):
+            config = resolve_config(parse_args(["--config", str(yaml_path)]))
+
+        with then("the masking and loss settings reach the built configs"):
+            masking = config.masking_config()
+            losses = config.auxiliary_config()
+            assert masking.p_rect == 0.0
+            assert masking.p_span == 1.0
+            assert losses.nce_weight == 0.2
+            assert losses.warmup_steps == 10
         return
 
     def test_cli_overrides_yaml(self, tmp_path):

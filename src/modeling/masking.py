@@ -20,10 +20,10 @@ IGNORE_INDEX = -100
 
 @dataclass
 class MaskingConfig:
-    p_random: float = 0.45
-    p_board: float = 0.30
-    p_span: float = 0.25
-    p_rect: float = 0.0
+    p_random: float = 0.0
+    p_board: float = 0.0
+    p_span: float = 0.0
+    p_rect: float = 1.0
     random_rate: float = 0.15
     mask_replace_prob: float = 0.8
     random_replace_prob: float = 0.1
@@ -113,7 +113,7 @@ def mask_stream(
     for pos in positions:
         original = int(tokens[pos])
         targets[pos] = original
-        weights[pos] = config.mode_weights[mode]
+        weights[pos] = config.mode_weights.get(mode, 1.0)
         r = rng.random()
         if r < config.mask_replace_prob:
             masked[pos] = MASK

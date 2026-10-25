@@ -209,6 +209,17 @@ def extract_alone_views(
     return alone_tokens, alone_segments, alone_padding
 
 
+def unwrap_model(model):
+    """Strip torch.compile/DDP wrappers to reach the underlying module."""
+    while True:
+        inner = getattr(model, "module", None)
+        if inner is None:
+            inner = getattr(model, "_orig_mod", None)
+        if inner is None or inner is model:
+            return model
+        model = inner
+
+
 def compute_training_loss(
     model,
     batch: dict[str, torch.Tensor],
@@ -231,7 +242,7 @@ def compute_training_loss(
     if not config.auxiliary_enabled():
         return mlm_loss, {"mlm": mlm_loss.detach()}
 
-    encoder = getattr(model, "_orig_mod", model)
+    encoder = unwrap_model(model)
     pooled, segment_mask = encoder.pool_hidden(
         output["hidden_states"], tokens, segment_ids, padding_mask
     )

@@ -358,9 +358,26 @@ class TestNestedArchiveLayout:
 
 
 class TestModeAssignment:
-    def test_mode_pattern_reflects_probabilities(self):
-        with given("the default masking probabilities (0.45/0.30/0.25)"):
+    def test_default_mode_pattern_is_rectangle_only(self):
+        with given("the default masking config"):
             masking = MaskingConfig()
+
+        with when("the mode pattern is built"):
+            pattern = build_mode_pattern(masking)
+
+        with then("every slot selects rectangle masking"):
+            assert len(pattern) == 20
+            assert set(pattern) == {"rect"}
+        return
+
+    def test_mode_pattern_reflects_explicit_probabilities(self):
+        with given("explicit legacy masking probabilities (0.45/0.30/0.25)"):
+            masking = MaskingConfig(
+                p_random=0.45,
+                p_board=0.30,
+                p_span=0.25,
+                p_rect=0.0,
+            )
 
         with when("the mode pattern is built"):
             pattern = build_mode_pattern(masking)
@@ -374,7 +391,7 @@ class TestModeAssignment:
 
     def test_mode_pattern_single_mode(self):
         with given("a one-hot board masking config as used by the eval suite"):
-            masking = MaskingConfig(p_random=0.0, p_board=1.0, p_span=0.0)
+            masking = MaskingConfig(p_random=0.0, p_board=1.0, p_span=0.0, p_rect=0.0)
 
         with when("the mode pattern is built"):
             pattern = build_mode_pattern(masking)
@@ -429,9 +446,35 @@ class TestModeAssignment:
                 assert np.all(sample["weights"][masked] == 1.0)
         return
 
-    def test_balanced_modes_follow_pattern(self, data_dir):
-        with given("a balanced-mode dataset over 20 games with a full-window budget"):
+    def test_default_balanced_modes_use_rectangle_weights(self, data_dir):
+        with given("a default-mode dataset over 20 games"):
             dataset = WindowDataset(config(data_dir, seed=8, max_seq_len=2048))
+
+        with when("the first 20 windows are sampled"):
+            samples = [dataset[index] for index in range(20)]
+
+        with then("every window carries the rectangle-mode weight"):
+            for sample in samples:
+                masked = sample["targets"] != IGNORE_INDEX
+                assert masked.any()
+                assert np.all(sample["weights"][masked] == 1.0)
+        return
+
+    def test_explicit_legacy_modes_follow_pattern(self, data_dir):
+        with given("a balanced legacy-mode dataset over 20 games"):
+            dataset = WindowDataset(
+                config(
+                    data_dir,
+                    seed=8,
+                    max_seq_len=2048,
+                    masking=MaskingConfig(
+                        p_random=0.45,
+                        p_board=0.30,
+                        p_span=0.25,
+                        p_rect=0.0,
+                    ),
+                )
+            )
 
         with when("the first 20 windows are sampled and their mode weights summed"):
             upweighted = 0

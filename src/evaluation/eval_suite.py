@@ -27,9 +27,9 @@ from src.training.window_dataset import (
 )
 
 MODE_CONFIGS = {
-    "random": MaskingConfig(p_random=1.0, p_board=0.0, p_span=0.0),
-    "board": MaskingConfig(p_random=0.0, p_board=1.0, p_span=0.0),
-    "span": MaskingConfig(p_random=0.0, p_board=0.0, p_span=1.0),
+    "random": MaskingConfig(p_random=1.0, p_board=0.0, p_span=0.0, p_rect=0.0),
+    "board": MaskingConfig(p_random=0.0, p_board=1.0, p_span=0.0, p_rect=0.0),
+    "span": MaskingConfig(p_random=0.0, p_board=0.0, p_span=1.0, p_rect=0.0),
 }
 SCALAR_CLASS_BOUNDS = {
     "turn": (TURN_WHITE, CASTLE_BASE),

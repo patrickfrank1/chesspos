@@ -57,7 +57,7 @@ class TestMaskStream:
         with given("a packed token stream and random-only masking"):
             tokens = make_stream(random_game_factory(1))
             config = MaskingConfig(
-                p_random=1.0, p_board=0.0, p_span=0.0, random_rate=0.3
+                p_random=1.0, p_board=0.0, p_span=0.0, p_rect=0.0, random_rate=0.3
             )
 
         with when("the stream is masked"):
@@ -80,7 +80,7 @@ class TestMaskStream:
 
         with given("a packed token stream and random-only masking at rate 0.3"):
             tokens = make_stream(random_game_factory(2))
-            config = MaskingConfig(p_random=1.0, random_rate=0.3)
+            config = MaskingConfig(p_random=1.0, p_rect=0.0, random_rate=0.3)
 
         with when("the stream is masked"):
             _, targets, _ = mask_stream(tokens, config, np.random.default_rng(0))
@@ -94,7 +94,7 @@ class TestMaskStream:
     def test_board_mode_masks_board_span_contiguous_segments(self):
         with given("a packed stream of 10 boards and board-only masking"):
             tokens = make_stream(random_game_factory(3), n_boards=10)
-            config = MaskingConfig(p_random=0.0, p_board=1.0, p_span=0.0)
+            config = MaskingConfig(p_random=0.0, p_board=1.0, p_span=0.0, p_rect=0.0)
 
         with when("the stream is masked"):
             masked, targets, weights = mask_stream(
@@ -121,6 +121,7 @@ class TestMaskStream:
                 p_random=0.0,
                 p_board=1.0,
                 p_span=0.0,
+                p_rect=0.0,
                 board_span=4,
                 min_context_segments=1,
             )
@@ -137,7 +138,7 @@ class TestMaskStream:
     def test_board_mode_falls_back_to_random_without_context(self):
         with given("a packed stream with fewer than 8 boards and board-only masking"):
             tokens = make_stream(random_game_factory(7), n_boards=4)
-            config = MaskingConfig(p_random=0.0, p_board=1.0, p_span=0.0)
+            config = MaskingConfig(p_random=0.0, p_board=1.0, p_span=0.0, p_rect=0.0)
 
         with when("the stream is masked"):
             _, targets, weights = mask_stream(tokens, config, np.random.default_rng(0))
@@ -152,7 +153,7 @@ class TestMaskStream:
     def test_span_mode_falls_back_to_random_without_context(self):
         with given("a packed stream with fewer than 8 boards and span-only masking"):
             tokens = make_stream(random_game_factory(9), n_boards=5)
-            config = MaskingConfig(p_random=0.0, p_board=0.0, p_span=1.0)
+            config = MaskingConfig(p_random=0.0, p_board=0.0, p_span=1.0, p_rect=0.0)
 
         with when("the stream is masked"):
             _, targets, weights = mask_stream(tokens, config, np.random.default_rng(0))
@@ -167,7 +168,12 @@ class TestMaskStream:
         with given("a packed token stream and span masking of 2 to 3 segments"):
             tokens = make_stream(random_game_factory(4), n_boards=8)
             config = MaskingConfig(
-                p_random=0.0, p_board=0.0, p_span=1.0, min_span=2, max_span=3
+                p_random=0.0,
+                p_board=0.0,
+                p_span=1.0,
+                p_rect=0.0,
+                min_span=2,
+                max_span=3,
             )
 
         with when("the stream is masked"):
@@ -185,7 +191,7 @@ class TestMaskStream:
     def test_bert_replacement_distribution(self):
         with given("a long packed token stream and random masking at rate 0.5"):
             tokens = make_stream(random_game_factory(5), n_boards=40)
-            config = MaskingConfig(p_random=1.0, random_rate=0.5)
+            config = MaskingConfig(p_random=1.0, p_rect=0.0, random_rate=0.5)
 
         with when("the stream is masked"):
             masked, targets, _ = mask_stream(tokens, config, np.random.default_rng(0))
@@ -215,7 +221,7 @@ class TestMaskStream:
 
         with given("many masked streams and random-only masking at rate 0.5"):
             config = MaskingConfig(
-                p_random=1.0, p_board=0.0, p_span=0.0, random_rate=0.5
+                p_random=1.0, p_board=0.0, p_span=0.0, p_rect=0.0, random_rate=0.5
             )
 
         with when("every replaced token is bucketed by its token class"):
@@ -272,7 +278,7 @@ class TestMaskStream:
     def test_random_mode_uses_random_mode_weight(self):
         with given("a long packed stream and random-only masking"):
             tokens = make_stream(random_game_factory(10), n_boards=12)
-            config = MaskingConfig(p_random=1.0, p_board=0.0, p_span=0.0)
+            config = MaskingConfig(p_random=1.0, p_board=0.0, p_span=0.0, p_rect=0.0)
 
         with when("the stream is masked"):
             _, targets, weights = mask_stream(tokens, config, np.random.default_rng(0))
@@ -288,6 +294,7 @@ class TestMaskStream:
                 p_random=0.0,
                 p_board=1.0,
                 p_span=0.0,
+                p_rect=0.0,
                 mode_weights={"random": 1.0, "board": 3.5, "span": 2.0},
             )
 
@@ -656,7 +663,7 @@ class TestSlotEmbedding:
             tokens = make_stream(random_game_factory(3), n_boards=10)
             masked, targets, weights = mask_stream(
                 tokens,
-                MaskingConfig(p_random=0.0, p_board=1.0, p_span=0.0),
+                MaskingConfig(p_random=0.0, p_board=1.0, p_span=0.0, p_rect=0.0),
                 np.random.default_rng(0),
             )
             batch = collate_windows(
