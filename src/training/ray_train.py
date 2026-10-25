@@ -581,10 +581,6 @@ def train_loop_per_worker(config: dict) -> None:
                     },
                     step=step,
                 )
-            running_loss = 0.0
-            running_count = 0
-            running_components = {}
-            start = time.time()
 
         extras: dict = {}
         if step % cfg.eval_every == 0 or step == cfg.steps:
@@ -723,6 +719,12 @@ def train_loop_per_worker(config: dict) -> None:
                     upload(local_last, "last", step, best_val_loss)
                     checkpoint = Checkpoint.from_directory(tmpdir)
                 train.report(metrics, checkpoint=checkpoint)
+
+        if step % cfg.log_every == 0:
+            running_loss = 0.0
+            running_count = 0
+            running_components = {}
+            start = time.time()
 
     if tracker is not None:
         tracker.end()
