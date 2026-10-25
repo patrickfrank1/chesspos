@@ -198,6 +198,21 @@ class TestContextViews:
 
 
 class TestAuxiliaryLosses:
+    def test_default_weights_match_the_objective_sweep(self):
+        with given("a default auxiliary loss configuration"):
+            config = AuxiliaryLossConfig()
+
+        with then("MLM, strong VICReg, invariance and InfoNCE are enabled"):
+            assert config.mlm_weight == 1.0
+            assert config.inv_weight == 0.5
+            assert config.var_weight == 1.0
+            assert config.cov_weight == 0.1
+            assert config.nce_weight == 0.1
+            assert config.nce_temperature == 0.1
+            assert config.warmup_steps == 200
+            assert config.auxiliary_enabled() is True
+        return
+
     def test_zero_weights_leave_only_mlm(self):
         with given("an MLM loss and all auxiliary weights at zero"):
             mlm = torch.tensor(2.0)

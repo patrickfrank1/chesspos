@@ -201,7 +201,7 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=None,
         help="Probability weight for harder rectangle masking "
-        "(default 1.0 unless a legacy masking flag is set)",
+        "(default 0.8, mixed with 0.2 skip-gram)",
     )
     parser.add_argument(
         "--rect-min-rate",
@@ -245,17 +245,17 @@ def parse_args() -> argparse.Namespace:
         help="Fraction of boards left visible in skip-gram mode (must be < 0.30)",
     )
     parser.add_argument("--mlm-weight", type=float, default=1.0)
-    parser.add_argument("--inv-weight", type=float, default=0.1)
-    parser.add_argument("--var-weight", type=float, default=0.1)
-    parser.add_argument("--cov-weight", type=float, default=0.01)
-    parser.add_argument("--nce-weight", type=float, default=0.0)
+    parser.add_argument("--inv-weight", type=float, default=0.5)
+    parser.add_argument("--var-weight", type=float, default=1.0)
+    parser.add_argument("--cov-weight", type=float, default=0.1)
+    parser.add_argument("--nce-weight", type=float, default=0.1)
     parser.add_argument("--nce-temperature", type=float, default=0.1)
     parser.add_argument("--vicreg-gamma", type=float, default=1.0)
     parser.add_argument("--vicreg-eps", type=float, default=1e-4)
     parser.add_argument(
         "--aux-warmup",
         type=int,
-        default=0,
+        default=200,
         help="Steps over which auxiliary loss weights ramp from 0 to target",
     )
     return parser.parse_args()

@@ -59,10 +59,11 @@ class TestResolveConfig:
             assert config.p_span == 0.0
             assert config.p_skip_gram == 0.2
             assert config.skip_gram_unmask_rate == 0.10
-            assert config.inv_weight == 0.1
-            assert config.var_weight == 0.1
-            assert config.cov_weight == 0.01
-            assert config.nce_weight == 0.0
+            assert config.inv_weight == 0.5
+            assert config.var_weight == 1.0
+            assert config.cov_weight == 0.1
+            assert config.nce_weight == 0.1
+            assert config.aux_warmup == 200
             assert config.retrieval_benchmark is None
             assert config.dataloader_workers == 4
             assert config.log_every == 20
@@ -92,15 +93,16 @@ class TestResolveConfig:
             masking = config.masking_config()
             losses = config.auxiliary_config()
 
-        with then("rectangle masking and VICReg are on, InfoNCE is off"):
+        with then("rectangle masking, strong VICReg and InfoNCE are on"):
             assert masking.p_rect == 0.8
             assert masking.p_skip_gram == 0.2
             assert masking.p_random == 0.0
             assert masking.rect_synchronize is True
-            assert losses.inv_weight == 0.1
-            assert losses.var_weight == 0.1
-            assert losses.cov_weight == 0.01
-            assert losses.nce_weight == 0.0
+            assert losses.inv_weight == 0.5
+            assert losses.var_weight == 1.0
+            assert losses.cov_weight == 0.1
+            assert losses.nce_weight == 0.1
+            assert losses.warmup_steps == 200
         return
 
     def test_skip_gram_flag_disables_rect(self):

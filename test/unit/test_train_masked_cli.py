@@ -232,7 +232,7 @@ class TestStreamingFlag:
 
 
 class TestAuxiliaryConfig:
-    def test_default_weights_enable_geometry_but_not_nce(self, monkeypatch):
+    def test_default_weights_enable_geometry_and_nce(self, monkeypatch):
         with given("no loss weight flags"):
             monkeypatch.setattr("sys.argv", ["train_masked_transformer"])
             args = parse_args()
@@ -240,12 +240,13 @@ class TestAuxiliaryConfig:
         with when("the auxiliary config is built"):
             config = auxiliary_config(args)
 
-        with then("geometry is on and InfoNCE is off"):
+        with then("strong geometry, invariance and InfoNCE are on"):
             assert config.mlm_weight == 1.0
-            assert config.inv_weight == 0.1
-            assert config.var_weight == 0.1
-            assert config.cov_weight == 0.01
-            assert config.nce_weight == 0.0
+            assert config.inv_weight == 0.5
+            assert config.var_weight == 1.0
+            assert config.cov_weight == 0.1
+            assert config.nce_weight == 0.1
+            assert config.warmup_steps == 200
             assert config.auxiliary_enabled() is True
         return
 

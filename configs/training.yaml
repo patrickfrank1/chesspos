@@ -40,16 +40,18 @@ training:
   rect_max_side: 4
   rect_synchronize: true
 
-  # Losses: MLM + context-removal invariance + VICReg. InfoNCE is off by
-  # default; enable with nce_weight > 0. Set inv/var/cov weights to zero for
-  # the MLM-only baseline.
+  # Losses: MLM + context-removal invariance + strong VICReg + InfoNCE.
+  # Defaults follow the 2026-10-25 tiny objective sweep: strong variance and
+  # covariance regularization, a large context-removal invariance weight, and
+  # a small InfoNCE term. Set all auxiliary weights to zero for the MLM-only
+  # baseline.
   mlm_weight: 1.0
-  inv_weight: 0.1
-  var_weight: 0.1
-  cov_weight: 0.01
-  nce_weight: 0.0
+  inv_weight: 0.5
+  var_weight: 1.0
+  cov_weight: 0.1
+  nce_weight: 0.1
   nce_temperature: 0.1
-  aux_warmup: 0
+  aux_warmup: 200
 
   # Optional measurements at each eval.
   retrieval_benchmark: null       # e.g. "patrickfrank1/chess-positions"

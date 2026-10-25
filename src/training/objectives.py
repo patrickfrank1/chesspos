@@ -20,19 +20,21 @@ _WEIGHT_NAMES = (
 class AuxiliaryLossConfig:
     """Weights for MLM plus optional geometry and contrastive terms.
 
-    Setting ``nce_weight`` to zero (the default) removes the InfoNCE term
-    entirely, so the same training entry point can run the MLM-only baseline.
+    Setting ``nce_weight`` to zero removes the InfoNCE term entirely, so the
+    same training entry point can run the MLM-only baseline. The defaults come
+    from the tiny objective sweep (2026-10-25): strong VICReg variance plus a
+    context-removal invariance term and a small InfoNCE weight.
     """
 
     mlm_weight: float = 1.0
-    inv_weight: float = 0.1
-    var_weight: float = 0.1
-    cov_weight: float = 0.01
-    nce_weight: float = 0.0
+    inv_weight: float = 0.5
+    var_weight: float = 1.0
+    cov_weight: float = 0.1
+    nce_weight: float = 0.1
     nce_temperature: float = 0.1
     vicreg_gamma: float = 1.0
     vicreg_eps: float = 1e-4
-    warmup_steps: int = 0
+    warmup_steps: int = 200
 
     def __post_init__(self):
         for name in _WEIGHT_NAMES:
