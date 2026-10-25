@@ -71,6 +71,7 @@ comparable at the same step).
 | VICReg + NCE + inv .02 | 35.43 | 28.96 | 38.57 | 42.45 | 43.44 |
 | VICReg + NCE, inv 0 | 36.39 | 29.66 | 37.74 | 42.99 | 44.20 |
 | rect-only + VICReg + NCE | 32.70 | 27.87 | 37.32 | 42.25 | 43.41 |
+| new defaults | 33.12 | 23.10 | 31.82 | 39.29 | 39.46 |
 
 ## Findings
 
@@ -106,6 +107,15 @@ comparable at the same step).
    segment embeddings, while retrieval encodes each position **alone**. Only
    inv/NCE touch the alone embeddings. NCE raises the pooled rank but hurts
    strategic MAP at the tested weight.
+
+7. **The requested all-objectives defaults are a compromise.** The validation
+   run (`inv=.5, var=1.0, cov=.1, nce=.1, warmup=200`) reaches token rank 39.5,
+   pooled rank 3.80, strategic MAP .082, and val 1.837. That is better than the
+   old defaults (token rank 15.8, pooled rank 1.17, strategic MAP .125) on
+   collapse and val, but it does not beat VICReg-only on token rank or
+   strategic MAP. The large invariance/NCE terms spread the pooled embedding
+   while slightly compressing the semantic structure; the full-scale run will
+   decide whether that trade is worthwhile.
 
 ## New defaults
 
@@ -145,12 +155,20 @@ Rationale and caveats:
 ### Validation run
 
 A 1,000-step run with the new defaults was launched on the same tiny setup to
-confirm stability and to provide a first comparison point. Results are appended
-below when it finishes.
+confirm stability and to provide a first comparison point.
 
 | run | val | acc | token rank | ret rank | strat MAP | strat R@10 | near MAP |
 |---|---|---|---|---|---|---|---|
-| new defaults (pending) | | | | | | | |
+| new defaults | 1.8369 | .3444 | 39.46 | 3.80 | .0824 | .436 | .5753 |
+
+The new defaults sit between VICReg-only and VICReg+NCE: better val loss than
+VICReg-only (1.837 vs 1.852), higher pooled retrieval rank (3.80 vs 1.60) and
+near MAP (.575 vs .454), but lower token rank (39.5 vs 46.1) and lower
+strategic MAP (.082 vs .101). The large invariance weight does not eliminate
+pooled collapse (rank 3.8) and costs some semantic structure at this scale. It
+is a reasonable all-objectives starting point for the requested run, but if
+strategic MAP is the priority, VICReg-only remains the better tiny-scale
+configuration.
 
 ## Recommended next steps
 
