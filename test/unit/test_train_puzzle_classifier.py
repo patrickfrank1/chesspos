@@ -20,6 +20,7 @@ from src.dataset.puzzle_variants import (
     split_for_puzzle,
 )
 from src.dataset.token_stream import VOCAB_SIZE, TokenStreamEncoder, pack_stream
+from src.evaluation.retrieval import BenchmarkConfig, build_benchmark
 from src.modeling.puzzle_classifier import (
     PoolingClassifier,
     PoolingClassifierConfig,
@@ -487,4 +488,148 @@ class TestFocalLossWiring:
             assert focal is not None
             assert focal.gamma == 2.0
             assert focal.alpha == 0.75
+        return
+
+
+class TestRetrievalBenchmarkIntegration:
+    def test_training_logs_retrieval_metrics_when_configured(self, tmp_path, capsys):
+        with given("a tiny labeled shard and a benchmark built from it"):
+            data_dir = tmp_path / "data"
+            data_dir.mkdir()
+            save_encoder_checkpoint(tmp_path / "encoder.pt")
+            make_training_parquet(data_dir / "part.parquet")
+            benchmark_dir = build_benchmark(
+                BenchmarkConfig(
+                    data_dir=str(data_dir),
+                    output_dir=str(tmp_path / "bench"),
+                    val_ratio=0.5,
+                    max_positions=50,
+                    max_queries=5,
+                    cluster_themes=(),
+                    seed=3,
+                )
+            )
+            argv = [
+                "train_puzzle_classifier.py",
+                "--data-dir",
+                str(data_dir),
+                "--theme",
+                "sacrifice",
+                "--checkpoint",
+                str(tmp_path / "encoder.pt"),
+                "--output-dir",
+                str(tmp_path / "out"),
+                "--epochs",
+                "1",
+                "--batch-size",
+                "8",
+                "--num-workers",
+                "0",
+                "--device",
+                "cpu",
+                "--val-ratio",
+                "0.5",
+                "--retrieval-benchmark",
+                str(benchmark_dir),
+            ]
+
+        with when("the training entry point runs"):
+            import src.run.train_puzzle_classifier as cli
+
+            with patch("sys.argv", argv):
+                exit_code = cli.main()
+
+        with then("the retrieval metrics are logged"):
+            assert exit_code == 0
+            output = capsys.readouterr().out
+            assert "retrieval_near_recall@10=" in output
+            assert "retrieval_rank_effective=" in output
+        return
+
+
+class TestRetrievalBenchmarkHub:
+    def test_parse_args_exposes_the_benchmark_revision(self):
+        with given("a Hub benchmark with an explicit revision"):
+            argv = [
+                "train_puzzle_classifier.py",
+                "--retrieval-benchmark",
+                "org/chesspos",
+                "--retrieval-benchmark-revision",
+                "v1",
+            ]
+
+        with when("the arguments are parsed"):
+            with patch("sys.argv", argv):
+                args = parse_args()
+
+        with then("the source and revision reach the loader"):
+            assert args.retrieval_benchmark == "org/chesspos"
+            assert args.retrieval_benchmark_revision == "v1"
+        return
+
+    def test_main_resolves_the_hub_benchmark_with_the_revision(
+        self, tmp_path, monkeypatch
+    ):
+        with given("a tiny run and a stubbed Hub loader"):
+            data_dir = tmp_path / "data"
+            data_dir.mkdir()
+            save_encoder_checkpoint(tmp_path / "encoder.pt")
+            make_training_parquet(data_dir / "part.parquet")
+            bench_dir = build_benchmark(
+                BenchmarkConfig(
+                    data_dir=str(data_dir),
+                    output_dir=str(tmp_path / "bench"),
+                    val_ratio=0.5,
+                    max_positions=10,
+                    max_queries=3,
+                    cluster_themes=(),
+                    seed=3,
+                )
+            )
+            from src.evaluation.retrieval import load_benchmark as real_load
+
+            benchmark = real_load(bench_dir)
+            calls: dict = {}
+
+            def fake_load(source, revision=None):
+                calls["source"] = source
+                calls["revision"] = revision
+                return benchmark
+
+            import src.run.train_puzzle_classifier as cli
+
+            monkeypatch.setattr(cli, "load_benchmark", fake_load)
+            argv = [
+                "train_puzzle_classifier.py",
+                "--data-dir",
+                str(data_dir),
+                "--theme",
+                "sacrifice",
+                "--checkpoint",
+                str(tmp_path / "encoder.pt"),
+                "--output-dir",
+                str(tmp_path / "out"),
+                "--epochs",
+                "1",
+                "--batch-size",
+                "8",
+                "--num-workers",
+                "0",
+                "--device",
+                "cpu",
+                "--val-ratio",
+                "0.5",
+                "--retrieval-benchmark",
+                "org/chesspos",
+                "--retrieval-benchmark-revision",
+                "v1",
+            ]
+
+        with when("the training entry point runs"):
+            with patch("sys.argv", argv):
+                exit_code = cli.main()
+
+        with then("the loader receives the repo id and the revision"):
+            assert exit_code == 0
+            assert calls == {"source": "org/chesspos", "revision": "v1"}
         return

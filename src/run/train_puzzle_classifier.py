@@ -30,6 +30,7 @@ from src.training.losses import (
     focal_loss_with_logits,
     resolve_focal_loss,
 )
+from src.evaluation.retrieval import evaluate_retrieval, load_benchmark
 from src.training.puzzle_metrics import binary_metrics
 
 
@@ -56,6 +57,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--pos-weight", type=float, default=None)
     parser.add_argument("--num-workers", type=int, default=4)
     parser.add_argument("--log-every", type=int, default=100)
+    parser.add_argument("--retrieval-benchmark", default=None)
+    parser.add_argument("--retrieval-benchmark-revision", default=None)
+    parser.add_argument("--retrieval-batch-size", type=int, default=128)
     parser.add_argument("--loss", choices=("bce", "focal"), default="bce")
     parser.add_argument(
         "--focal-gamma",
@@ -266,6 +270,14 @@ def main() -> int:
         num_workers=args.num_workers,
         device=device,
     )
+    retrieval = (
+        load_benchmark(
+            args.retrieval_benchmark,
+            revision=args.retrieval_benchmark_revision,
+        )
+        if args.retrieval_benchmark is not None
+        else None
+    )
 
     optimizer = torch.optim.AdamW(
         model.head.parameters(), lr=args.lr, weight_decay=args.weight_decay
@@ -315,6 +327,23 @@ def main() -> int:
             f"auroc={metrics['auroc']:.4f} pr_auc={metrics['pr_auc']:.4f} "
             f"f1={metrics['f1']:.4f} threshold={metrics['threshold']:.4f}"
         )
+        if retrieval is not None:
+            retrieval_metrics = evaluate_retrieval(
+                encoder,
+                retrieval,
+                device,
+                batch_size=args.retrieval_batch_size,
+            )
+            print(
+                " ".join(
+                    f"retrieval_{key}={value:.4f}"
+                    for key, value in sorted(retrieval_metrics.items())
+                ),
+                flush=True,
+            )
+            metrics.update(
+                {f"retrieval_{key}": value for key, value in retrieval_metrics.items()}
+            )
         save_checkpoint(output_dir / "last.pt", model, planner, epoch, metrics)
         if metrics["pr_auc"] > best_pr_auc:
             best_pr_auc = metrics["pr_auc"]
