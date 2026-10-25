@@ -15,8 +15,11 @@ from src.evaluation.retrieval import (
     effective_rank,
     evaluate_near,
     evaluate_retrieval,
+    evaluate_strategic,
     ranking_metrics,
     retrieval_scores,
+    strategic_pool,
+    strategic_theme_metrics,
 )
 from src.modeling.transformer import MaskedStreamTransformer, TransformerConfig
 
@@ -53,6 +56,42 @@ def make_benchmark() -> RetrievalBenchmark:
         near_relevance={0: {1: 0}},
         strategic_queries={"rookEndgame": np.array([0])},
         manifest={},
+    )
+
+
+def make_strategic_benchmark() -> RetrievalBenchmark:
+    tokens = board_tokens()
+    positions: list[BenchPosition] = []
+    index = 0
+    for puzzle in range(4):
+        for ply in range(3):
+            positions.append(
+                BenchPosition(
+                    index,
+                    f"rook-{puzzle}",
+                    ply,
+                    "",
+                    tokens,
+                    ("rookEndgame",),
+                )
+            )
+            index += 1
+    for puzzle in range(20):
+        for ply in range(2):
+            positions.append(
+                BenchPosition(index, f"pawn-{puzzle}", ply, "", tokens, ())
+            )
+            index += 1
+    return RetrievalBenchmark(
+        positions=tuple(positions),
+        near_queries=np.array([], dtype=np.int64),
+        near_relevance={},
+        strategic_queries={"rookEndgame": np.array([0, 3, 6, 9], dtype=np.int64)},
+        manifest={
+            "seed": 5,
+            "strategic_positives": 2,
+            "strategic_negatives": 5,
+        },
     )
 
 
@@ -201,6 +240,149 @@ class TestEvaluateNear:
         return
 
 
+class TestStrategicPooling:
+    def test_pool_is_balanced_cross_puzzle_and_deterministic(self):
+        with given("a theme with more eligible candidates than the pool allows"):
+            benchmark = make_strategic_benchmark()
+
+        with when("the same strategic pool is sampled twice"):
+            galleries, relevance = strategic_pool(benchmark, "rookEndgame", 0)
+            again_galleries, again_relevance = strategic_pool(
+                benchmark, "rookEndgame", 0
+            )
+
+        with then("the pool has fixed balanced composition and is reproducible"):
+            assert len(galleries) == 7
+            assert len(relevance) == 2
+            assert np.array_equal(galleries, again_galleries)
+            assert relevance == again_relevance
+            positives = {int(galleries[local]) for local in relevance}
+            negatives = {int(gallery) for gallery in galleries} - positives
+            assert len(positives) == 2
+            assert len(negatives) == 5
+            for index in positives:
+                assert "rookEndgame" in benchmark.positions[index].themes
+                assert benchmark.positions[index].puzzle_id != "rook-0"
+            for index in negatives:
+                assert "rookEndgame" not in benchmark.positions[index].themes
+                assert benchmark.positions[index].puzzle_id != "rook-0"
+        return
+
+    def test_pool_caps_positives_at_available_candidates(self):
+        with given("a query with nine eligible positives"):
+            benchmark = make_strategic_benchmark()
+
+        with when("the pool requests ten positives and five negatives"):
+            galleries, relevance = strategic_pool(
+                benchmark, "rookEndgame", 0, positives=10, negatives=5
+            )
+
+        with then("all available positives are used alongside five negatives"):
+            assert len(relevance) == 9
+            assert len(galleries) == 14
+        return
+
+    def test_pools_do_not_depend_on_query_order(self):
+        with given("the same queries stored in reverse order"):
+            benchmark = make_strategic_benchmark()
+            reordered = RetrievalBenchmark(
+                positions=benchmark.positions,
+                near_queries=benchmark.near_queries,
+                near_relevance=benchmark.near_relevance,
+                strategic_queries={
+                    "rookEndgame": benchmark.strategic_queries["rookEndgame"][::-1]
+                },
+                manifest=benchmark.manifest,
+            )
+            embeddings = np.random.default_rng(0).standard_normal(
+                (len(benchmark.positions), 8)
+            )
+
+        with when("per-theme metrics are computed for both orders"):
+            first = strategic_theme_metrics(benchmark, embeddings)
+            second = strategic_theme_metrics(reordered, embeddings)
+
+        with then("the metrics agree"):
+            assert first["rookEndgame"]["map"] == pytest.approx(
+                second["rookEndgame"]["map"]
+            )
+            assert first["rookEndgame"]["chance_map"] == pytest.approx(
+                second["rookEndgame"]["chance_map"]
+            )
+        return
+
+
+class TestStrategicChanceAdjustedMetrics:
+    def test_reports_chance_map_and_lift(self):
+        with given("a balanced benchmark and random embeddings"):
+            benchmark = make_strategic_benchmark()
+            embeddings = np.random.default_rng(0).standard_normal(
+                (len(benchmark.positions), 8)
+            )
+
+        with when("strategic metrics are computed"):
+            metrics = evaluate_strategic(benchmark, embeddings, ks=(1, 5))
+
+        with then("chance and chance-adjusted MAP are reported"):
+            assert metrics["n_queries"] == 4
+            assert metrics["chance_map"] == pytest.approx(2 / 7)
+            assert metrics["map_lift"] == pytest.approx(
+                metrics["map"] - metrics["chance_map"]
+            )
+        return
+
+    def test_handles_queries_with_different_pool_sizes(self):
+        with given("a theme whose puzzles contribute different positive counts"):
+            tokens = board_tokens()
+            benchmark = RetrievalBenchmark(
+                positions=(
+                    BenchPosition(0, "a", 0, "", tokens, ("rookEndgame",)),
+                    BenchPosition(1, "a", 1, "", tokens, ("rookEndgame",)),
+                    BenchPosition(2, "a", 2, "", tokens, ("rookEndgame",)),
+                    BenchPosition(3, "b", 0, "", tokens, ("rookEndgame",)),
+                    BenchPosition(4, "n0", 0, "", tokens, ()),
+                    BenchPosition(5, "n1", 0, "", tokens, ()),
+                ),
+                near_queries=np.array([], dtype=np.int64),
+                near_relevance={},
+                strategic_queries={"rookEndgame": np.array([0, 3])},
+                manifest={
+                    "seed": 1,
+                    "strategic_positives": 10,
+                    "strategic_negatives": 2,
+                },
+            )
+            embeddings = np.random.default_rng(0).standard_normal((6, 8))
+
+        with when("per-theme metrics are computed"):
+            metrics = strategic_theme_metrics(benchmark, embeddings)["rookEndgame"]
+
+        with then("queries with different pool sizes are aggregated"):
+            assert metrics["n_queries"] == 2
+            assert metrics["chance_map"] == pytest.approx((1 / 3 + 3 / 5) / 2)
+        return
+
+    def test_per_theme_metrics_include_map_and_lift(self):
+        with given("a balanced benchmark and random embeddings"):
+            benchmark = make_strategic_benchmark()
+            embeddings = np.random.default_rng(0).standard_normal(
+                (len(benchmark.positions), 8)
+            )
+
+        with when("per-theme metrics are computed"):
+            per_theme = strategic_theme_metrics(benchmark, embeddings)
+
+        with then("the theme reports MAP, chance and its lift"):
+            assert set(per_theme) == {"rookEndgame"}
+            metrics = per_theme["rookEndgame"]
+            assert metrics["n_queries"] == 4
+            assert metrics["chance_map"] == pytest.approx(2 / 7)
+            assert metrics["map_lift"] == pytest.approx(
+                metrics["map"] - metrics["chance_map"]
+            )
+        return
+
+
 class TestEvaluateRetrieval:
     def test_reports_near_strategic_and_geometry_metrics(self):
         with given("a tiny encoder and a benchmark with both tasks"):
@@ -216,6 +398,13 @@ class TestEvaluateRetrieval:
             assert "near_recall@1" in metrics
             assert "near_map" in metrics
             assert "strategic_recall@1" in metrics
+            assert "strategic_map" in metrics
+            assert "strategic_chance_map" in metrics
+            assert "strategic_map_lift" in metrics
+            assert "strategic_theme_rookEndgame_map" in metrics
+            assert "strategic_theme_rookEndgame_chance_map" in metrics
+            assert "strategic_theme_rookEndgame_map_lift" in metrics
+            assert "strategic_theme_rookEndgame_n_queries" in metrics
             assert "rank_effective" in metrics
             assert "alignment" in metrics
             assert "uniformity" in metrics

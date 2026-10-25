@@ -13,6 +13,9 @@ from src.dataset.puzzle_variants import split_for_puzzle
 from src.dataset.token_stream import TokenStreamEncoder, pack_stream
 from src.evaluation.retrieval import (
     BENCHMARK_SUBDIR,
+    DEFAULT_CLUSTER_THEMES,
+    DEFAULT_STRATEGIC_NEGATIVES,
+    DEFAULT_STRATEGIC_POSITIVES,
     BenchmarkConfig,
     build_benchmark,
     load_benchmark,
@@ -107,6 +110,8 @@ def make_config(
     max_positions: int = 100,
     max_queries: int = 20,
     near_hamming: int = 2,
+    strategic_positives: int = DEFAULT_STRATEGIC_POSITIVES,
+    strategic_negatives: int = DEFAULT_STRATEGIC_NEGATIVES,
     seed: int = 7,
     val_ratio: float = 0.5,
 ) -> BenchmarkConfig:
@@ -117,6 +122,8 @@ def make_config(
         max_positions=max_positions,
         max_queries=max_queries,
         near_hamming=near_hamming,
+        strategic_positives=strategic_positives,
+        strategic_negatives=strategic_negatives,
         cluster_themes=cluster_themes,
         seed=seed,
     )
@@ -127,6 +134,14 @@ def index_of(benchmark, puzzle_id: str, ply: int = 0) -> int:
         if position.puzzle_id == puzzle_id and position.ply == ply:
             return position.position_id
     raise AssertionError(f"position {puzzle_id}@{ply} not in benchmark")
+
+
+def near_grade(benchmark, first: int, second: int) -> int:
+    if first in benchmark.near_relevance and second in benchmark.near_relevance[first]:
+        return benchmark.near_relevance[first][second]
+    if second in benchmark.near_relevance and first in benchmark.near_relevance[second]:
+        return benchmark.near_relevance[second][first]
+    raise AssertionError(f"positions {first} and {second} are not a near pair")
 
 
 class TestBenchmarkPositions:
@@ -185,6 +200,96 @@ class TestBenchmarkPositions:
         return
 
 
+class TestClusterThemes:
+    def test_endgame_is_not_a_default_cluster_theme(self):
+        with given("the default strategic cluster themes"):
+            themes = DEFAULT_CLUSTER_THEMES
+
+        with when("checking for broad phase and specific endgame labels"):
+            has_endgame = "endgame" in themes
+            has_specific_endgames = {
+                "rookEndgame",
+                "pawnEndgame",
+                "queenRookEndgame",
+                "bishopEndgame",
+                "knightEndgame",
+            }.issubset(themes)
+
+        with then("the broad endgame phase is excluded but types remain"):
+            assert not has_endgame
+            assert has_specific_endgames
+            assert "promotion" in themes
+            assert "zugzwang" in themes
+        return
+
+
+class TestReciprocalNearPairs:
+    def test_reciprocal_near_pair_is_recorded_once(self, tmp_path):
+        with given("two cross-puzzle identical positions"):
+            first, second = val_puzzle_ids(2)
+            write_puzzle_shard(
+                tmp_path / "part.parquet",
+                [
+                    {"puzzle_id": first, "boards": [base_board()]},
+                    {"puzzle_id": second, "boards": [base_board()]},
+                ],
+            )
+
+        with when("the benchmark is built"):
+            benchmark = load_benchmark(
+                build_benchmark(make_config(tmp_path, tmp_path / "bench"))
+            )
+
+        with then("the pair is stored and queried in one direction only"):
+            source = index_of(benchmark, first)
+            target = index_of(benchmark, second)
+            assert len(benchmark.near_queries) == 1
+            assert sum(len(rows) for rows in benchmark.near_relevance.values()) == 1
+            assert near_grade(benchmark, source, target) == 0
+        return
+
+    def test_disjoint_pairs_stay_independent(self, tmp_path):
+        with given("two unrelated pairs of cross-puzzle duplicates"):
+            first, second, third, fourth = val_puzzle_ids(4)
+            write_puzzle_shard(
+                tmp_path / "part.parquet",
+                [
+                    {"puzzle_id": first, "boards": [base_board()]},
+                    {"puzzle_id": second, "boards": [base_board()]},
+                    {
+                        "puzzle_id": third,
+                        "boards": [changed_board(base_board(), THREE_CHANGES)],
+                    },
+                    {
+                        "puzzle_id": fourth,
+                        "boards": [changed_board(base_board(), THREE_CHANGES)],
+                    },
+                ],
+            )
+
+        with when("the benchmark is built"):
+            benchmark = load_benchmark(
+                build_benchmark(make_config(tmp_path, tmp_path / "bench"))
+            )
+
+        with then("each pair becomes exactly one query"):
+            assert len(benchmark.near_queries) == 2
+            assert sum(len(rows) for rows in benchmark.near_relevance.values()) == 2
+            assert (
+                near_grade(
+                    benchmark, index_of(benchmark, first), index_of(benchmark, second)
+                )
+                == 0
+            )
+            assert (
+                near_grade(
+                    benchmark, index_of(benchmark, third), index_of(benchmark, fourth)
+                )
+                == 0
+            )
+        return
+
+
 class TestNearDuplicateRelevance:
     def test_exact_cross_puzzle_duplicate_gets_grade_zero(self, tmp_path):
         with given("the same board in two different validation puzzles"):
@@ -205,8 +310,7 @@ class TestNearDuplicateRelevance:
         with then("the cross-puzzle pair is an exact positive"):
             source = index_of(benchmark, first)
             target = index_of(benchmark, second)
-            assert benchmark.near_relevance[source][target] == 0
-            assert benchmark.near_relevance[target][source] == 0
+            assert near_grade(benchmark, source, target) == 0
         return
 
     def test_same_puzzle_positions_are_never_related(self, tmp_path):
@@ -227,12 +331,15 @@ class TestNearDuplicateRelevance:
             )
 
         with then("no relevance pair links two positions of the same puzzle"):
+            for query, rows in benchmark.near_relevance.items():
+                for candidate in rows:
+                    assert (
+                        benchmark.positions[query].puzzle_id
+                        != benchmark.positions[candidate].puzzle_id
+                    )
             first_zero = index_of(benchmark, first, ply=0)
-            first_one = index_of(benchmark, first, ply=1)
-            assert first_one not in benchmark.near_relevance.get(first_zero, {})
-            assert first_zero not in benchmark.near_relevance.get(first_one, {})
             second_zero = index_of(benchmark, second)
-            assert benchmark.near_relevance[first_zero][second_zero] == 0
+            assert near_grade(benchmark, first_zero, second_zero) == 0
         return
 
     def test_one_square_difference_is_graded_one(self, tmp_path):
@@ -257,7 +364,7 @@ class TestNearDuplicateRelevance:
         with then("the pair is graded as a one-square near duplicate"):
             source = index_of(benchmark, first)
             target = index_of(benchmark, second)
-            assert benchmark.near_relevance[source][target] == 1
+            assert near_grade(benchmark, source, target) == 1
         return
 
     def test_two_square_difference_is_graded_two(self, tmp_path):
@@ -282,7 +389,7 @@ class TestNearDuplicateRelevance:
         with then("the pair is graded as a two-square near duplicate"):
             source = index_of(benchmark, first)
             target = index_of(benchmark, second)
-            assert benchmark.near_relevance[source][target] == 2
+            assert near_grade(benchmark, source, target) == 2
         return
 
     def test_three_square_difference_is_not_relevant(self, tmp_path):
@@ -329,7 +436,7 @@ class TestNearDuplicateRelevance:
         with then("the pair is near but not an exact match"):
             source = index_of(benchmark, first)
             target = index_of(benchmark, second)
-            assert benchmark.near_relevance[source][target] == 1
+            assert near_grade(benchmark, source, target) == 1
         return
 
     def test_unique_positions_do_not_become_queries(self, tmp_path):
@@ -456,6 +563,8 @@ class TestBenchmarkSampling:
             manifest = benchmark.manifest
             assert manifest["seed"] == 5
             assert manifest["near_hamming"] == 2
+            assert manifest["strategic_positives"] == DEFAULT_STRATEGIC_POSITIVES
+            assert manifest["strategic_negatives"] == DEFAULT_STRATEGIC_NEGATIVES
             assert manifest["n_positions"] == len(benchmark.positions)
             assert manifest["n_near_queries"] == len(benchmark.near_queries)
             assert (tmp_path / "bench" / "positions.parquet").exists()
@@ -549,6 +658,10 @@ class TestBuildBenchmarkCli:
                 "5",
                 "--near-hamming",
                 "2",
+                "--strategic-positives",
+                "4",
+                "--strategic-negatives",
+                "6",
                 "--cluster-themes",
                 "rookEndgame,pawnEndgame",
                 "--seed",
@@ -567,6 +680,8 @@ class TestBuildBenchmarkCli:
             assert (output_dir / "manifest.json").exists()
             benchmark = load_benchmark(output_dir)
             assert benchmark.near_queries.size > 0
+            assert benchmark.manifest["strategic_positives"] == 4
+            assert benchmark.manifest["strategic_negatives"] == 6
         return
 
 

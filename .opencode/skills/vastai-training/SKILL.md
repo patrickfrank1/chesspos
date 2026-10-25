@@ -62,7 +62,10 @@ Classifier checkpoints store `encoder_config`/`encoder_state` and
 The benchmark is built once from the puzzle corpus and uploaded to the **same
 dataset repo** that holds the puzzle parquet shards, under
 `benchmarks/retrieval/`. Defaults: 10k positions, 1k queries, cross-puzzle
-exact/near duplicates (grades 0–2) plus theme clusters.
+exact/near duplicates (grades 0–2) plus theme clusters. Strategic queries use
+balanced pools (10 same-theme positives + 490 non-theme negatives each); the
+default cluster list contains the specific endgame types, `promotion`, and
+`zugzwang` — the broad `endgame` phase label (~50% of puzzles) is excluded.
 
 Build and upload (local machine with `uv`; on the box use
 `PYTHONPATH=/workspace/chesspos python3 -m ...` and export `HF_TOKEN` from
@@ -107,6 +110,9 @@ At every epoch with `--retrieval-benchmark` set, training logs and stores in
 the checkpoint: `retrieval_near_recall@1/5/10` (with bootstrap CI),
 `retrieval_near_map`, `retrieval_near_ndcg@*`, `retrieval_strategic_*`,
 `retrieval_rank_effective`, `retrieval_alignment`, `retrieval_uniformity`.
+Strategic metrics use balanced pools per query (default 10 same-theme
+positives + 490 non-theme negatives); per-theme MAP/chance/lift are logged as
+`retrieval_strategic_theme_<theme>_{map,chance_map,map_lift,n_queries}`.
 The classifier encoder is currently frozen, so these numbers stay constant
 within a run; they become meaningful once encoder fine-tuning starts (and are
 still useful as a whitening/normalization baseline).

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import zlib
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Iterable, Iterator, Sequence
@@ -24,7 +25,6 @@ BENCHMARK_SUBDIR = "benchmarks/retrieval"
 BENCHMARK_VERSION = 1
 DEFAULT_KS = (1, 5, 10)
 DEFAULT_CLUSTER_THEMES = (
-    "endgame",
     "rookEndgame",
     "pawnEndgame",
     "queenRookEndgame",
@@ -34,6 +34,8 @@ DEFAULT_CLUSTER_THEMES = (
     "zugzwang",
 )
 MAX_STRATEGIC_QUERIES_PER_THEME = 200
+DEFAULT_STRATEGIC_POSITIVES = 10
+DEFAULT_STRATEGIC_NEGATIVES = 490
 
 
 @dataclass(frozen=True)
@@ -44,6 +46,8 @@ class BenchmarkConfig:
     max_positions: int = 10_000
     max_queries: int = 1_000
     near_hamming: int = 2
+    strategic_positives: int = DEFAULT_STRATEGIC_POSITIVES
+    strategic_negatives: int = DEFAULT_STRATEGIC_NEGATIVES
     cluster_themes: tuple[str, ...] = DEFAULT_CLUSTER_THEMES
     seed: int = 0
 
@@ -56,6 +60,10 @@ class BenchmarkConfig:
             raise ValueError("max_queries must be positive")
         if self.near_hamming < 0:
             raise ValueError("near_hamming must be non-negative")
+        if self.strategic_positives <= 0:
+            raise ValueError("strategic_positives must be positive")
+        if self.strategic_negatives <= 0:
+            raise ValueError("strategic_negatives must be positive")
         return
 
 
@@ -150,6 +158,7 @@ def _mine_near(
 
     query_ids: list[int] = []
     relevance: dict[int, dict[int, int]] = {}
+    claimed: set[tuple[int, int]] = set()
     for query in rng.permutation(len(positions)):
         if len(query_ids) >= max_queries:
             break
@@ -158,12 +167,28 @@ def _mine_near(
         candidates = np.flatnonzero(cross_puzzle & (differences <= near_hamming))
         if candidates.size == 0:
             continue
-        exact = (tokens[candidates] == tokens[query]).all(axis=1)
-        grades = np.maximum(1, differences[candidates]).astype(np.int8)
+        fresh = [
+            int(candidate)
+            for candidate in candidates
+            if (
+                min(int(query), int(candidate)),
+                max(int(query), int(candidate)),
+            )
+            not in claimed
+        ]
+        if not fresh:
+            continue
+        fresh_ids = np.asarray(fresh, dtype=np.int64)
+        exact = (tokens[fresh_ids] == tokens[query]).all(axis=1)
+        grades = np.maximum(1, differences[fresh_ids]).astype(np.int8)
         grades[exact] = 0
         relevance[int(query)] = {
-            int(candidate): int(grade) for candidate, grade in zip(candidates, grades)
+            candidate: int(grade) for candidate, grade in zip(fresh, grades)
         }
+        claimed.update(
+            (min(int(query), candidate), max(int(query), candidate))
+            for candidate in fresh
+        )
         query_ids.append(int(query))
 
     return np.asarray(query_ids, dtype=np.int64), relevance
@@ -316,6 +341,8 @@ def build_benchmark(config: BenchmarkConfig) -> Path:
         "max_positions": config.max_positions,
         "max_queries": config.max_queries,
         "near_hamming": config.near_hamming,
+        "strategic_positives": config.strategic_positives,
+        "strategic_negatives": config.strategic_negatives,
         "cluster_themes": list(config.cluster_themes),
         "n_positions": len(positions),
         "n_near_queries": int(near_queries.size),
@@ -599,39 +626,123 @@ def evaluate_near(
     return metrics
 
 
+def _sample_ids(ids: Sequence[int], count: int, rng: np.random.Generator) -> list[int]:
+    ids = list(ids)
+    if len(ids) <= count:
+        return sorted(ids)
+    order = rng.permutation(len(ids))
+    return [ids[int(index)] for index in order[:count]]
+
+
+def strategic_pool(
+    benchmark: RetrievalBenchmark,
+    theme: str,
+    query: int,
+    positives: int | None = None,
+    negatives: int | None = None,
+) -> tuple[np.ndarray, dict[int, int]]:
+    """Sample a balanced gallery for one strategic query.
+
+    Positives are cross-puzzle positions carrying the theme; negatives are
+    cross-puzzle positions without it. The relevance map uses local pool
+    indices so it can be passed straight to :func:`ranking_metrics`.
+    """
+    query = int(query)
+    if theme not in benchmark.strategic_queries:
+        raise ValueError(f"Theme {theme!r} is not in the benchmark")
+    if theme not in benchmark.positions[query].themes:
+        raise ValueError(f"Position {query} does not carry theme {theme!r}")
+    if positives is None:
+        positives = int(
+            benchmark.manifest.get("strategic_positives", DEFAULT_STRATEGIC_POSITIVES)
+        )
+    if negatives is None:
+        negatives = int(
+            benchmark.manifest.get("strategic_negatives", DEFAULT_STRATEGIC_NEGATIVES)
+        )
+    if positives <= 0 or negatives <= 0:
+        raise ValueError("positives and negatives must be positive")
+
+    query_puzzle = benchmark.positions[query].puzzle_id
+    positive_ids: list[int] = []
+    negative_ids: list[int] = []
+    for index, position in enumerate(benchmark.positions):
+        if position.puzzle_id == query_puzzle:
+            continue
+        if theme in position.themes:
+            positive_ids.append(index)
+        else:
+            negative_ids.append(index)
+
+    seed = int(benchmark.manifest.get("seed", 0))
+    theme_seed = zlib.crc32(theme.encode("utf-8"))
+    rng = np.random.default_rng([seed, theme_seed, query])
+    chosen_positives = _sample_ids(positive_ids, positives, rng)
+    chosen_negatives = _sample_ids(negative_ids, negatives, rng)
+    gallery = np.asarray(chosen_positives + chosen_negatives, dtype=np.int64)
+    relevance = {index: 0 for index in range(len(chosen_positives))}
+    return gallery, relevance
+
+
+def strategic_theme_metrics(
+    benchmark: RetrievalBenchmark,
+    embeddings: np.ndarray,
+    ks: Sequence[int] = DEFAULT_KS,
+) -> dict[str, dict[str, float]]:
+    """Per-theme retrieval metrics over balanced same-theme pools."""
+    normalized = _normalize(embeddings)
+    theme_metrics: dict[str, dict[str, float]] = {}
+    for theme, query_ids in sorted(benchmark.strategic_queries.items()):
+        per_query: list[dict[str, float]] = []
+        chance_values: list[float] = []
+        for query in query_ids:
+            gallery, relevance = strategic_pool(benchmark, theme, int(query))
+            if not relevance or len(relevance) == len(gallery):
+                continue
+            scores = normalized[[int(query)]] @ normalized[gallery].T
+            per_query.append(ranking_metrics(scores, [relevance], ks=ks))
+            chance_values.append(len(relevance) / len(gallery))
+        if not per_query:
+            continue
+        metrics = {
+            key: float(np.mean([row[key] for row in per_query])) for key in per_query[0]
+        }
+        metrics["n_queries"] = len(per_query)
+        metrics["chance_map"] = float(np.mean(chance_values))
+        metrics["map_lift"] = float(metrics["map"] - metrics["chance_map"])
+        theme_metrics[theme] = metrics
+    return theme_metrics
+
+
+def _aggregate_strategic_metrics(
+    per_theme: dict[str, dict[str, float]], ks: Sequence[int]
+) -> dict[str, float]:
+    if not per_theme:
+        metrics = {f"recall@{k}": 0.0 for k in ks}
+        metrics.update({f"ndcg@{k}": 0.0 for k in ks})
+        metrics["map"] = 0.0
+        metrics["coverage"] = 0.0
+        metrics["chance_map"] = 0.0
+        metrics["map_lift"] = 0.0
+        metrics["n_queries"] = 0
+        return metrics
+    keys = next(iter(per_theme.values())).keys()
+    metrics = {
+        key: float(np.mean([theme[key] for theme in per_theme.values()]))
+        for key in keys
+        if key != "n_queries"
+    }
+    metrics["n_queries"] = int(sum(theme["n_queries"] for theme in per_theme.values()))
+    return metrics
+
+
 def evaluate_strategic(
     benchmark: RetrievalBenchmark,
     embeddings: np.ndarray,
     ks: Sequence[int] = DEFAULT_KS,
 ) -> dict[str, float]:
-    gallery_ids = np.arange(len(benchmark.positions))
-    puzzle_ids = [position.puzzle_id for position in benchmark.positions]
-    per_theme: list[dict[str, float]] = []
-    for theme in sorted(benchmark.strategic_queries):
-        query_ids = benchmark.strategic_queries[theme]
-        scores = retrieval_scores(embeddings, query_ids, gallery_ids, puzzle_ids)
-        relevance = [
-            {
-                index: 0
-                for index, position in enumerate(benchmark.positions)
-                if theme in position.themes
-                and position.puzzle_id != benchmark.positions[int(query)].puzzle_id
-            }
-            for query in query_ids
-        ]
-        per_theme.append(ranking_metrics(scores, relevance, ks=ks))
-
-    if not per_theme:
-        metrics = {f"recall@{k}": 0.0 for k in ks}
-        metrics["map"] = 0.0
-        metrics["coverage"] = 0.0
-        return metrics
-
-    keys = per_theme[0].keys()
-    return {
-        key: float(np.mean([theme_metrics[key] for theme_metrics in per_theme]))
-        for key in keys
-    }
+    per_theme = strategic_theme_metrics(benchmark, embeddings, ks=ks)
+    return _aggregate_strategic_metrics(per_theme, ks)
 
 
 def embed_positions(
@@ -681,12 +792,16 @@ def evaluate_retrieval(
         f"near_{key}": value
         for key, value in evaluate_near(benchmark, embeddings, ks=ks).items()
     }
+    theme_metrics = strategic_theme_metrics(benchmark, embeddings, ks=ks)
     metrics.update(
         {
             f"strategic_{key}": value
-            for key, value in evaluate_strategic(benchmark, embeddings, ks=ks).items()
+            for key, value in _aggregate_strategic_metrics(theme_metrics, ks).items()
         }
     )
+    for theme, values in theme_metrics.items():
+        for key in ("map", "chance_map", "map_lift", "n_queries"):
+            metrics[f"strategic_theme_{theme}_{key}"] = values[key]
     metrics["rank_effective"] = effective_rank(embeddings)
     positive_pairs = [
         (int(query), int(candidate))

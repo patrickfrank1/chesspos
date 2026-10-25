@@ -5,6 +5,8 @@ import argparse
 from src.evaluation.retrieval import (
     BENCHMARK_SUBDIR,
     DEFAULT_CLUSTER_THEMES,
+    DEFAULT_STRATEGIC_NEGATIVES,
+    DEFAULT_STRATEGIC_POSITIVES,
     BenchmarkConfig,
     build_benchmark,
     upload_benchmark,
@@ -21,6 +23,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-positions", type=int, default=10_000)
     parser.add_argument("--max-queries", type=int, default=1_000)
     parser.add_argument("--near-hamming", type=int, default=2)
+    parser.add_argument(
+        "--strategic-positives",
+        type=int,
+        default=DEFAULT_STRATEGIC_POSITIVES,
+        help="Same-theme positions sampled per strategic query",
+    )
+    parser.add_argument(
+        "--strategic-negatives",
+        type=int,
+        default=DEFAULT_STRATEGIC_NEGATIVES,
+        help="Non-theme positions sampled per strategic query",
+    )
     parser.add_argument("--cluster-themes", default=",".join(DEFAULT_CLUSTER_THEMES))
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument(
@@ -45,6 +59,8 @@ def main() -> int:
         max_positions=args.max_positions,
         max_queries=args.max_queries,
         near_hamming=args.near_hamming,
+        strategic_positives=args.strategic_positives,
+        strategic_negatives=args.strategic_negatives,
         cluster_themes=cluster_themes,
         seed=args.seed,
     )
