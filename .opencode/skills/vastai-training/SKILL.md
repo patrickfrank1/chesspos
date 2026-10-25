@@ -154,6 +154,16 @@ that `train_epoch(...)` is called with `focal=focal`.
 Use the watchdog below; the trainer supports `--resume` from `last.pt`, which
 makes crash-looping self-healing.
 
+Base-training objectives (standalone `train_masked_transformer.py`):
+rectangle masking is the default (`--p-rect 1.0`, 30–50% of squares, same
+squares across the window's segments); geometry is on by default
+(`--inv-weight 0.1 --var-weight 0.1 --cov-weight 0.01`) and InfoNCE is off
+(`--nce-weight 0`). `--aux-warmup N` ramps the auxiliary weights; set the
+geometry weights to zero for the MLM-only baseline. The loop logs `mlm_loss`,
+`inv_loss`, `var_loss`, `cov_loss`, `nce_loss`, `token_rank_effective`, and
+with `--retrieval-benchmark <repo> --retrieval-benchmark-revision main`,
+`retrieval_*`. Ray training (`train_ray.py`) still runs the old MLM-only loop.
+
 ## 2. Launching
 
 Keep long-lived commands detached and redirect all stdio:

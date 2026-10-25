@@ -69,6 +69,7 @@ def build_mode_pattern(masking: MaskingConfig, period: int = 20) -> list[str]:
         "random": masking.p_random,
         "board": masking.p_board,
         "span": masking.p_span,
+        "rect": masking.p_rect,
     }
     total = sum(probs.values())
     if total <= 0:
@@ -81,7 +82,7 @@ def build_mode_pattern(masking: MaskingConfig, period: int = 20) -> list[str]:
         counts[order[fill % len(order)]] += 1
         fill += 1
     pattern: list[str] = []
-    for mode in ("random", "board", "span"):
+    for mode in ("random", "board", "span", "rect"):
         pattern.extend([mode] * counts[mode])
     return pattern
 

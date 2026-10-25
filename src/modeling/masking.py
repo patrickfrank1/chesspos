@@ -23,16 +23,34 @@ class MaskingConfig:
     p_random: float = 0.45
     p_board: float = 0.30
     p_span: float = 0.25
+    p_rect: float = 0.0
     random_rate: float = 0.15
     mask_replace_prob: float = 0.8
     random_replace_prob: float = 0.1
     min_span: int = 2
     max_span: int = 4
     board_span: int = 4
+    rect_min_rate: float = 0.30
+    rect_max_rate: float = 0.50
+    rect_min_side: int = 2
+    rect_max_side: int = 4
+    rect_synchronize: bool = True
     min_context_segments: int = 8
     mode_weights: dict[str, float] = field(
-        default_factory=lambda: {"random": 1.0, "board": 2.0, "span": 2.0}
+        default_factory=lambda: {
+            "random": 1.0,
+            "board": 2.0,
+            "span": 2.0,
+            "rect": 1.0,
+        }
     )
+
+    def __post_init__(self):
+        if not 0 < self.rect_min_rate <= self.rect_max_rate < 1:
+            raise ValueError("rectangle mask rates must satisfy 0 < min <= max < 1")
+        if not 1 <= self.rect_min_side <= self.rect_max_side <= 8:
+            raise ValueError("rectangle sides must satisfy 1 <= min <= max <= 8")
+        return
 
 
 TOKEN_CLASS_RANGES = (
@@ -87,8 +105,10 @@ def mask_stream(
         positions = _random_mode(tokens, bounds, config, rng)
     elif mode == "board":
         positions = _board_mode(bounds, config, rng)
-    else:
+    elif mode == "span":
         positions = _span_mode(bounds, config, rng)
+    else:
+        positions = _rect_mode(bounds, config, rng)
 
     for pos in positions:
         original = int(tokens[pos])
@@ -105,12 +125,21 @@ def mask_stream(
 
 
 def _draw_mode(config: MaskingConfig, rng: np.random.Generator) -> str:
-    u = rng.random()
-    if u < config.p_random:
+    modes = (
+        ("random", config.p_random),
+        ("board", config.p_board),
+        ("span", config.p_span),
+        ("rect", config.p_rect),
+    )
+    total = sum(weight for _, weight in modes)
+    if total <= 0:
         return "random"
-    if u < config.p_random + config.p_board:
-        return "board"
-    return "span"
+    u = rng.random() * total
+    for mode, weight in modes:
+        if u < weight:
+            return mode
+        u -= weight
+    return "rect"
 
 
 def _random_mode(
@@ -153,4 +182,56 @@ def _span_mode(
     for i in range(start_idx, start_idx + span):
         start, end = bounds[i]
         positions.extend(range(start, end))
+    return positions
+
+
+def _sample_rect_mask(config: MaskingConfig, rng: np.random.Generator) -> np.ndarray:
+    """Sample a per-board boolean mask covering 30-50% of the 64 squares."""
+    rate = float(rng.uniform(config.rect_min_rate, config.rect_max_rate))
+    target = max(1, min(64, int(round(rate * 64))))
+    mask = np.zeros(64, dtype=bool)
+    attempts = 0
+    while int(mask.sum()) < target and attempts < 200:
+        attempts += 1
+        height = min(
+            8, int(rng.integers(config.rect_min_side, config.rect_max_side + 1))
+        )
+        width = min(
+            8, int(rng.integers(config.rect_min_side, config.rect_max_side + 1))
+        )
+        row = int(rng.integers(0, 8 - height + 1))
+        column = int(rng.integers(0, 8 - width + 1))
+        reached = False
+        for square_row in range(row, row + height):
+            start = square_row * 8 + column
+            for square in range(start, start + width):
+                if int(mask.sum()) >= target:
+                    reached = True
+                    break
+                mask[square] = True
+            if reached:
+                break
+    return mask
+
+
+def _rect_mode(
+    bounds: list[tuple[int, int]],
+    config: MaskingConfig,
+    rng: np.random.Generator,
+) -> list[int]:
+    """Mask board rectangles, optionally the same squares in every segment.
+
+    Synchronizing the square set across segments prevents the model from
+    copying the masked squares out of an adjacent (near-identical) position.
+    The three state tokens (turn/castling/en-passant) are left unmasked.
+    """
+    if config.rect_synchronize:
+        masks = [_sample_rect_mask(config, rng)] * len(bounds)
+    else:
+        masks = [_sample_rect_mask(config, rng) for _ in bounds]
+    positions: list[int] = []
+    for (start, end), mask in zip(bounds, masks):
+        board_len = min(64, end - start)
+        for square in np.flatnonzero(mask[:board_len]):
+            positions.append(start + int(square))
     return positions
