@@ -50,7 +50,9 @@ def tiny_batch() -> dict[str, torch.Tensor]:
         segments.append(encoder.encode(board))
         board.push(list(board.legal_moves)[0])
     tokens = pack_stream(segments)
-    masking = MaskingConfig(p_rect=1.0, p_random=0.0, p_board=0.0, p_span=0.0)
+    masking = MaskingConfig(
+        p_rect=1.0, p_random=0.0, p_board=0.0, p_span=0.0, p_skip_gram=0.0
+    )
     masked, targets, weights = mask_stream(tokens, masking, np.random.default_rng(0))
     segment_ids = np.cumsum(masked == SEP)
     return {

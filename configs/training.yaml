@@ -25,14 +25,14 @@ training:
 
   # Harder MLM: rectangle masking over 30-50% of squares, synchronized across
   # the window's segments so adjacent positions cannot reveal masked squares.
-  p_rect: 1.0
+  p_rect: 0.8
   p_random: 0.0
   p_board: 0.0
   p_span: 0.0
-  # Optional skip-gram ablation: leave only a small fraction of whole boards
-  # visible and mask every token of the rest. Enabling it disables rect unless
-  # p_rect is set explicitly.
-  p_skip_gram: 0.0
+  # Default mixture: 80% rectangle + 20% skip-gram. Skip-gram leaves only a
+  # small fraction of whole boards visible and masks every token of the rest.
+  # Set both explicitly for a custom mix; setting one zeroes the other.
+  p_skip_gram: 0.2
   skip_gram_unmask_rate: 0.10   # must be < 0.30
   rect_min_rate: 0.30
   rect_max_rate: 0.50

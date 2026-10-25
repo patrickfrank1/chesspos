@@ -53,11 +53,11 @@ class TestResolveConfig:
             assert config.dropout == 0.1
             assert config.max_seq_len == 2048
             assert config.max_segments == 128
-            assert config.p_rect == 1.0
+            assert config.p_rect == 0.8
             assert config.p_random == 0.0
             assert config.p_board == 0.0
             assert config.p_span == 0.0
-            assert config.p_skip_gram == 0.0
+            assert config.p_skip_gram == 0.2
             assert config.skip_gram_unmask_rate == 0.10
             assert config.inv_weight == 0.1
             assert config.var_weight == 0.1
@@ -93,7 +93,8 @@ class TestResolveConfig:
             losses = config.auxiliary_config()
 
         with then("rectangle masking and VICReg are on, InfoNCE is off"):
-            assert masking.p_rect == 1.0
+            assert masking.p_rect == 0.8
+            assert masking.p_skip_gram == 0.2
             assert masking.p_random == 0.0
             assert masking.rect_synchronize is True
             assert losses.inv_weight == 0.1
@@ -115,6 +116,30 @@ class TestResolveConfig:
             assert config.masking_config().skip_gram_unmask_rate == 0.10
         return
 
+    def test_explicit_rect_skip_gram_mixture_is_preserved(self):
+        with given("explicit mixture CLI flags"):
+            args = parse_args(["--p-rect", "0.8", "--p-skip-gram", "0.2"])
+
+        with when("the config is resolved"):
+            config = resolve_config(args)
+
+        with then("both weights are kept"):
+            assert config.p_rect == 0.8
+            assert config.p_skip_gram == 0.2
+        return
+
+    def test_explicit_rect_disables_skip_gram(self):
+        with given("only an explicit rectangle weight"):
+            args = parse_args(["--p-rect", "1"])
+
+        with when("the config is resolved"):
+            config = resolve_config(args)
+
+        with then("skip-gram is off"):
+            assert config.p_rect == 1.0
+            assert config.p_skip_gram == 0.0
+        return
+
     def test_legacy_masking_flag_disables_rect(self):
         with given("a legacy board-masking CLI flag without --p-rect"):
             args = parse_args(["--p-board", "1"])
@@ -122,9 +147,10 @@ class TestResolveConfig:
         with when("the config is resolved"):
             config = resolve_config(args)
 
-        with then("rectangle masking is automatically disabled"):
+        with then("rectangle and skip-gram masking are automatically disabled"):
             assert config.p_board == 1.0
             assert config.p_rect == 0.0
+            assert config.p_skip_gram == 0.0
         return
 
     def test_loss_flags_override(self):

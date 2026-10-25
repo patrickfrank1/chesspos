@@ -93,8 +93,8 @@ class RayTrainingConfig:
     p_random: float = 0.0
     p_board: float = 0.0
     p_span: float = 0.0
-    p_rect: float = 1.0
-    p_skip_gram: float = 0.0
+    p_rect: float = 0.8
+    p_skip_gram: float = 0.2
     skip_gram_unmask_rate: float = 0.10
     rect_min_rate: float = 0.30
     rect_max_rate: float = 0.50
@@ -219,11 +219,13 @@ def resolve_config(args) -> RayTrainingConfig:
         values["full_eval"] = True
     if values.get("compile") is None:
         values["compile"] = False
-    if "p_rect" not in values and any(
-        values.get(name, 0.0)
-        for name in ("p_random", "p_board", "p_span", "p_skip_gram")
-    ):
+    legacy = any(values.get(name, 0.0) for name in ("p_random", "p_board", "p_span"))
+    explicit_rect = "p_rect" in values
+    explicit_skip = "p_skip_gram" in values
+    if not explicit_rect and (legacy or explicit_skip):
         values["p_rect"] = 0.0
+    if not explicit_skip and (legacy or explicit_rect):
+        values["p_skip_gram"] = 0.0
     return RayTrainingConfig.from_dict(values)
 
 
@@ -509,6 +511,12 @@ def train_loop_per_worker(config: dict) -> None:
         )
     target_generator = torch.Generator(device=device).manual_seed(cfg.seed)
     if world_rank == 0:
+        log(
+            "masking weights: "
+            f"rect={cfg.p_rect:.2f} skip_gram={cfg.p_skip_gram:.2f} "
+            f"random={cfg.p_random:.2f} board={cfg.p_board:.2f} "
+            f"span={cfg.p_span:.2f}"
+        )
         log(
             "loss weights: "
             f"mlm={loss_config.mlm_weight:.3f} inv={loss_config.inv_weight:.3f} "

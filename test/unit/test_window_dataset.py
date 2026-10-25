@@ -358,16 +358,17 @@ class TestNestedArchiveLayout:
 
 
 class TestModeAssignment:
-    def test_default_mode_pattern_is_rectangle_only(self):
+    def test_default_mode_pattern_is_the_rect_skip_gram_mixture(self):
         with given("the default masking config"):
             masking = MaskingConfig()
 
         with when("the mode pattern is built"):
             pattern = build_mode_pattern(masking)
 
-        with then("every slot selects rectangle masking"):
+        with then("the period-20 pattern is 16 rect and 4 skip-gram"):
             assert len(pattern) == 20
-            assert set(pattern) == {"rect"}
+            assert pattern.count("rect") == 16
+            assert pattern.count("skip_gram") == 4
         return
 
     def test_mode_pattern_reflects_explicit_probabilities(self):
@@ -377,6 +378,7 @@ class TestModeAssignment:
                 p_board=0.30,
                 p_span=0.25,
                 p_rect=0.0,
+                p_skip_gram=0.0,
             )
 
         with when("the mode pattern is built"):
@@ -391,7 +393,13 @@ class TestModeAssignment:
 
     def test_mode_pattern_single_mode(self):
         with given("a one-hot board masking config as used by the eval suite"):
-            masking = MaskingConfig(p_random=0.0, p_board=1.0, p_span=0.0, p_rect=0.0)
+            masking = MaskingConfig(
+                p_random=0.0,
+                p_board=1.0,
+                p_span=0.0,
+                p_rect=0.0,
+                p_skip_gram=0.0,
+            )
 
         with when("the mode pattern is built"):
             pattern = build_mode_pattern(masking)
@@ -446,14 +454,14 @@ class TestModeAssignment:
                 assert np.all(sample["weights"][masked] == 1.0)
         return
 
-    def test_default_balanced_modes_use_rectangle_weights(self, data_dir):
+    def test_default_balanced_modes_use_unit_weights(self, data_dir):
         with given("a default-mode dataset over 20 games"):
             dataset = WindowDataset(config(data_dir, seed=8, max_seq_len=2048))
 
         with when("the first 20 windows are sampled"):
             samples = [dataset[index] for index in range(20)]
 
-        with then("every window carries the rectangle-mode weight"):
+        with then("every window carries a unit mode weight"):
             for sample in samples:
                 masked = sample["targets"] != IGNORE_INDEX
                 assert masked.any()
@@ -472,6 +480,7 @@ class TestModeAssignment:
                         p_board=0.30,
                         p_span=0.25,
                         p_rect=0.0,
+                        p_skip_gram=0.0,
                     ),
                 )
             )

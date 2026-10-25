@@ -105,11 +105,11 @@ class TestStreamingFlag:
 
         with then("rectangle masking is the default and legacy modes are off"):
             reference = MaskingConfig()
-            assert config.p_rect == 1.0
+            assert config.p_rect == 0.8
             assert config.p_random == 0.0
             assert config.p_board == 0.0
             assert config.p_span == 0.0
-            assert config.p_skip_gram == 0.0
+            assert config.p_skip_gram == 0.2
             assert config.skip_gram_unmask_rate == reference.skip_gram_unmask_rate
             assert config.rect_min_rate == reference.rect_min_rate
             assert config.rect_max_rate == reference.rect_max_rate
@@ -154,6 +154,44 @@ class TestStreamingFlag:
 
         with then("the rate override is carried"):
             assert config.skip_gram_unmask_rate == 0.2
+        return
+
+    def test_explicit_rect_skip_gram_mixture_is_preserved(self, monkeypatch):
+        with given("explicit mixture weights"):
+            monkeypatch.setattr(
+                "sys.argv",
+                [
+                    "train_masked_transformer",
+                    "--p-rect",
+                    "0.8",
+                    "--p-skip-gram",
+                    "0.2",
+                ],
+            )
+            args = parse_args()
+
+        with when("the masking config is built"):
+            config = masking_config(args)
+
+        with then("both weights are kept"):
+            assert config.p_rect == 0.8
+            assert config.p_skip_gram == 0.2
+        return
+
+    def test_explicit_rect_disables_skip_gram(self, monkeypatch):
+        with given("only an explicit rectangle weight"):
+            monkeypatch.setattr(
+                "sys.argv",
+                ["train_masked_transformer", "--p-rect", "1.0"],
+            )
+            args = parse_args()
+
+        with when("the masking config is built"):
+            config = masking_config(args)
+
+        with then("skip-gram is off"):
+            assert config.p_rect == 1.0
+            assert config.p_skip_gram == 0.0
         return
 
     def test_rectangle_mask_flags_override(self, monkeypatch):
@@ -321,5 +359,6 @@ class TestRetrievalFlags:
             assert config.p_board == 0.30
             assert config.p_span == 0.45
             assert config.p_rect == 0.0
+            assert config.p_skip_gram == 0.0
             assert config.random_replace_prob == MaskingConfig().random_replace_prob
         return

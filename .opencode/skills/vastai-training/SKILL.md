@@ -155,14 +155,17 @@ Use the watchdog below; the trainer supports `--resume` from `last.pt`, which
 makes crash-looping self-healing.
 
 Base-training objectives (standalone `train_masked_transformer.py`):
-rectangle masking is the default (`--p-rect 1.0`, 30–50% of squares, same
-squares across the window's segments); geometry is on by default
+the default is a masking mixture of 80% rectangle masking (`--p-rect 0.8`,
+30–50% of squares, same squares across the window's segments) and 20%
+skip-gram masking (`--p-skip-gram 0.2`), which leaves only
+`--skip-gram-unmask-rate` (default 0.10, must be <0.30) of whole boards
+visible and masks every token of the rest. Geometry is on by default
 (`--inv-weight 0.1 --var-weight 0.1 --cov-weight 0.01`) and InfoNCE is off
-(`--nce-weight 0`). A skip-gram ablation (`--p-skip-gram 1.0`, which
-auto-disables rect) leaves only `--skip-gram-unmask-rate` (default 0.10,
-must be <0.30) of whole boards visible and masks every token of the rest.
-`--aux-warmup N` ramps the auxiliary weights; set the geometry weights to
-zero for the MLM-only baseline. The loop logs `mlm_loss`,
+(`--nce-weight 0`). Setting only one of p_rect/p_skip_gram zeroes the other
+(use both for a custom mix); legacy random/board/span flags zero both.
+Rect-only: `--p-rect 1 --p-skip-gram 0`; skip-only:
+`--p-rect 0 --p-skip-gram 1`. `--aux-warmup N` ramps the auxiliary weights;
+set the geometry weights to zero for the MLM-only baseline. The loop logs `mlm_loss`,
 `inv_loss`, `var_loss`, `cov_loss`, `nce_loss`, `token_rank_effective`, and
 with `--retrieval-benchmark <repo> --retrieval-benchmark-revision main`,
 `retrieval_*`. Ray training (`train_ray.py`) exposes the same masking/loss

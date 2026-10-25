@@ -30,6 +30,7 @@ def rectangle_config(**kwargs) -> MaskingConfig:
         p_board=0.0,
         p_span=0.0,
         p_rect=1.0,
+        p_skip_gram=0.0,
         rect_min_rate=0.30,
         rect_max_rate=0.30,
     )

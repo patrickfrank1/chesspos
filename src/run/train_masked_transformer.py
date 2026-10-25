@@ -234,9 +234,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--p-skip-gram",
         type=float,
-        default=0.0,
-        help="Probability weight for skip-gram style masking: hide all but a "
-        "small fraction of whole boards",
+        default=None,
+        help="Probability weight for skip-gram style masking (default 0.2); "
+        "hide all but a small fraction of whole boards",
     )
     parser.add_argument(
         "--skip-gram-unmask-rate",
@@ -262,16 +262,39 @@ def parse_args() -> argparse.Namespace:
 
 
 def masking_config(args: argparse.Namespace) -> MaskingConfig:
-    """Build the MaskingConfig implied by the parsed masking args."""
-    if args.p_rect is None:
-        alternate = args.p_random or args.p_board or args.p_span or args.p_skip_gram
-        args.p_rect = 0.0 if alternate else 1.0
+    """Build the MaskingConfig implied by the parsed masking args.
+
+    Defaults are the rect/skip-gram mixture. Setting either p_rect or
+    p_skip_gram explicitly zeroes the other unless both are provided; legacy
+    modes (random/board/span) zero both when selected on their own.
+    """
+    defaults = MaskingConfig()
+    explicit_rect = args.p_rect is not None
+    explicit_skip = args.p_skip_gram is not None
+    legacy = bool(args.p_random or args.p_board or args.p_span)
+
+    if explicit_rect:
+        p_rect = args.p_rect
+    elif legacy or explicit_skip:
+        p_rect = 0.0
+    else:
+        p_rect = defaults.p_rect
+
+    if explicit_skip:
+        p_skip_gram = args.p_skip_gram
+    elif legacy or explicit_rect:
+        p_skip_gram = 0.0
+    else:
+        p_skip_gram = defaults.p_skip_gram
+
+    args.p_rect = p_rect
+    args.p_skip_gram = p_skip_gram
     return MaskingConfig(
         p_random=args.p_random,
         p_board=args.p_board,
         p_span=args.p_span,
-        p_rect=args.p_rect,
-        p_skip_gram=args.p_skip_gram,
+        p_rect=p_rect,
+        p_skip_gram=p_skip_gram,
         rect_min_rate=args.rect_min_rate,
         rect_max_rate=args.rect_max_rate,
         rect_min_side=args.rect_min_side,
@@ -541,6 +564,12 @@ def main() -> None:
     start = time.time()
     loss_config = auxiliary_config(args)
     target_generator = torch.Generator(device=device).manual_seed(args.seed)
+    log(
+        "masking weights: "
+        f"rect={args.p_rect:.2f} skip_gram={args.p_skip_gram:.2f} "
+        f"random={args.p_random:.2f} board={args.p_board:.2f} "
+        f"span={args.p_span:.2f}"
+    )
     log(
         "loss weights: "
         f"mlm={loss_config.mlm_weight:.3f} inv={loss_config.inv_weight:.3f} "

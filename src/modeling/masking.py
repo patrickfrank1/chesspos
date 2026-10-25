@@ -23,8 +23,8 @@ class MaskingConfig:
     p_random: float = 0.0
     p_board: float = 0.0
     p_span: float = 0.0
-    p_rect: float = 1.0
-    p_skip_gram: float = 0.0
+    p_rect: float = 0.8
+    p_skip_gram: float = 0.2
     random_rate: float = 0.15
     mask_replace_prob: float = 0.8
     random_replace_prob: float = 0.1
