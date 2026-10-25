@@ -109,11 +109,51 @@ class TestStreamingFlag:
             assert config.p_random == 0.0
             assert config.p_board == 0.0
             assert config.p_span == 0.0
+            assert config.p_skip_gram == 0.0
+            assert config.skip_gram_unmask_rate == reference.skip_gram_unmask_rate
             assert config.rect_min_rate == reference.rect_min_rate
             assert config.rect_max_rate == reference.rect_max_rate
             assert config.rect_min_side == reference.rect_min_side
             assert config.rect_max_side == reference.rect_max_side
             assert config.rect_synchronize is True
+        return
+
+    def test_skip_gram_flag_disables_rect(self, monkeypatch):
+        with given("skip-gram masking enabled without an explicit p_rect"):
+            monkeypatch.setattr(
+                "sys.argv",
+                ["train_masked_transformer", "--p-skip-gram", "1.0"],
+            )
+            args = parse_args()
+
+        with when("the masking config is built"):
+            config = masking_config(args)
+
+        with then("skip-gram is selected and rectangle masking is off"):
+            assert config.p_skip_gram == 1.0
+            assert config.p_rect == 0.0
+            assert config.skip_gram_unmask_rate == 0.10
+        return
+
+    def test_skip_gram_rate_override(self, monkeypatch):
+        with given("an explicit skip-gram visible rate"):
+            monkeypatch.setattr(
+                "sys.argv",
+                [
+                    "train_masked_transformer",
+                    "--p-skip-gram",
+                    "1.0",
+                    "--skip-gram-unmask-rate",
+                    "0.2",
+                ],
+            )
+            args = parse_args()
+
+        with when("the masking config is built"):
+            config = masking_config(args)
+
+        with then("the rate override is carried"):
+            assert config.skip_gram_unmask_rate == 0.2
         return
 
     def test_rectangle_mask_flags_override(self, monkeypatch):

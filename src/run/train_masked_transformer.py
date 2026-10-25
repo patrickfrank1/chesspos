@@ -231,6 +231,19 @@ def parse_args() -> argparse.Namespace:
         dest="rect_synchronize",
         help="Mask independent rectangles per segment instead of the same squares",
     )
+    parser.add_argument(
+        "--p-skip-gram",
+        type=float,
+        default=0.0,
+        help="Probability weight for skip-gram style masking: hide all but a "
+        "small fraction of whole boards",
+    )
+    parser.add_argument(
+        "--skip-gram-unmask-rate",
+        type=float,
+        default=_masking_defaults.skip_gram_unmask_rate,
+        help="Fraction of boards left visible in skip-gram mode (must be < 0.30)",
+    )
     parser.add_argument("--mlm-weight", type=float, default=1.0)
     parser.add_argument("--inv-weight", type=float, default=0.1)
     parser.add_argument("--var-weight", type=float, default=0.1)
@@ -251,17 +264,20 @@ def parse_args() -> argparse.Namespace:
 def masking_config(args: argparse.Namespace) -> MaskingConfig:
     """Build the MaskingConfig implied by the parsed masking args."""
     if args.p_rect is None:
-        args.p_rect = 0.0 if (args.p_random or args.p_board or args.p_span) else 1.0
+        alternate = args.p_random or args.p_board or args.p_span or args.p_skip_gram
+        args.p_rect = 0.0 if alternate else 1.0
     return MaskingConfig(
         p_random=args.p_random,
         p_board=args.p_board,
         p_span=args.p_span,
         p_rect=args.p_rect,
+        p_skip_gram=args.p_skip_gram,
         rect_min_rate=args.rect_min_rate,
         rect_max_rate=args.rect_max_rate,
         rect_min_side=args.rect_min_side,
         rect_max_side=args.rect_max_side,
         rect_synchronize=args.rect_synchronize,
+        skip_gram_unmask_rate=args.skip_gram_unmask_rate,
     )
 
 

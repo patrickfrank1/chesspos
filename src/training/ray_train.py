@@ -94,6 +94,8 @@ class RayTrainingConfig:
     p_board: float = 0.0
     p_span: float = 0.0
     p_rect: float = 1.0
+    p_skip_gram: float = 0.0
+    skip_gram_unmask_rate: float = 0.10
     rect_min_rate: float = 0.30
     rect_max_rate: float = 0.50
     rect_min_side: int = 2
@@ -147,11 +149,13 @@ class RayTrainingConfig:
             p_board=self.p_board,
             p_span=self.p_span,
             p_rect=self.p_rect,
+            p_skip_gram=self.p_skip_gram,
             rect_min_rate=self.rect_min_rate,
             rect_max_rate=self.rect_max_rate,
             rect_min_side=self.rect_min_side,
             rect_max_side=self.rect_max_side,
             rect_synchronize=self.rect_synchronize,
+            skip_gram_unmask_rate=self.skip_gram_unmask_rate,
         )
 
     def auxiliary_config(self) -> AuxiliaryLossConfig:
@@ -216,7 +220,8 @@ def resolve_config(args) -> RayTrainingConfig:
     if values.get("compile") is None:
         values["compile"] = False
     if "p_rect" not in values and any(
-        values.get(name, 0.0) for name in ("p_random", "p_board", "p_span")
+        values.get(name, 0.0)
+        for name in ("p_random", "p_board", "p_span", "p_skip_gram")
     ):
         values["p_rect"] = 0.0
     return RayTrainingConfig.from_dict(values)

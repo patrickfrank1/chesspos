@@ -57,6 +57,8 @@ class TestResolveConfig:
             assert config.p_random == 0.0
             assert config.p_board == 0.0
             assert config.p_span == 0.0
+            assert config.p_skip_gram == 0.0
+            assert config.skip_gram_unmask_rate == 0.10
             assert config.inv_weight == 0.1
             assert config.var_weight == 0.1
             assert config.cov_weight == 0.01
@@ -98,6 +100,19 @@ class TestResolveConfig:
             assert losses.var_weight == 0.1
             assert losses.cov_weight == 0.01
             assert losses.nce_weight == 0.0
+        return
+
+    def test_skip_gram_flag_disables_rect(self):
+        with given("a skip-gram CLI flag without --p-rect"):
+            args = parse_args(["--p-skip-gram", "1"])
+
+        with when("the config is resolved"):
+            config = resolve_config(args)
+
+        with then("rectangle masking is automatically disabled"):
+            assert config.p_skip_gram == 1.0
+            assert config.p_rect == 0.0
+            assert config.masking_config().skip_gram_unmask_rate == 0.10
         return
 
     def test_legacy_masking_flag_disables_rect(self):

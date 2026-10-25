@@ -24,6 +24,7 @@ class MaskingConfig:
     p_board: float = 0.0
     p_span: float = 0.0
     p_rect: float = 1.0
+    p_skip_gram: float = 0.0
     random_rate: float = 0.15
     mask_replace_prob: float = 0.8
     random_replace_prob: float = 0.1
@@ -35,6 +36,7 @@ class MaskingConfig:
     rect_min_side: int = 2
     rect_max_side: int = 4
     rect_synchronize: bool = True
+    skip_gram_unmask_rate: float = 0.10
     min_context_segments: int = 8
     mode_weights: dict[str, float] = field(
         default_factory=lambda: {
@@ -42,6 +44,7 @@ class MaskingConfig:
             "board": 2.0,
             "span": 2.0,
             "rect": 1.0,
+            "skip_gram": 1.0,
         }
     )
 
@@ -50,6 +53,8 @@ class MaskingConfig:
             raise ValueError("rectangle mask rates must satisfy 0 < min <= max < 1")
         if not 1 <= self.rect_min_side <= self.rect_max_side <= 8:
             raise ValueError("rectangle sides must satisfy 1 <= min <= max <= 8")
+        if not 0 < self.skip_gram_unmask_rate < 0.30:
+            raise ValueError("skip_gram_unmask_rate must satisfy 0 < rate < 0.30")
         return
 
 
@@ -98,7 +103,9 @@ def mask_stream(
 
     if mode is None:
         mode = _draw_mode(config, rng)
-    if mode in ("board", "span") and len(bounds) < config.min_context_segments:
+    if mode in ("board", "span", "skip_gram") and (
+        len(bounds) < config.min_context_segments
+    ):
         mode = "random"
 
     if mode == "random":
@@ -107,8 +114,10 @@ def mask_stream(
         positions = _board_mode(bounds, config, rng)
     elif mode == "span":
         positions = _span_mode(bounds, config, rng)
-    else:
+    elif mode == "rect":
         positions = _rect_mode(bounds, config, rng)
+    else:
+        positions = _skip_gram_mode(bounds, config, rng)
 
     for pos in positions:
         original = int(tokens[pos])
@@ -130,6 +139,7 @@ def _draw_mode(config: MaskingConfig, rng: np.random.Generator) -> str:
         ("board", config.p_board),
         ("span", config.p_span),
         ("rect", config.p_rect),
+        ("skip_gram", config.p_skip_gram),
     )
     total = sum(weight for _, weight in modes)
     if total <= 0:
@@ -212,6 +222,34 @@ def _sample_rect_mask(config: MaskingConfig, rng: np.random.Generator) -> np.nda
             if reached:
                 break
     return mask
+
+
+def _skip_gram_mode(
+    bounds: list[tuple[int, int]],
+    config: MaskingConfig,
+    rng: np.random.Generator,
+) -> list[int]:
+    """Mask whole boards except a small visible fraction.
+
+    The visible boards are chosen at random; every token of the remaining
+    boards (including turn/castling/en-passant) becomes an MLM target. This
+    forces the model to reconstruct boards across the window instead of
+    copying them from a near-identical neighbour.
+    """
+    count = len(bounds)
+    if count <= 1:
+        return []
+    visible = max(
+        1,
+        min(count - 1, int(config.skip_gram_unmask_rate * count)),
+    )
+    visible_indices = set(rng.choice(count, size=visible, replace=False).tolist())
+    positions: list[int] = []
+    for index, (start, end) in enumerate(bounds):
+        if index in visible_indices:
+            continue
+        positions.extend(range(start, end))
+    return positions
 
 
 def _rect_mode(

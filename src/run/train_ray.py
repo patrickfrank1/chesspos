@@ -91,6 +91,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--p-board", dest="p_board", type=float, default=None)
     parser.add_argument("--p-span", dest="p_span", type=float, default=None)
     parser.add_argument("--p-rect", dest="p_rect", type=float, default=None)
+    parser.add_argument("--p-skip-gram", dest="p_skip_gram", type=float, default=None)
+    parser.add_argument(
+        "--skip-gram-unmask-rate",
+        dest="skip_gram_unmask_rate",
+        type=float,
+        default=None,
+    )
     parser.add_argument(
         "--rect-min-rate", dest="rect_min_rate", type=float, default=None
     )
