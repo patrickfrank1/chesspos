@@ -27,6 +27,8 @@ from ray.train.torch import TorchTrainer
 from torch.utils.data import DataLoader
 
 from src.evaluation.eval_suite import full_eval
+from src.evaluation.retrieval import evaluate_retrieval, load_benchmark
+from src.modeling.masking import MaskingConfig
 from src.modeling.transformer import MaskedStreamTransformer, TransformerConfig
 from src.training.checkpoint_hub import (
     build_metadata,
@@ -40,9 +42,11 @@ from src.training.loop import (
     lr_lambda,
     make_logger,
     save_checkpoint,
+    token_effective_rank,
     write_eval_artifacts,
 )
 from src.training.mlflow_tracker import MLflowTracker, resolve_tracking_uri
+from src.training.objectives import AuxiliaryLossConfig, compute_training_loss
 from src.training.window_dataset import (
     WindowDataset,
     WindowDatasetConfig,
@@ -86,6 +90,30 @@ class RayTrainingConfig:
     dropout: float = 0.1
     max_seq_len: int = 2048
     max_segments: int = 128
+    p_random: float = 0.0
+    p_board: float = 0.0
+    p_span: float = 0.0
+    p_rect: float = 0.8
+    p_skip_gram: float = 0.2
+    skip_gram_unmask_rate: float = 0.10
+    rect_min_rate: float = 0.30
+    rect_max_rate: float = 0.50
+    rect_min_side: int = 2
+    rect_max_side: int = 4
+    rect_synchronize: bool = True
+    mlm_weight: float = 1.0
+    inv_weight: float = 0.5
+    var_weight: float = 1.0
+    cov_weight: float = 0.1
+    nce_weight: float = 0.1
+    nce_temperature: float = 0.1
+    vicreg_gamma: float = 1.0
+    vicreg_eps: float = 1e-4
+    aux_warmup: int = 200
+    retrieval_benchmark: str | None = None
+    retrieval_benchmark_revision: str | None = None
+    retrieval_batch_size: int = 128
+    token_rank_tokens: int = 4096
     dataloader_workers: int = 4
     log_every: int = 20
     eval_every: int = 1_000
@@ -113,6 +141,36 @@ class RayTrainingConfig:
     def to_dict(self) -> dict:
         """Return the config as a plain dict (e.g. for ``train_loop_config``)."""
         return asdict(self)
+
+    def masking_config(self) -> MaskingConfig:
+        """Build the masking config for train and validation windows."""
+        return MaskingConfig(
+            p_random=self.p_random,
+            p_board=self.p_board,
+            p_span=self.p_span,
+            p_rect=self.p_rect,
+            p_skip_gram=self.p_skip_gram,
+            rect_min_rate=self.rect_min_rate,
+            rect_max_rate=self.rect_max_rate,
+            rect_min_side=self.rect_min_side,
+            rect_max_side=self.rect_max_side,
+            rect_synchronize=self.rect_synchronize,
+            skip_gram_unmask_rate=self.skip_gram_unmask_rate,
+        )
+
+    def auxiliary_config(self) -> AuxiliaryLossConfig:
+        """Build the weighted MLM/geometry loss configuration."""
+        return AuxiliaryLossConfig(
+            mlm_weight=self.mlm_weight,
+            inv_weight=self.inv_weight,
+            var_weight=self.var_weight,
+            cov_weight=self.cov_weight,
+            nce_weight=self.nce_weight,
+            nce_temperature=self.nce_temperature,
+            vicreg_gamma=self.vicreg_gamma,
+            vicreg_eps=self.vicreg_eps,
+            warmup_steps=self.aux_warmup,
+        )
 
     @property
     def model_config(self) -> TransformerConfig:
@@ -161,6 +219,13 @@ def resolve_config(args) -> RayTrainingConfig:
         values["full_eval"] = True
     if values.get("compile") is None:
         values["compile"] = False
+    legacy = any(values.get(name, 0.0) for name in ("p_random", "p_board", "p_span"))
+    explicit_rect = "p_rect" in values
+    explicit_skip = "p_skip_gram" in values
+    if not explicit_rect and (legacy or explicit_skip):
+        values["p_rect"] = 0.0
+    if not explicit_skip and (legacy or explicit_rect):
+        values["p_skip_gram"] = 0.0
     return RayTrainingConfig.from_dict(values)
 
 
@@ -273,6 +338,7 @@ def train_loop_per_worker(config: dict) -> None:
             data_dir=str(train_dir),
             max_seq_len=cfg.max_seq_len,
             max_segments=cfg.max_segments,
+            masking=cfg.masking_config(),
         )
     )
     if cfg.freq_weighting:
@@ -286,6 +352,7 @@ def train_loop_per_worker(config: dict) -> None:
             games=val_games,
             max_seq_len=cfg.max_seq_len,
             max_segments=cfg.max_segments,
+            masking=cfg.masking_config(),
             seed=cfg.seed,
         )
     )
@@ -293,6 +360,19 @@ def train_loop_per_worker(config: dict) -> None:
         f"rank={world_rank} train games={len(train_dataset)} "
         f"val games={len(val_dataset)} device={device}"
     )
+
+    retrieval_benchmark = None
+    if cfg.retrieval_benchmark is not None and world_rank == 0:
+        retrieval_benchmark = load_benchmark(
+            cfg.retrieval_benchmark, revision=cfg.retrieval_benchmark_revision
+        )
+        log(
+            "retrieval benchmark "
+            f"positions={len(retrieval_benchmark.positions)} "
+            f"near_queries={len(retrieval_benchmark.near_queries)} "
+            f"strategic_queries="
+            f"{sum(ids.size for ids in retrieval_benchmark.strategic_queries.values())}"
+        )
 
     model_config = cfg.model_config
     model = MaskedStreamTransformer(model_config).to(device)
@@ -420,8 +500,31 @@ def train_loop_per_worker(config: dict) -> None:
     model.train()
     running_loss = 0.0
     running_count = 0
+    running_components: dict[str, float] = {}
     latest_eval: dict | None = None
     start = time.time()
+    loss_config = cfg.auxiliary_config()
+    if world_size > 1 and (loss_config.inv_weight > 0 or loss_config.nce_weight > 0):
+        raise ValueError(
+            "context-removal invariance/InfoNCE require num_training_workers=1; "
+            "set inv_weight=0 and nce_weight=0 for multi-worker DDP"
+        )
+    target_generator = torch.Generator(device=device).manual_seed(cfg.seed)
+    if world_rank == 0:
+        log(
+            "masking weights: "
+            f"rect={cfg.p_rect:.2f} skip_gram={cfg.p_skip_gram:.2f} "
+            f"random={cfg.p_random:.2f} board={cfg.p_board:.2f} "
+            f"span={cfg.p_span:.2f}"
+        )
+        log(
+            "loss weights: "
+            f"mlm={loss_config.mlm_weight:.3f} inv={loss_config.inv_weight:.3f} "
+            f"var={loss_config.var_weight:.3f} cov={loss_config.cov_weight:.3f} "
+            f"nce={loss_config.nce_weight:.3f} warmup={loss_config.warmup_steps}"
+        )
+        if loss_config.nce_weight == 0:
+            log("InfoNCE disabled (nce_weight=0)")
 
     for step in range(start_step + 1, cfg.steps + 1):
         try:
@@ -432,44 +535,52 @@ def train_loop_per_worker(config: dict) -> None:
 
         batch = {k: v.to(device) for k, v in batch.items()}
         with autocast():
-            output = model(
-                batch["tokens"],
-                batch["segment_ids"],
-                padding_mask=batch["padding_mask"],
-                targets=batch["targets"],
-                weights=batch["weights"],
+            loss, components = compute_training_loss(
+                model,
+                batch,
+                loss_config,
+                step=step,
+                generator=target_generator,
             )
         optimizer.zero_grad()
-        output["loss"].backward()
+        loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.grad_clip)
         optimizer.step()
         scheduler.step()
 
-        running_loss += output["loss"].item()
+        running_loss += loss.item()
         running_count += 1
+        for key, value in components.items():
+            running_components[key] = running_components.get(key, 0.0) + value.item()
 
         if step % cfg.log_every == 0:
             elapsed = time.time() - start
             tokens_per_step = cfg.batch_size * cfg.max_seq_len
-            avg_loss = running_loss / running_count
+            avg_loss = reduce_metric(running_loss / running_count)
+            component_means = {
+                f"{key}_loss": reduce_metric(value / running_count)
+                for key, value in sorted(running_components.items())
+            }
             tokens_per_second = tokens_per_step * cfg.log_every / elapsed
             log(
                 f"step={step} loss={avg_loss:.4f} "
-                f"lr={scheduler.get_last_lr()[0]:.2e} "
+                + " ".join(
+                    f"{key}={value:.4f}"
+                    for key, value in sorted(component_means.items())
+                )
+                + f" lr={scheduler.get_last_lr()[0]:.2e} "
                 f"tokens/s={tokens_per_second:.0f}"
             )
             if tracker is not None:
                 tracker.log_metrics(
                     {
                         "loss": avg_loss,
+                        **component_means,
                         "lr": scheduler.get_last_lr()[0],
                         "tokens_per_second": tokens_per_second,
                     },
                     step=step,
                 )
-            running_loss = 0.0
-            running_count = 0
-            start = time.time()
 
         extras: dict = {}
         if step % cfg.eval_every == 0 or step == cfg.steps:
@@ -484,6 +595,48 @@ def train_loop_per_worker(config: dict) -> None:
                 tracker.log_metrics(
                     {"val_loss": val_loss, "val_acc": val_acc}, step=step
                 )
+            if world_rank == 0:
+                token_rank = token_effective_rank(
+                    raw_model,
+                    val_loader,
+                    device,
+                    cfg.eval_batches,
+                    bf16,
+                    max_tokens=cfg.token_rank_tokens,
+                    seed=cfg.seed,
+                )
+                log(f"step={step} token_rank_effective={token_rank:.2f}")
+                extras["token_rank_effective"] = token_rank
+                if tracker is not None:
+                    tracker.log_metrics({"token_rank_effective": token_rank}, step=step)
+                if retrieval_benchmark is not None:
+                    retrieval_metrics = evaluate_retrieval(
+                        raw_model,
+                        retrieval_benchmark,
+                        device,
+                        batch_size=cfg.retrieval_batch_size,
+                    )
+                    log(
+                        f"step={step} "
+                        + " ".join(
+                            f"retrieval_{key}={value:.4f}"
+                            for key, value in sorted(retrieval_metrics.items())
+                        )
+                    )
+                    extras.update(
+                        {
+                            f"retrieval_{key}": value
+                            for key, value in retrieval_metrics.items()
+                        }
+                    )
+                    if tracker is not None:
+                        tracker.log_metrics(
+                            {
+                                f"retrieval_{key}": float(value)
+                                for key, value in retrieval_metrics.items()
+                            },
+                            step=step,
+                        )
             if cfg.full_eval and world_rank == 0:
                 metrics = full_eval(
                     raw_model,
@@ -544,6 +697,13 @@ def train_loop_per_worker(config: dict) -> None:
                             for key, value in latest_eval.items()
                             if key != "step"
                         }
+                    save_extra.update(
+                        {
+                            key: value
+                            for key, value in extras.items()
+                            if key != "full_eval"
+                        }
+                    )
                     save_checkpoint(
                         Path(tmpdir) / "checkpoint.pt",
                         raw_model,
@@ -559,6 +719,12 @@ def train_loop_per_worker(config: dict) -> None:
                     upload(local_last, "last", step, best_val_loss)
                     checkpoint = Checkpoint.from_directory(tmpdir)
                 train.report(metrics, checkpoint=checkpoint)
+
+        if step % cfg.log_every == 0:
+            running_loss = 0.0
+            running_count = 0
+            running_components = {}
+            start = time.time()
 
     if tracker is not None:
         tracker.end()

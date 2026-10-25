@@ -6,7 +6,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-from src.dataset.token_stream import CLS, PAD, SEGMENT_LEN, SEP, VOCAB_SIZE
+from src.dataset.token_stream import CLS, MASK, PAD, SEGMENT_LEN, SEP, VOCAB_SIZE
 from src.modeling.masking import IGNORE_INDEX
 from src.modeling.varlen import (
     cu_seqlens,
@@ -15,7 +15,7 @@ from src.modeling.varlen import (
     varlen_attention,
 )
 
-IGNORE_TOKENS = (CLS, SEP)
+IGNORE_TOKENS = (CLS, SEP, MASK)
 STRUCTURAL_SLOT = SEGMENT_LEN
 
 
@@ -169,6 +169,18 @@ class MaskedStreamTransformer(nn.Module):
                 return (per_token * w).sum() / total
         return per_token.mean()
 
+    def encode(
+        self,
+        tokens: torch.Tensor,
+        segment_ids: torch.Tensor,
+        padding_mask: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Return per-segment mean embeddings with gradients enabled."""
+        if padding_mask is None:
+            padding_mask = tokens.ne(0)
+        hidden = self._trunk(tokens, segment_ids, padding_mask)
+        return self.pool_hidden(hidden, tokens, segment_ids, padding_mask)
+
     @torch.no_grad()
     def embed(
         self,
@@ -176,9 +188,18 @@ class MaskedStreamTransformer(nn.Module):
         segment_ids: torch.Tensor,
         padding_mask: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
+        return self.encode(tokens, segment_ids, padding_mask)
+
+    def pool_hidden(
+        self,
+        hidden: torch.Tensor,
+        tokens: torch.Tensor,
+        segment_ids: torch.Tensor,
+        padding_mask: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Mean-pool hidden states per segment, ignoring structural/mask tokens."""
         if padding_mask is None:
             padding_mask = tokens.ne(0)
-        hidden = self._trunk(tokens, segment_ids, padding_mask)
         valid = padding_mask
         for token in IGNORE_TOKENS:
             valid = valid & tokens.ne(token)

@@ -1,9 +1,15 @@
+import pytest
 import torch
 from torch import nn
 
 from bdd import given, then, when
 from src.modeling.masking import IGNORE_INDEX
-from src.training.loop import apply_compile, evaluate, use_fused_adamw
+from src.training.loop import (
+    apply_compile,
+    effective_rank_from_hidden,
+    evaluate,
+    use_fused_adamw,
+)
 
 
 class FakeModel(nn.Module):
@@ -126,4 +132,57 @@ class TestFusedAdamW:
 
         with then("fused is disabled"):
             assert fused is False
+        return
+
+
+class TestTokenRank:
+    def test_collapsed_states_have_rank_one(self):
+        with given("identical token states"):
+            hidden = torch.ones(64, 16)
+            valid = torch.ones(64, dtype=torch.bool)
+
+        with when("the token effective rank is computed"):
+            rank = effective_rank_from_hidden(hidden, valid)
+
+        with then("the rank is one"):
+            assert rank == pytest.approx(1.0)
+        return
+
+    def test_random_states_have_a_high_rank(self):
+        with given("random token states"):
+            torch.manual_seed(0)
+            hidden = torch.randn(512, 32)
+            valid = torch.ones(512, dtype=torch.bool)
+
+        with when("the token effective rank is computed"):
+            rank = effective_rank_from_hidden(hidden, valid)
+
+        with then("many dimensions are used"):
+            assert rank > 10
+        return
+
+    def test_invalid_tokens_are_excluded(self):
+        with given("random states followed by collapsed masked states"):
+            torch.manual_seed(0)
+            hidden = torch.cat([torch.randn(64, 16), torch.ones(64, 16)], dim=0)
+            valid = torch.tensor([True] * 64 + [False] * 64)
+
+        with when("the token effective rank is computed"):
+            rank = effective_rank_from_hidden(hidden, valid)
+
+        with then("only the valid states influence the rank"):
+            assert rank > 10
+        return
+
+    def test_subsamples_to_the_token_budget(self):
+        with given("more token states than the budget"):
+            torch.manual_seed(0)
+            hidden = torch.randn(1000, 16)
+            valid = torch.ones(1000, dtype=torch.bool)
+
+        with when("the rank is computed with a 100-token budget"):
+            rank = effective_rank_from_hidden(hidden, valid, max_tokens=100)
+
+        with then("the result is still a valid rank"):
+            assert rank > 1
         return

@@ -10,6 +10,7 @@ import torch
 from torch.utils.data import DataLoader
 
 from src.evaluation.eval_suite import full_eval
+from src.evaluation.retrieval import evaluate_retrieval, load_benchmark
 from src.modeling.masking import MaskingConfig
 from src.modeling.transformer import MaskedStreamTransformer, TransformerConfig
 from src.training.checkpoint_hub import (
@@ -28,10 +29,12 @@ from src.training.loop import (
     make_logger,
     save_checkpoint,
     system_snapshot,
+    token_effective_rank,
     use_fused_adamw,
     write_eval_artifacts,
 )
 from src.training.mlflow_tracker import MLflowTracker, resolve_tracking_uri
+from src.training.objectives import AuxiliaryLossConfig, compute_training_loss
 from src.training.window_dataset import (
     StreamingWindowDataset,
     WindowDataset,
@@ -166,32 +169,153 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--compile", action="store_true")
     parser.add_argument("--log-file", default=None)
     parser.add_argument("--seed", type=int, default=17)
+    parser.add_argument(
+        "--retrieval-benchmark",
+        default=None,
+        help="Frozen retrieval benchmark directory or HuggingFace dataset repo id",
+    )
+    parser.add_argument("--retrieval-benchmark-revision", default=None)
+    parser.add_argument("--retrieval-batch-size", type=int, default=128)
+    parser.add_argument("--token-rank-tokens", type=int, default=4096)
     _masking_defaults = MaskingConfig()
     parser.add_argument(
         "--p-random",
         type=float,
-        default=_masking_defaults.p_random,
+        default=0.0,
         help="Probability weight for random-token masking mode",
     )
     parser.add_argument(
         "--p-board",
         type=float,
-        default=_masking_defaults.p_board,
+        default=0.0,
         help="Probability weight for whole-board masking mode",
     )
     parser.add_argument(
         "--p-span",
         type=float,
-        default=_masking_defaults.p_span,
+        default=0.0,
         help="Probability weight for span masking mode",
+    )
+    parser.add_argument(
+        "--p-rect",
+        type=float,
+        default=None,
+        help="Probability weight for harder rectangle masking "
+        "(default 0.8, mixed with 0.2 skip-gram)",
+    )
+    parser.add_argument(
+        "--rect-min-rate",
+        type=float,
+        default=_masking_defaults.rect_min_rate,
+        help="Minimum fraction of board squares masked by rectangles",
+    )
+    parser.add_argument(
+        "--rect-max-rate",
+        type=float,
+        default=_masking_defaults.rect_max_rate,
+        help="Maximum fraction of board squares masked by rectangles",
+    )
+    parser.add_argument(
+        "--rect-min-side",
+        type=int,
+        default=_masking_defaults.rect_min_side,
+    )
+    parser.add_argument(
+        "--rect-max-side",
+        type=int,
+        default=_masking_defaults.rect_max_side,
+    )
+    parser.add_argument(
+        "--no-rect-sync",
+        action="store_false",
+        dest="rect_synchronize",
+        help="Mask independent rectangles per segment instead of the same squares",
+    )
+    parser.add_argument(
+        "--p-skip-gram",
+        type=float,
+        default=None,
+        help="Probability weight for skip-gram style masking (default 0.2); "
+        "hide all but a small fraction of whole boards",
+    )
+    parser.add_argument(
+        "--skip-gram-unmask-rate",
+        type=float,
+        default=_masking_defaults.skip_gram_unmask_rate,
+        help="Fraction of boards left visible in skip-gram mode (must be < 0.30)",
+    )
+    parser.add_argument("--mlm-weight", type=float, default=1.0)
+    parser.add_argument("--inv-weight", type=float, default=0.5)
+    parser.add_argument("--var-weight", type=float, default=1.0)
+    parser.add_argument("--cov-weight", type=float, default=0.1)
+    parser.add_argument("--nce-weight", type=float, default=0.1)
+    parser.add_argument("--nce-temperature", type=float, default=0.1)
+    parser.add_argument("--vicreg-gamma", type=float, default=1.0)
+    parser.add_argument("--vicreg-eps", type=float, default=1e-4)
+    parser.add_argument(
+        "--aux-warmup",
+        type=int,
+        default=200,
+        help="Steps over which auxiliary loss weights ramp from 0 to target",
     )
     return parser.parse_args()
 
 
 def masking_config(args: argparse.Namespace) -> MaskingConfig:
-    """Build the MaskingConfig implied by the parsed masking probability args."""
+    """Build the MaskingConfig implied by the parsed masking args.
+
+    Defaults are the rect/skip-gram mixture. Setting either p_rect or
+    p_skip_gram explicitly zeroes the other unless both are provided; legacy
+    modes (random/board/span) zero both when selected on their own.
+    """
+    defaults = MaskingConfig()
+    explicit_rect = args.p_rect is not None
+    explicit_skip = args.p_skip_gram is not None
+    legacy = bool(args.p_random or args.p_board or args.p_span)
+
+    if explicit_rect:
+        p_rect = args.p_rect
+    elif legacy or explicit_skip:
+        p_rect = 0.0
+    else:
+        p_rect = defaults.p_rect
+
+    if explicit_skip:
+        p_skip_gram = args.p_skip_gram
+    elif legacy or explicit_rect:
+        p_skip_gram = 0.0
+    else:
+        p_skip_gram = defaults.p_skip_gram
+
+    args.p_rect = p_rect
+    args.p_skip_gram = p_skip_gram
     return MaskingConfig(
-        p_random=args.p_random, p_board=args.p_board, p_span=args.p_span
+        p_random=args.p_random,
+        p_board=args.p_board,
+        p_span=args.p_span,
+        p_rect=p_rect,
+        p_skip_gram=p_skip_gram,
+        rect_min_rate=args.rect_min_rate,
+        rect_max_rate=args.rect_max_rate,
+        rect_min_side=args.rect_min_side,
+        rect_max_side=args.rect_max_side,
+        rect_synchronize=args.rect_synchronize,
+        skip_gram_unmask_rate=args.skip_gram_unmask_rate,
+    )
+
+
+def auxiliary_config(args: argparse.Namespace) -> AuxiliaryLossConfig:
+    """Build the weighted loss configuration from parsed args."""
+    return AuxiliaryLossConfig(
+        mlm_weight=args.mlm_weight,
+        inv_weight=args.inv_weight,
+        var_weight=args.var_weight,
+        cov_weight=args.cov_weight,
+        nce_weight=args.nce_weight,
+        nce_temperature=args.nce_temperature,
+        vicreg_gamma=args.vicreg_gamma,
+        vicreg_eps=args.vicreg_eps,
+        warmup_steps=args.aux_warmup,
     )
 
 
@@ -318,6 +442,19 @@ def main() -> None:
     )
     log(f"train games={len(train_dataset)} val games={len(val_dataset)}")
 
+    retrieval_benchmark = None
+    if args.retrieval_benchmark is not None:
+        retrieval_benchmark = load_benchmark(
+            args.retrieval_benchmark, revision=args.retrieval_benchmark_revision
+        )
+        log(
+            "retrieval benchmark "
+            f"positions={len(retrieval_benchmark.positions)} "
+            f"near_queries={len(retrieval_benchmark.near_queries)} "
+            f"strategic_queries="
+            f"{sum(ids.size for ids in retrieval_benchmark.strategic_queries.values())}"
+        )
+
     train_provenance = collect_data_provenance(Path(train_dir))
     val_provenance = collect_data_provenance(Path(val_dir))
     git_commit = get_git_commit()
@@ -421,8 +558,26 @@ def main() -> None:
     model.train()
     running_loss = 0.0
     running_count = 0
+    running_components: dict[str, float] = {}
     latest_eval: dict | None = None
+    latest_metrics: dict = {}
     start = time.time()
+    loss_config = auxiliary_config(args)
+    target_generator = torch.Generator(device=device).manual_seed(args.seed)
+    log(
+        "masking weights: "
+        f"rect={args.p_rect:.2f} skip_gram={args.p_skip_gram:.2f} "
+        f"random={args.p_random:.2f} board={args.p_board:.2f} "
+        f"span={args.p_span:.2f}"
+    )
+    log(
+        "loss weights: "
+        f"mlm={loss_config.mlm_weight:.3f} inv={loss_config.inv_weight:.3f} "
+        f"var={loss_config.var_weight:.3f} cov={loss_config.cov_weight:.3f} "
+        f"nce={loss_config.nce_weight:.3f} warmup={loss_config.warmup_steps}"
+    )
+    if loss_config.nce_weight == 0:
+        log("InfoNCE disabled (nce_weight=0)")
 
     for step in range(start_step + 1, args.steps + 1):
         try:
@@ -433,36 +588,47 @@ def main() -> None:
 
         batch = {k: v.to(device, non_blocking=pin_memory) for k, v in batch.items()}
         with autocast():
-            output = model(
-                batch["tokens"],
-                batch["segment_ids"],
-                padding_mask=batch["padding_mask"],
-                targets=batch["targets"],
-                weights=batch["weights"],
+            loss, components = compute_training_loss(
+                model,
+                batch,
+                loss_config,
+                step=step,
+                generator=target_generator,
             )
         optimizer.zero_grad()
-        output["loss"].backward()
+        loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
         optimizer.step()
         scheduler.step()
 
-        running_loss += output["loss"].item()
+        running_loss += loss.item()
         running_count += 1
+        for key, value in components.items():
+            running_components[key] = running_components.get(key, 0.0) + value.item()
 
         if step % args.log_every == 0:
             elapsed = time.time() - start
             tokens_per_step = args.batch_size * args.max_seq_len
             avg_loss = running_loss / running_count
             tokens_per_second = tokens_per_step * args.log_every / elapsed
+            component_means = {
+                f"{key}_loss": value / running_count
+                for key, value in running_components.items()
+            }
             log(
                 f"step={step} loss={avg_loss:.4f} "
-                f"lr={scheduler.get_last_lr()[0]:.2e} "
+                + " ".join(
+                    f"{key}={value:.4f}"
+                    for key, value in sorted(component_means.items())
+                )
+                + f" lr={scheduler.get_last_lr()[0]:.2e} "
                 f"tokens/s={tokens_per_second:.0f}"
             )
             log(f"step={step} system {format_system_snapshot(system_snapshot())}")
             tracker.log_metrics(
                 {
                     "loss": avg_loss,
+                    **component_means,
                     "lr": scheduler.get_last_lr()[0],
                     "tokens_per_second": tokens_per_second,
                 },
@@ -470,6 +636,7 @@ def main() -> None:
             )
             running_loss = 0.0
             running_count = 0
+            running_components = {}
             start = time.time()
 
         if step % args.eval_every == 0 or step == args.steps:
@@ -479,6 +646,45 @@ def main() -> None:
             log(f"step={step} val_loss={val_loss:.4f} val_acc={val_acc:.4f}")
             extras = {"val_loss": val_loss, "val_acc": val_acc}
             tracker.log_metrics({"val_loss": val_loss, "val_acc": val_acc}, step=step)
+            token_rank = token_effective_rank(
+                raw_model,
+                val_loader,
+                device,
+                args.eval_batches,
+                bf16,
+                max_tokens=args.token_rank_tokens,
+                seed=args.seed,
+            )
+            log(f"step={step} token_rank_effective={token_rank:.2f}")
+            extras["token_rank_effective"] = token_rank
+            tracker.log_metrics({"token_rank_effective": token_rank}, step=step)
+            if retrieval_benchmark is not None:
+                retrieval_metrics = evaluate_retrieval(
+                    raw_model,
+                    retrieval_benchmark,
+                    device,
+                    batch_size=args.retrieval_batch_size,
+                )
+                log(
+                    f"step={step} "
+                    + " ".join(
+                        f"retrieval_{key}={value:.4f}"
+                        for key, value in sorted(retrieval_metrics.items())
+                    )
+                )
+                extras.update(
+                    {
+                        f"retrieval_{key}": value
+                        for key, value in retrieval_metrics.items()
+                    }
+                )
+                tracker.log_metrics(
+                    {
+                        f"retrieval_{key}": float(value)
+                        for key, value in retrieval_metrics.items()
+                    },
+                    step=step,
+                )
             if args.full_eval:
                 metrics = full_eval(
                     raw_model,
@@ -546,6 +752,9 @@ def main() -> None:
                     )
                 )
                 extras["full_eval"] = metrics
+            latest_metrics = {
+                key: value for key, value in extras.items() if key != "full_eval"
+            }
             if val_loss < best_val_loss:
                 best_val_loss = val_loss
                 path = checkpoint_dir / "best.pt"
@@ -570,6 +779,7 @@ def main() -> None:
                 save_extra["full_eval"] = {
                     key: value for key, value in latest_eval.items() if key != "step"
                 }
+            save_extra.update(latest_metrics)
             save_checkpoint(
                 path,
                 raw_model,

@@ -69,6 +69,8 @@ def build_mode_pattern(masking: MaskingConfig, period: int = 20) -> list[str]:
         "random": masking.p_random,
         "board": masking.p_board,
         "span": masking.p_span,
+        "rect": masking.p_rect,
+        "skip_gram": masking.p_skip_gram,
     }
     total = sum(probs.values())
     if total <= 0:
@@ -81,7 +83,7 @@ def build_mode_pattern(masking: MaskingConfig, period: int = 20) -> list[str]:
         counts[order[fill % len(order)]] += 1
         fill += 1
     pattern: list[str] = []
-    for mode in ("random", "board", "span"):
+    for mode in ("random", "board", "span", "rect", "skip_gram"):
         pattern.extend([mode] * counts[mode])
     return pattern
 
@@ -225,7 +227,7 @@ def _build_window(
     mode: str | None,
 ) -> dict[str, np.ndarray]:
     """Sample, pack, and mask one window from a game's segments."""
-    if mode in ("board", "span"):
+    if mode in ("board", "span", "skip_gram"):
         if len(segments) >= config.masking.min_context_segments:
             segments = _sample_long(
                 segments, rng, config, config.masking.min_context_segments

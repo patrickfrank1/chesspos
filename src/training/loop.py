@@ -17,6 +17,8 @@ from pathlib import Path
 import torch
 from torch.utils.data import DataLoader
 
+from src.dataset.token_stream import CLS, MASK, SEP
+from src.evaluation.retrieval import effective_rank
 from src.modeling.masking import IGNORE_INDEX
 from src.modeling.transformer import MaskedStreamTransformer, TransformerConfig
 
@@ -199,6 +201,64 @@ def evaluate(
     loss = sum(losses) / max(1, len(losses))
     accuracy = correct / max(1, total)
     return loss, accuracy
+
+
+def effective_rank_from_hidden(
+    hidden: torch.Tensor,
+    valid: torch.Tensor,
+    max_tokens: int = 4096,
+    seed: int = 0,
+) -> float:
+    """Effective rank of the valid token states, optionally subsampled."""
+    vectors = hidden[valid].detach().float().cpu()
+    if vectors.numel() == 0:
+        return 1.0
+    if max_tokens > 0 and vectors.shape[0] > max_tokens:
+        generator = torch.Generator().manual_seed(seed)
+        indices = torch.randperm(vectors.shape[0], generator=generator)[:max_tokens]
+        vectors = vectors[indices]
+    return effective_rank(vectors.numpy())
+
+
+@torch.no_grad()
+def token_effective_rank(
+    model: MaskedStreamTransformer,
+    loader: DataLoader,
+    device: torch.device,
+    max_batches: int,
+    bf16: bool,
+    max_tokens: int = 4096,
+    seed: int = 0,
+) -> float:
+    """Measure token-level rank on a few validation batches."""
+    model.eval()
+    vectors: list[torch.Tensor] = []
+    for i, batch in enumerate(loader):
+        if i >= max_batches:
+            break
+        batch = {key: value.to(device) for key, value in batch.items()}
+        with torch.autocast(
+            device_type=device.type, dtype=torch.bfloat16, enabled=bf16
+        ):
+            output = model(
+                batch["tokens"],
+                batch["segment_ids"],
+                padding_mask=batch["padding_mask"],
+            )
+        tokens = batch["tokens"]
+        valid = batch["padding_mask"]
+        for special in (CLS, SEP, MASK):
+            valid = valid & tokens.ne(special)
+        vectors.append(output["hidden_states"][valid])
+    model.train()
+    if not vectors:
+        return 1.0
+    return effective_rank_from_hidden(
+        torch.cat(vectors, dim=0),
+        torch.ones(sum(v.shape[0] for v in vectors), dtype=torch.bool),
+        max_tokens=max_tokens,
+        seed=seed,
+    )
 
 
 def write_eval_artifacts(checkpoint_dir: Path, payload: dict) -> None:
