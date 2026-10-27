@@ -63,6 +63,9 @@ class TestResolveConfig:
             assert config.var_weight == 1.0
             assert config.cov_weight == 0.1
             assert config.nce_weight == 0.1
+            assert config.alone_var_weight == 1.0
+            assert config.alone_cov_weight == 0.1
+            assert config.alone_targets_per_window == 4
             assert config.aux_warmup == 200
             assert config.retrieval_benchmark is None
             assert config.dataloader_workers == 4
@@ -102,6 +105,9 @@ class TestResolveConfig:
             assert losses.var_weight == 1.0
             assert losses.cov_weight == 0.1
             assert losses.nce_weight == 0.1
+            assert losses.alone_var_weight == 1.0
+            assert losses.alone_cov_weight == 0.1
+            assert losses.alone_targets_per_window == 4
             assert losses.warmup_steps == 200
         return
 
@@ -165,6 +171,12 @@ class TestResolveConfig:
                     "0.2",
                     "--nce-weight",
                     "0.3",
+                    "--alone-var-weight",
+                    "0.4",
+                    "--alone-cov-weight",
+                    "0.04",
+                    "--alone-targets-per-window",
+                    "2",
                     "--aux-warmup",
                     "50",
                 ]
@@ -178,6 +190,9 @@ class TestResolveConfig:
             assert losses.inv_weight == 0.0
             assert losses.var_weight == 0.2
             assert losses.nce_weight == 0.3
+            assert losses.alone_var_weight == 0.4
+            assert losses.alone_cov_weight == 0.04
+            assert losses.alone_targets_per_window == 2
             assert losses.warmup_steps == 50
         return
 
@@ -208,6 +223,9 @@ class TestResolveConfig:
                 "  p_rect: 0.0\n"
                 "  p_span: 1.0\n"
                 "  nce_weight: 0.2\n"
+                "  alone_var_weight: 0.3\n"
+                "  alone_cov_weight: 0.03\n"
+                "  alone_targets_per_window: 3\n"
                 "  aux_warmup: 10\n"
             )
 
@@ -220,6 +238,9 @@ class TestResolveConfig:
             assert masking.p_rect == 0.0
             assert masking.p_span == 1.0
             assert losses.nce_weight == 0.2
+            assert losses.alone_var_weight == 0.3
+            assert losses.alone_cov_weight == 0.03
+            assert losses.alone_targets_per_window == 3
             assert losses.warmup_steps == 10
         return
 

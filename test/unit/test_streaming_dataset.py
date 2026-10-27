@@ -7,12 +7,14 @@ import pytest
 import torch
 from types import SimpleNamespace
 
+import src.training.window_dataset as window_dataset
 from bdd import given, then, when
 from src.dataset.token_stream import CLS, EMPTY, SEP, VOCAB_SIZE
 from src.training.window_dataset import (
     StreamingWindowDataset,
     WindowDatasetConfig,
     _load_game_segments,
+    load_game_pool,
     worker_skip_windows,
     collate_windows,
     streaming_unigram_counts,
@@ -69,6 +71,14 @@ def expected_packed_games(directory):
 
 def sample_signature(sample):
     return sample["tokens"].tobytes()
+
+
+def packed_from_segments(segments):
+    tokens = [CLS]
+    for segment in segments:
+        tokens.extend(segment.tolist())
+        tokens.append(SEP)
+    return np.asarray(tokens, dtype=np.int16).tobytes()
 
 
 class TestStreamingBasics:
@@ -469,4 +479,64 @@ class TestStreamResume:
 
         with then("the continuation matches the uninterrupted tail through the buffer"):
             assert continuation == reference[5:]
+        return
+
+
+class TestValidationGamePool:
+    def test_pool_is_capped_and_uses_shard_prefetch(self, tmp_path):
+        with given("four validation shards with three games each"):
+            directory = tmp_path / "val"
+            for i in range(4):
+                write_stream_shard(directory, f"s{i}.parquet", range(i * 3, i * 3 + 3))
+
+        with when("a five-game pool is loaded with two-shard prefetch"):
+            pool = load_game_pool(directory, max_games=5, prefetch_shards=2)
+
+        with then("only the bounded prefix is retained"):
+            expected = expected_packed_games(directory)[:5]
+            assert [packed_from_segments(game) for game in pool] == [
+                game.tobytes() for game in expected
+            ]
+        return
+
+    def test_pool_never_loads_the_whole_directory(self, tmp_path, monkeypatch):
+        with given("a validation directory and a spy on shard loads"):
+            directory = tmp_path / "val"
+            for i in range(6):
+                write_stream_shard(directory, f"s{i}.parquet", (i,))
+            loaded = []
+            original = window_dataset._load_game_segments
+
+            def spy(path, *args, **kwargs):
+                loaded.append(path)
+                return original(path, *args, **kwargs)
+
+            monkeypatch.setattr(window_dataset, "_load_game_segments", spy)
+
+        with when("a one-game pool is loaded with one-shard prefetch"):
+            pool = load_game_pool(directory, max_games=1, prefetch_shards=1)
+
+        with then("only individual shards are read, never the directory"):
+            assert len(pool) == 1
+            assert loaded
+            assert all(path.is_file() for path in loaded)
+
+        with then("the prefetch window bounds the number of decoded shards"):
+            assert len(loaded) <= 2  # one decoded shard plus one lookahead
+        return
+
+    def test_pool_is_deterministic(self, tmp_path):
+        with given("a validation directory with several shards"):
+            directory = tmp_path / "val"
+            for i in range(4):
+                write_stream_shard(directory, f"s{i}.parquet", range(i * 4, i * 4 + 4))
+
+        with when("the same bounded pool is loaded twice"):
+            first = load_game_pool(directory, max_games=7, prefetch_shards=2)
+            second = load_game_pool(directory, max_games=7, prefetch_shards=2)
+
+        with then("both pools contain the same games in the same order"):
+            assert [packed_from_segments(g) for g in first] == [
+                packed_from_segments(g) for g in second
+            ]
         return

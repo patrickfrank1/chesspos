@@ -121,6 +121,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--nce-temperature", dest="nce_temperature", type=float, default=None
     )
+    parser.add_argument(
+        "--alone-var-weight", dest="alone_var_weight", type=float, default=None
+    )
+    parser.add_argument(
+        "--alone-cov-weight", dest="alone_cov_weight", type=float, default=None
+    )
+    parser.add_argument(
+        "--alone-targets-per-window",
+        dest="alone_targets_per_window",
+        type=int,
+        default=None,
+    )
     parser.add_argument("--vicreg-gamma", dest="vicreg_gamma", type=float, default=None)
     parser.add_argument("--vicreg-eps", dest="vicreg_eps", type=float, default=None)
     parser.add_argument("--aux-warmup", dest="aux_warmup", type=int, default=None)

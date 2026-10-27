@@ -107,6 +107,9 @@ class RayTrainingConfig:
     cov_weight: float = 0.1
     nce_weight: float = 0.1
     nce_temperature: float = 0.1
+    alone_var_weight: float = 1.0
+    alone_cov_weight: float = 0.1
+    alone_targets_per_window: int = 4
     vicreg_gamma: float = 1.0
     vicreg_eps: float = 1e-4
     aux_warmup: int = 200
@@ -167,6 +170,9 @@ class RayTrainingConfig:
             cov_weight=self.cov_weight,
             nce_weight=self.nce_weight,
             nce_temperature=self.nce_temperature,
+            alone_var_weight=self.alone_var_weight,
+            alone_cov_weight=self.alone_cov_weight,
+            alone_targets_per_window=self.alone_targets_per_window,
             vicreg_gamma=self.vicreg_gamma,
             vicreg_eps=self.vicreg_eps,
             warmup_steps=self.aux_warmup,
@@ -521,6 +527,8 @@ def train_loop_per_worker(config: dict) -> None:
             "loss weights: "
             f"mlm={loss_config.mlm_weight:.3f} inv={loss_config.inv_weight:.3f} "
             f"var={loss_config.var_weight:.3f} cov={loss_config.cov_weight:.3f} "
+            f"alone_var={loss_config.alone_var_weight:.3f} "
+            f"alone_cov={loss_config.alone_cov_weight:.3f} "
             f"nce={loss_config.nce_weight:.3f} warmup={loss_config.warmup_steps}"
         )
         if loss_config.nce_weight == 0:

@@ -8,6 +8,7 @@ from src.training.loop import (
     apply_compile,
     effective_rank_from_hidden,
     evaluate,
+    periodic_checkpoint_plan,
     use_fused_adamw,
 )
 
@@ -185,4 +186,111 @@ class TestTokenRank:
 
         with then("the result is still a valid rank"):
             assert rank > 1
+        return
+
+
+class TestPeriodicCheckpointPlan:
+    def test_eval_step_saves_before_evaluating(self):
+        with given("a step where evaluation and saving are both due"):
+            step = 2000
+            steps = 100_000
+            save_every = 2000
+            eval_every = 2000
+
+        with when("the periodic checkpoint plan is computed"):
+            plan = periodic_checkpoint_plan(
+                step,
+                steps=steps,
+                save_every=save_every,
+                eval_every=eval_every,
+            )
+
+        with then("the checkpoint is saved before evaluation"):
+            assert plan.save_before_eval is True
+            assert plan.evaluate is True
+            assert plan.save_after_eval is False
+        return
+
+    def test_eval_without_a_scheduled_save_still_saves_first(self):
+        with given("an evaluation step that is not a scheduled save step"):
+            step = 1000
+            steps = 100_000
+            save_every = 5000
+            eval_every = 1000
+
+        with when("the periodic checkpoint plan is computed"):
+            plan = periodic_checkpoint_plan(
+                step,
+                steps=steps,
+                save_every=save_every,
+                eval_every=eval_every,
+            )
+
+        with then("a checkpoint is still written before evaluation"):
+            assert plan.save_before_eval is True
+            assert plan.evaluate is True
+            assert plan.save_after_eval is False
+        return
+
+    def test_final_step_saves_again_after_evaluating(self):
+        with given("the final training step, which is also an eval step"):
+            step = 5000
+            steps = 5000
+            save_every = 2000
+            eval_every = 2000
+
+        with when("the periodic checkpoint plan is computed"):
+            plan = periodic_checkpoint_plan(
+                step,
+                steps=steps,
+                save_every=save_every,
+                eval_every=eval_every,
+            )
+
+        with then("the checkpoint is refreshed with the final eval metrics"):
+            assert plan.save_before_eval is True
+            assert plan.evaluate is True
+            assert plan.save_after_eval is True
+        return
+
+    def test_save_only_step_does_not_evaluate(self):
+        with given("a scheduled save step that is not an eval step"):
+            step = 4000
+            steps = 100_000
+            save_every = 2000
+            eval_every = 3000
+
+        with when("the periodic checkpoint plan is computed"):
+            plan = periodic_checkpoint_plan(
+                step,
+                steps=steps,
+                save_every=save_every,
+                eval_every=eval_every,
+            )
+
+        with then("only the checkpoint save runs"):
+            assert plan.save_before_eval is True
+            assert plan.evaluate is False
+            assert plan.save_after_eval is False
+        return
+
+    def test_regular_step_runs_no_periodic_work(self):
+        with given("a step that is neither a save nor an eval step"):
+            step = 1500
+            steps = 100_000
+            save_every = 2000
+            eval_every = 2000
+
+        with when("the periodic checkpoint plan is computed"):
+            plan = periodic_checkpoint_plan(
+                step,
+                steps=steps,
+                save_every=save_every,
+                eval_every=eval_every,
+            )
+
+        with then("nothing periodic runs"):
+            assert plan.save_before_eval is False
+            assert plan.evaluate is False
+            assert plan.save_after_eval is False
         return

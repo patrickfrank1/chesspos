@@ -13,6 +13,7 @@ import os
 import subprocess
 from dataclasses import asdict
 from pathlib import Path
+from typing import NamedTuple
 
 import torch
 from torch.utils.data import DataLoader
@@ -146,6 +147,37 @@ def lr_lambda(step: int, warmup: int, total: int):
         return step / max(1, warmup)
     progress = (step - warmup) / max(1, total - warmup)
     return 0.5 * (1.0 + math.cos(math.pi * min(progress, 1.0)))
+
+
+class PeriodicCheckpointPlan(NamedTuple):
+    """Which periodic checkpoint/evaluation hooks run at a training step."""
+
+    save_before_eval: bool
+    evaluate: bool
+    save_after_eval: bool
+
+
+def periodic_checkpoint_plan(
+    step: int,
+    *,
+    steps: int,
+    save_every: int,
+    eval_every: int,
+) -> PeriodicCheckpointPlan:
+    """Decide which periodic hooks run at ``step``.
+
+    A resumable checkpoint is written before evaluation so an evaluation
+    failure cannot discard the step that just finished. At the final step the
+    checkpoint is saved again after evaluation so it carries the final
+    evaluation metrics.
+    """
+    evaluate = step % eval_every == 0 or step == steps
+    save = step % save_every == 0 or step == steps
+    return PeriodicCheckpointPlan(
+        save_before_eval=save or evaluate,
+        evaluate=evaluate,
+        save_after_eval=evaluate and step == steps,
+    )
 
 
 def save_checkpoint(

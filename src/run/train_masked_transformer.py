@@ -17,6 +17,7 @@ from src.training.checkpoint_hub import (
     build_metadata,
     collect_data_provenance,
     upload_checkpoint,
+    upload_file,
     upload_log,
 )
 from src.training.hf_data import download_split
@@ -27,6 +28,7 @@ from src.training.loop import (
     get_git_commit,
     lr_lambda,
     make_logger,
+    periodic_checkpoint_plan,
     save_checkpoint,
     system_snapshot,
     token_effective_rank,
@@ -34,12 +36,17 @@ from src.training.loop import (
     write_eval_artifacts,
 )
 from src.training.mlflow_tracker import MLflowTracker, resolve_tracking_uri
+from src.training.hard_negatives import (
+    collect_hard_negatives,
+    write_hard_negatives,
+)
 from src.training.objectives import AuxiliaryLossConfig, compute_training_loss
+from src.training.preflight import check_dependencies
 from src.training.window_dataset import (
     StreamingWindowDataset,
     WindowDataset,
     WindowDatasetConfig,
-    _load_game_segments,
+    load_game_pool,
     collate_windows,
     inverse_frequency_weights,
     streaming_unigram_counts,
@@ -120,13 +127,20 @@ def parse_args() -> argparse.Namespace:
         "--full-eval", action=argparse.BooleanOptionalAction, default=True
     )
     parser.add_argument("--eval-pool-size", type=int, default=1024)
+    parser.add_argument(
+        "--eval-pool-games",
+        type=int,
+        default=8192,
+        help="Maximum validation games retained in the bounded prefetched "
+        "eval pool (the full test split is never materialized)",
+    )
     parser.add_argument("--eval-counterfactual", type=int, default=256)
     parser.add_argument(
         "--prefetch-shards",
         type=int,
         default=2,
-        help="Shards preloaded ahead per streaming worker (0 disables; "
-        "only used with --streaming). Bounds the decoded-shard cache.",
+        help="Shards preloaded ahead for training and validation streaming "
+        "(0 disables). Bounds the decoded-shard cache.",
     )
     parser.add_argument(
         "--prefetch-factor",
@@ -149,7 +163,8 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help=(
             "Stream training windows shard by shard instead of preloading the "
-            "whole train split into memory (test split stays preloaded for eval)"
+            "whole train split into memory (validation uses a bounded, "
+            "prefetched eval pool)"
         ),
     )
     parser.add_argument(
@@ -250,6 +265,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--cov-weight", type=float, default=0.1)
     parser.add_argument("--nce-weight", type=float, default=0.1)
     parser.add_argument("--nce-temperature", type=float, default=0.1)
+    parser.add_argument("--alone-var-weight", type=float, default=1.0)
+    parser.add_argument("--alone-cov-weight", type=float, default=0.1)
+    parser.add_argument(
+        "--alone-targets-per-window",
+        type=int,
+        default=4,
+        help="Fully visible target segments per window for invariance/InfoNCE",
+    )
     parser.add_argument("--vicreg-gamma", type=float, default=1.0)
     parser.add_argument("--vicreg-eps", type=float, default=1e-4)
     parser.add_argument(
@@ -258,6 +281,40 @@ def parse_args() -> argparse.Namespace:
         default=200,
         help="Steps over which auxiliary loss weights ramp from 0 to target",
     )
+    parser.add_argument(
+        "--content-pooling",
+        action="store_true",
+        help="Use square-token (content) pooling for retrieval and contrastive losses",
+    )
+    parser.add_argument(
+        "--supcon",
+        action="store_true",
+        help="Use multi-positive SupCon instead of window/alone InfoNCE",
+    )
+    parser.add_argument(
+        "--turn-flip",
+        action="store_true",
+        help="Add the turn-flipped board as an extra SupCon positive",
+    )
+    parser.add_argument(
+        "--temporal-radius",
+        type=int,
+        default=3,
+        help="Ply radius for same-game SupCon positives; farther pairs are ignored",
+    )
+    parser.add_argument(
+        "--ignore-opening-negatives",
+        action="store_true",
+        help="Exclude opening positions from cross-game contrastive negatives",
+    )
+    parser.add_argument("--opening-ply-threshold", type=int, default=30)
+    parser.add_argument("--hard-negative-top-k", type=int, default=100)
+    parser.add_argument("--aux-material-weight", type=float, default=0.0)
+    parser.add_argument("--aux-piece-count-weight", type=float, default=0.0)
+    parser.add_argument("--aux-phase-weight", type=float, default=0.0)
+    parser.add_argument("--aux-turn-weight", type=float, default=0.0)
+    parser.add_argument("--aux-castle-weight", type=float, default=0.0)
+    parser.add_argument("--aux-ep-weight", type=float, default=0.0)
     return parser.parse_args()
 
 
@@ -313,9 +370,24 @@ def auxiliary_config(args: argparse.Namespace) -> AuxiliaryLossConfig:
         cov_weight=args.cov_weight,
         nce_weight=args.nce_weight,
         nce_temperature=args.nce_temperature,
+        alone_var_weight=args.alone_var_weight,
+        alone_cov_weight=args.alone_cov_weight,
+        alone_targets_per_window=args.alone_targets_per_window,
         vicreg_gamma=args.vicreg_gamma,
         vicreg_eps=args.vicreg_eps,
         warmup_steps=args.aux_warmup,
+        content_pooling=args.content_pooling,
+        use_supcon=args.supcon,
+        turn_flip=args.turn_flip,
+        temporal_radius=args.temporal_radius,
+        ignore_opening_negatives=args.ignore_opening_negatives,
+        opening_ply_threshold=args.opening_ply_threshold,
+        material_weight=args.aux_material_weight,
+        piece_count_weight=args.aux_piece_count_weight,
+        phase_weight=args.aux_phase_weight,
+        turn_weight=args.aux_turn_weight,
+        castle_weight=args.aux_castle_weight,
+        ep_weight=args.aux_ep_weight,
     )
 
 
@@ -367,6 +439,7 @@ def resolve_data_dirs(args: argparse.Namespace, log=None) -> tuple[Path, Path]:
 
 def main() -> None:
     args = parse_args()
+    check_dependencies()
     log = make_logger(args.log_file)
     torch.manual_seed(args.seed)
     if torch.cuda.is_available():
@@ -394,6 +467,18 @@ def main() -> None:
             dropout=args.dropout,
             max_seq_len=args.max_seq_len,
             max_segments=args.max_segments,
+            content_pooling=args.content_pooling,
+            aux_heads=any(
+                weight > 0
+                for weight in (
+                    args.aux_material_weight,
+                    args.aux_piece_count_weight,
+                    args.aux_phase_weight,
+                    args.aux_turn_weight,
+                    args.aux_castle_weight,
+                    args.aux_ep_weight,
+                )
+            ),
         )
 
     model = MaskedStreamTransformer(model_config).to(device)
@@ -429,8 +514,16 @@ def main() -> None:
             )
             log("frequency-aware loss weighting enabled")
     log(f"loading val split from {val_dir} ...")
-    val_games = _load_game_segments(Path(val_dir))
-    log(f"loaded {len(val_games)} val games")
+    val_games = load_game_pool(
+        Path(val_dir),
+        args.eval_pool_games,
+        prefetch_shards=args.prefetch_shards,
+    )
+    log(
+        f"loaded {len(val_games)} val games "
+        f"(pool cap={args.eval_pool_games}, "
+        f"prefetch_shards={args.prefetch_shards})"
+    )
     val_dataset = WindowDataset(
         WindowDatasetConfig(
             games=val_games,
@@ -561,6 +654,30 @@ def main() -> None:
     running_components: dict[str, float] = {}
     latest_eval: dict | None = None
     latest_metrics: dict = {}
+
+    def save_last_checkpoint(step: int) -> None:
+        path = checkpoint_dir / "last.pt"
+        save_extra = {
+            "optimizer_state": optimizer.state_dict(),
+            "scheduler_state": scheduler.state_dict(),
+            "best_val_loss": best_val_loss,
+        }
+        if latest_eval is not None:
+            save_extra["full_eval"] = {
+                key: value for key, value in latest_eval.items() if key != "step"
+            }
+        save_extra.update(latest_metrics)
+        save_checkpoint(
+            path,
+            raw_model,
+            model_config,
+            step,
+            save_extra,
+        )
+        log(f"saved full checkpoint to {path}")
+        upload(path, "last", step, best_val_loss)
+        return
+
     start = time.time()
     loss_config = auxiliary_config(args)
     target_generator = torch.Generator(device=device).manual_seed(args.seed)
@@ -639,7 +756,15 @@ def main() -> None:
             running_components = {}
             start = time.time()
 
-        if step % args.eval_every == 0 or step == args.steps:
+        actions = periodic_checkpoint_plan(
+            step,
+            steps=args.steps,
+            save_every=args.save_every,
+            eval_every=args.eval_every,
+        )
+        if actions.save_before_eval:
+            save_last_checkpoint(step)
+        if actions.evaluate:
             val_loss, val_acc = evaluate(
                 model, val_loader, device, args.eval_batches, bf16
             )
@@ -734,16 +859,28 @@ def main() -> None:
                     step=step,
                 )
                 watch = [
-                    "board_turn_acc",
-                    "board_castle_acc",
-                    "board_piece_acc",
-                    "board_prior_baseline",
-                    "random_piece_acc",
-                    "span_piece_acc",
+                    "mlm_board_turn_acc",
+                    "mlm_board_castle_acc",
+                    "mlm_board_piece_acc",
+                    "mlm_board_prior_baseline",
+                    "mlm_random_piece_acc",
+                    "mlm_span_piece_acc",
+                    "mean_top10_cosine",
+                    "mean_random_pair_cosine",
                     "cos_to_move_child",
+                    "cos_to_second_child",
                     "cos_to_corrupted",
+                    "cos_to_random_position",
                     "test_r2_material",
+                    "test_r2_material_ci_low",
+                    "test_r2_material_ci_high",
+                    "test_acc_side_to_move",
                     "pc1_piece_corr",
+                    "pc1_piece_corr_ci_low",
+                    "pc1_piece_corr_ci_high",
+                    "pc2_piece_corr",
+                    "pc2_piece_corr_ci_low",
+                    "pc2_piece_corr_ci_high",
                 ]
                 log(
                     f"step={step} "
@@ -752,6 +889,25 @@ def main() -> None:
                     )
                 )
                 extras["full_eval"] = metrics
+            hard_records = collect_hard_negatives(
+                raw_model,
+                batch,
+                loss_config,
+                step=step,
+                top_k=args.hard_negative_top_k,
+                generator=torch.Generator(device=device).manual_seed(args.seed + step),
+            )
+            hard_path = write_hard_negatives(hard_records, checkpoint_dir, step)
+            if hard_path is not None:
+                log(f"step={step} hard negatives saved to {hard_path}")
+                if args.upload_bucket:
+                    upload_file(
+                        hard_path,
+                        bucket_id=args.upload_bucket,
+                        remote_path=(
+                            f"{args.upload_prefix}/hard_negatives/{hard_path.name}"
+                        ),
+                    )
             latest_metrics = {
                 key: value for key, value in extras.items() if key != "full_eval"
             }
@@ -768,27 +924,8 @@ def main() -> None:
                 log(f"saved best checkpoint to {path} (val_loss={val_loss:.4f})")
                 upload(path, f"best_step{step}", step, best_val_loss)
 
-        if step % args.save_every == 0 or step == args.steps:
-            path = checkpoint_dir / "last.pt"
-            save_extra = {
-                "optimizer_state": optimizer.state_dict(),
-                "scheduler_state": scheduler.state_dict(),
-                "best_val_loss": best_val_loss,
-            }
-            if latest_eval is not None:
-                save_extra["full_eval"] = {
-                    key: value for key, value in latest_eval.items() if key != "step"
-                }
-            save_extra.update(latest_metrics)
-            save_checkpoint(
-                path,
-                raw_model,
-                model_config,
-                step,
-                save_extra,
-            )
-            log(f"saved full checkpoint to {path}")
-            upload(path, "last", step, best_val_loss)
+        if actions.save_after_eval:
+            save_last_checkpoint(step)
 
     tracker.end()
     return

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -128,19 +129,19 @@ class WindowDataset(Dataset):
         mode = config.force_mode
         if mode is None and config.balanced_modes:
             mode = self.mode_pattern[index % len(self.mode_pattern)]
-        return _build_window(self.games[index], config, rng, mode)
+        return _build_window(self.games[index], config, rng, mode, game_id=index)
 
 
 def _sample_segments(
     segments: list[np.ndarray],
     rng: np.random.Generator,
     config: WindowDatasetConfig,
-) -> list[np.ndarray]:
+) -> tuple[list[np.ndarray], int]:
     n = len(segments)
     u = rng.random()
     if u < config.p_single or n < config.few_min:
         start = int(rng.integers(n))
-        return [segments[start]]
+        return [segments[start]], start
     if u < config.p_single + config.p_few:
         k = int(rng.integers(config.few_min, min(config.few_max, n) + 1))
         return _sample_few(segments, rng, config, k)
@@ -152,7 +153,7 @@ def _sample_few(
     rng: np.random.Generator,
     config: WindowDatasetConfig,
     k: int,
-) -> list[np.ndarray]:
+) -> tuple[list[np.ndarray], int]:
     """Sample up to k consecutive segments without exceeding the token budget."""
     budget = config.max_seq_len - 1
     start = int(rng.integers(len(segments) - k + 1))
@@ -166,19 +167,19 @@ def _sample_few(
         used += cost
     if not chosen:
         chosen = [segments[start][: budget - 1]]
-    return chosen
+    return chosen, start
 
 
 def _sample_full(
     segments: list[np.ndarray],
     rng: np.random.Generator,
     config: WindowDatasetConfig,
-) -> list[np.ndarray]:
+) -> tuple[list[np.ndarray], int]:
     budget = config.max_seq_len - 1
     lengths = np.fromiter((len(s) for s in segments), dtype=np.int64)
     total = int(lengths.sum() + len(segments))
     if total <= budget and len(segments) <= config.max_segments:
-        return list(segments)
+        return list(segments), 0
     start = int(rng.integers(len(segments)))
     chosen: list[np.ndarray] = []
     used = 0
@@ -190,7 +191,7 @@ def _sample_full(
         used += cost
     if not chosen:
         chosen = [segments[start][: budget - 1]]
-    return chosen
+    return chosen, start
 
 
 def _sample_long(
@@ -198,16 +199,16 @@ def _sample_long(
     rng: np.random.Generator,
     config: WindowDatasetConfig,
     min_segments: int,
-) -> list[np.ndarray]:
+) -> tuple[list[np.ndarray], int]:
     """Sample a full-budget window guaranteed to hold at least min_segments."""
     budget = config.max_seq_len - 1
     lengths = np.fromiter((len(s) for s in segments), dtype=np.int64)
     total = int(lengths.sum() + len(segments))
     if total <= budget and len(segments) <= config.max_segments:
-        return list(segments)
+        return list(segments), 0
     max_start = len(segments) - min_segments
     if max_start < 0:
-        return list(segments)
+        return list(segments), 0
     start = int(rng.integers(max_start + 1))
     chosen: list[np.ndarray] = []
     used = 0
@@ -217,7 +218,7 @@ def _sample_long(
             break
         chosen.append(segments[i])
         used += cost
-    return chosen
+    return chosen, start
 
 
 def _build_window(
@@ -225,18 +226,19 @@ def _build_window(
     config: WindowDatasetConfig,
     rng: np.random.Generator,
     mode: str | None,
+    game_id: int = 0,
 ) -> dict[str, np.ndarray]:
     """Sample, pack, and mask one window from a game's segments."""
     if mode in ("board", "span", "skip_gram"):
         if len(segments) >= config.masking.min_context_segments:
-            segments = _sample_long(
+            segments, start = _sample_long(
                 segments, rng, config, config.masking.min_context_segments
             )
         else:
             mode = "random"
-            segments = _sample_segments(segments, rng, config)
+            segments, start = _sample_segments(segments, rng, config)
     else:
-        segments = _sample_segments(segments, rng, config)
+        segments, start = _sample_segments(segments, rng, config)
     tokens = _pack(segments)
     if config.apply_masking:
         masked, targets, weights = mask_stream(tokens, config.masking, rng, mode)
@@ -247,7 +249,13 @@ def _build_window(
         masked = tokens
         targets = np.full(tokens.shape, IGNORE_INDEX, dtype=np.int16)
         weights = np.zeros(tokens.shape, dtype=np.float32)
-    return {"tokens": masked, "targets": targets, "weights": weights}
+    return {
+        "tokens": masked,
+        "targets": targets,
+        "weights": weights,
+        "game_id": game_id,
+        "start_index": start,
+    }
 
 
 def _load_game_segments(
@@ -285,6 +293,56 @@ def _load_game_segments(
         if segments:
             games.append(segments)
     return games
+
+
+def _iter_shard_games(shards: list[Path], prefetch_shards: int):
+    """Yield shard game lists in order, decoding ahead in a bounded window."""
+    if prefetch_shards <= 0:
+        for shard in shards:
+            yield _load_game_segments(shard)
+        return
+    with ThreadPoolExecutor(max_workers=prefetch_shards) as pool:
+        pending = deque()
+        shard_iter = iter(shards)
+        for _ in range(prefetch_shards):
+            try:
+                shard = next(shard_iter)
+            except StopIteration:
+                break
+            pending.append(pool.submit(_load_game_segments, shard))
+        while pending:
+            games = pending.popleft().result()
+            try:
+                shard = next(shard_iter)
+            except StopIteration:
+                pass
+            else:
+                pending.append(pool.submit(_load_game_segments, shard))
+            yield games
+    return
+
+
+def load_game_pool(
+    data_dir: str | Path,
+    max_games: int,
+    prefetch_shards: int = 2,
+) -> list[list[np.ndarray]]:
+    """Load a bounded validation pool by streaming shards with prefetch.
+
+    Only ``max_games`` are retained; at most ``prefetch_shards`` decoded
+    shards are in flight at once. Use this instead of
+    :func:`_load_game_segments` on a full validation directory so validation
+    never materializes the whole split.
+    """
+    if max_games <= 0:
+        raise ValueError("max_games must be positive")
+    shards = sorted(Path(data_dir).rglob("*.parquet"))
+    games: list[list[np.ndarray]] = []
+    for shard_games in _iter_shard_games(shards, prefetch_shards):
+        games.extend(shard_games)
+        if len(games) >= max_games:
+            break
+    return games[:max_games]
 
 
 def _split_segments(stream: np.ndarray) -> list[np.ndarray]:
@@ -424,7 +482,8 @@ class StreamingWindowDataset(IterableDataset):
             None if self.config.seed is None else self.config.seed + worker_id
         )
         mode_counter = 0
-        buffer: list[list[np.ndarray]] = []
+        game_counter = 0
+        buffer: list[tuple[list[np.ndarray], int]] = []
         epoch = 0
         while True:
             order = rng.permutation(worker_indices)
@@ -437,18 +496,22 @@ class StreamingWindowDataset(IterableDataset):
             )
             for _, games in shard_iter:
                 for segments in games:
+                    game_id = worker_id * 1_000_000_000 + game_counter
+                    game_counter += 1
                     if self.config.shuffle_buffer > 1:
                         if len(buffer) >= self.config.shuffle_buffer:
-                            game = buffer.pop(int(rng.integers(len(buffer))))
-                            yield self._window(game, rng, mode_counter)
+                            game, buffered_id = buffer.pop(
+                                int(rng.integers(len(buffer)))
+                            )
+                            yield self._window(game, rng, mode_counter, buffered_id)
                             mode_counter += 1
-                        buffer.append(segments)
+                        buffer.append((segments, game_id))
                     else:
-                        yield self._window(segments, rng, mode_counter)
+                        yield self._window(segments, rng, mode_counter, game_id)
                         mode_counter += 1
             while buffer:
-                game = buffer.pop(int(rng.integers(len(buffer))))
-                yield self._window(game, rng, mode_counter)
+                game, buffered_id = buffer.pop(int(rng.integers(len(buffer))))
+                yield self._window(game, rng, mode_counter, buffered_id)
                 mode_counter += 1
             epoch += 1
         return
@@ -490,12 +553,13 @@ class StreamingWindowDataset(IterableDataset):
         segments: list[np.ndarray],
         rng: np.random.Generator,
         mode_counter: int,
+        game_id: int,
     ) -> dict[str, np.ndarray]:
         config = self.config
         mode = config.force_mode
         if mode is None and config.balanced_modes:
             mode = self.mode_pattern[mode_counter % len(self.mode_pattern)]
-        return _build_window(segments, config, rng, mode)
+        return _build_window(segments, config, rng, mode, game_id=game_id)
 
 
 def _pack(segments: list[np.ndarray]) -> np.ndarray:
@@ -525,10 +589,18 @@ def collate_windows(batch: list[dict[str, np.ndarray]]) -> dict[str, torch.Tenso
         if sample_weights is not None:
             weights[i, : len(sample_weights)] = sample_weights
     segment_ids = np.cumsum(tokens == SEP, axis=1, dtype=np.int64)
+    game_id = np.array(
+        [int(sample.get("game_id", -1)) for sample in batch], dtype=np.int64
+    )
+    start_index = np.array(
+        [int(sample.get("start_index", -1)) for sample in batch], dtype=np.int64
+    )
     return {
         "tokens": torch.from_numpy(tokens.astype(np.int64)),
         "targets": torch.from_numpy(targets.astype(np.int64)),
         "weights": torch.from_numpy(weights),
         "segment_ids": torch.from_numpy(segment_ids),
         "padding_mask": torch.from_numpy(tokens != PAD),
+        "game_id": torch.from_numpy(game_id),
+        "start_index": torch.from_numpy(start_index),
     }

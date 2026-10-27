@@ -162,14 +162,26 @@ skip-gram masking (`--p-skip-gram 0.2`), which leaves only
 visible and masks every token of the rest. Strong geometry, invariance and
 InfoNCE are on by default (`--inv-weight 0.5 --var-weight 1.0 --cov-weight
 0.1 --nce-weight 0.1 --aux-warmup 200`), following the 2026-10-25 objective
-sweep (see `docs/experiment_objective_sweep_2026-10-25.md`). Setting only one
+sweep (see `docs/experiment_objective_sweep_2026-10-25.md`). VICReg is also
+applied to the fully visible alone position embeddings
+(`--alone-var-weight 1.0 --alone-cov-weight 0.1`); the alone view is restored
+without mask tokens so it matches retrieval, and
+`--alone-targets-per-window 4` samples several targets per window (the
+same-window targets are hard InfoNCE negatives). Setting only one
 of p_rect/p_skip_gram zeroes the other (use both for a custom mix); legacy
 random/board/span flags zero both. Rect-only: `--p-rect 1 --p-skip-gram 0`;
 skip-only: `--p-rect 0 --p-skip-gram 1`. `--aux-warmup N` ramps the auxiliary
-weights; set all auxiliary weights to zero for the MLM-only baseline. The loop logs `mlm_loss`,
-`inv_loss`, `var_loss`, `cov_loss`, `nce_loss`, `token_rank_effective`, and
-with `--retrieval-benchmark <repo> --retrieval-benchmark-revision main`,
-`retrieval_*`. Ray training (`train_ray.py`) exposes the same masking/loss
+weights; set all auxiliary weights, including the alone-view weights, to zero
+for the MLM-only baseline. The loop logs `mlm_loss`, `inv_loss`, `var_loss`,
+`cov_loss`, `alone_var_loss`, `alone_cov_loss`, `nce_loss`,
+`token_rank_effective`, `mlm_board_*` (OOD whole-board MLM accuracy),
+`test_acc_side_to_move`, `cos_to_second_child` (turn-controlled),
+`cos_to_random_position`, material R²/PC1 with confidence intervals, and with
+`--retrieval-benchmark <repo> --retrieval-benchmark-revision main`,
+`retrieval_*`. Validation uses a bounded prefetched pool
+(`--eval-pool-games`, default 8192) filled shard-by-shard with
+`--prefetch-shards`; it does **not** preload the full test split. Ray training
+(`train_ray.py`) exposes the same masking/loss
 flags and YAML keys; multi-worker DDP requires `inv_weight=0` and
 `nce_weight=0` because the context-removal views are single-worker only.
 
@@ -275,6 +287,46 @@ Interpreting startup (foundation): `params=... bf16=... compile=...` banner →
 snapshot download → unigram pass (expect "from sidecars") → val split load →
 first steps. VRAM jumping with GPU at 0% is normal warmup, not a hang.
 
+### Flash-attn eval paths (dtype trap)
+
+FlashAttention only accepts fp16/bf16. Training runs under
+`torch.autocast(..., dtype=torch.bfloat16)`, but evaluation helpers can be
+called outside it. If a helper feeds fp32 activations to
+`flash_attn_varlen_func`, the run dies with:
+
+```
+RuntimeError: FlashAttention only support fp16 and bf16 data type
+```
+
+This is **not OOM** — check the traceback in `nohup.out` before touching batch
+size. It crashed step 4000 on 2026-10-27 in the retrieval benchmark. Required
+fixes for every eval/inference path:
+
+- Wrap `embed`/`encode_views` in
+  `torch.autocast(device_type=device.type, dtype=torch.bfloat16, enabled=device.type == "cuda")`
+  (see `src/evaluation/retrieval.py:embed_positions` and
+  `src/training/hard_negatives.py:collect_hard_negatives`).
+- Convert pooled embeddings with `.float()` before `.cpu().numpy()`; NumPy
+  cannot consume bf16.
+- Keep the dtype guard in `src/modeling/varlen.py:varlen_attention` so
+  non-fp16/bf16 inputs fall back to SDPA instead of calling FlashAttention.
+- After enabling flash on a new box, smoke-test retrieval on a small slice
+  before relaunching a long run:
+
+```bash
+/workspace/venv_fa/bin/python - <<'PY'
+import torch
+from src.modeling.transformer import MaskedStreamTransformer, TransformerConfig
+from src.evaluation.retrieval import load_benchmark, embed_positions
+ck = torch.load("data/models/<run>/last.pt", map_location="cpu", weights_only=False)
+model = MaskedStreamTransformer(TransformerConfig(**ck["model_config"])).cuda()
+model.load_state_dict(ck["model_state"])
+bench = load_benchmark("patrickfrank1/chess-positions", revision="main")
+emb = embed_positions(model, [p.tokens for p in bench.positions[:64]], torch.device("cuda"), batch_size=64)
+print(emb.shape, emb.dtype)
+PY
+```
+
 Reference profiles (4090, bf16): 25M model, batch 64, seq 4096: ~490k tok/s,
 24/47 GB VRAM, GPU ~97%. 2.4M model (d256/3L/4h/ff1024), batch 256: ~2.9M
 tok/s, 41/47 GB VRAM, GPU 100%.
@@ -330,6 +382,7 @@ to ..."). Teardown template: `/tmp/opencode/shutdown_d256l3.sh` (2026-10-19).
 | `Failed to find C compiler` | `apt-get install -y gcc` (see `vastai-gpu`) |
 | Triton `invalid device context` | drop `--compile`; torch 2.2.1 driver mismatch (see `vastai-gpu`) |
 | `ValueError: low >= high` | single-segment games in the batch; fix data/windowing |
+| `RuntimeError: FlashAttention only support fp16 and bf16 data type` | eval path outside bf16 autocast (retrieval/hard negatives); not OOM — see “Flash-attn eval paths” above |
 | GPU 0%, idle clocks | process died; read `watchdog.log` and `nohup.out` |
 | Focal loss ≈ 0.63 | `focal=focal` missing in the `train_epoch` call; run the focal wiring test |
 | Retrieval metrics identical every epoch | expected while the encoder is frozen |

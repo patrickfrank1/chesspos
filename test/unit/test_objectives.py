@@ -8,12 +8,13 @@ import torch
 from bdd import given, then, when
 from src.dataset.token_stream import (
     CLS,
+    MASK,
     PAD,
     SEP,
     TokenStreamEncoder,
     pack_stream,
 )
-from src.modeling.masking import MaskingConfig, mask_stream
+from src.modeling.masking import IGNORE_INDEX, MaskingConfig, mask_stream
 from src.modeling.transformer import MaskedStreamTransformer, TransformerConfig
 from src.training.objectives import (
     AuxiliaryLossConfig,
@@ -21,8 +22,11 @@ from src.training.objectives import (
     auxiliary_losses,
     compute_training_loss,
     extract_alone_views,
+    extract_alone_views_multi,
     info_nce_loss,
+    restore_visible_tokens,
     select_target_segments,
+    select_target_segments_multi,
     vicreg_terms,
 )
 
@@ -196,6 +200,63 @@ class TestContextViews:
                 assert mask[row, target]
         return
 
+    def test_selects_multiple_valid_targets_per_sample(self):
+        with given("a segment mask with different valid counts"):
+            mask = torch.tensor(
+                [[True, True, False], [True, False, False], [True, True, True]]
+            )
+
+        with when("two targets are sampled per window"):
+            targets = select_target_segments_multi(
+                mask, count=2, generator=torch.Generator().manual_seed(0)
+            )
+
+        with then("each row gets up to two distinct valid targets"):
+            assert len(targets) == 3
+            assert [len(row) for row in targets] == [2, 1, 2]
+            for row, selected in enumerate(targets):
+                assert len(set(selected)) == len(selected)
+                assert all(mask[row, target] for target in selected)
+        return
+
+    def test_extracts_multiple_alone_views_with_mapping(self):
+        with given("a packed window with three segments and two targets in row 0"):
+            segments = [np.arange(3) + 10, np.arange(4) + 20, np.arange(5) + 30]
+            tokens = torch.from_numpy(pack_stream(segments).astype(np.int64))[None]
+            segment_ids = torch.from_numpy(
+                np.cumsum(pack_stream(segments) == SEP).astype(np.int64)
+            )[None]
+            padding = torch.ones_like(tokens, dtype=torch.bool)
+            targets_per_row = [[0, 1]]
+
+        with when("the alone views are extracted"):
+            alone_tokens, _, _, rows, targets = extract_alone_views_multi(
+                tokens, segment_ids, padding, targets_per_row
+            )
+
+        with then("the views keep their target mapping"):
+            assert alone_tokens.shape[0] == 2
+            assert rows.tolist() == [0, 0]
+            assert targets.tolist() == [0, 1]
+            for view, segment in enumerate(segments[:2]):
+                expected = pack_stream([segment])
+                assert alone_tokens[view, : len(expected)].tolist() == expected.tolist()
+        return
+
+    def test_restore_visible_tokens_replaces_masks(self):
+        with given("a masked window and its original targets"):
+            tokens = torch.tensor([[CLS, MASK, 5, SEP, PAD]])
+            targets = torch.tensor(
+                [[IGNORE_INDEX, 7, IGNORE_INDEX, IGNORE_INDEX, IGNORE_INDEX]]
+            )
+
+        with when("the visible tokens are restored"):
+            visible = restore_visible_tokens(tokens, targets)
+
+        with then("only the masked token changes"):
+            assert visible.tolist() == [[CLS, 7, 5, SEP, PAD]]
+        return
+
 
 class TestAuxiliaryLosses:
     def test_default_weights_match_the_objective_sweep(self):
@@ -209,6 +270,9 @@ class TestAuxiliaryLosses:
             assert config.cov_weight == 0.1
             assert config.nce_weight == 0.1
             assert config.nce_temperature == 0.1
+            assert config.alone_var_weight == 1.0
+            assert config.alone_cov_weight == 0.1
+            assert config.alone_targets_per_window == 4
             assert config.warmup_steps == 200
             assert config.auxiliary_enabled() is True
         return
@@ -222,6 +286,8 @@ class TestAuxiliaryLosses:
                 var_weight=0.0,
                 cov_weight=0.0,
                 nce_weight=0.0,
+                alone_var_weight=0.0,
+                alone_cov_weight=0.0,
             )
             embeddings = torch.randn(8, 4)
             targets = torch.randn(8, 4)
@@ -245,6 +311,8 @@ class TestAuxiliaryLosses:
                 var_weight=0.0,
                 cov_weight=0.0,
                 nce_weight=0.0,
+                alone_var_weight=0.0,
+                alone_cov_weight=0.0,
             )
             targets = torch.randn(8, 4)
 
@@ -265,6 +333,8 @@ class TestAuxiliaryLosses:
                 var_weight=0.0,
                 cov_weight=0.0,
                 nce_weight=0.2,
+                alone_var_weight=0.0,
+                alone_cov_weight=0.0,
             )
             targets = torch.randn(8, 4)
 
@@ -284,6 +354,8 @@ class TestAuxiliaryLosses:
                 var_weight=0.0,
                 cov_weight=0.0,
                 nce_weight=0.0,
+                alone_var_weight=0.0,
+                alone_cov_weight=0.0,
                 warmup_steps=10,
             )
             targets = torch.randn(8, 4)
@@ -300,6 +372,39 @@ class TestAuxiliaryLosses:
             assert end == pytest.approx(mlm.item() + inv.item())
         return
 
+    def test_alone_vicreg_uses_alone_embeddings(self):
+        with given("distinct in-context and alone embeddings"):
+            mlm = torch.tensor(1.0)
+            embeddings = torch.randn(32, 8)
+            anchors = torch.randn(16, 8)
+            alone = torch.randn(16, 8)
+            config = AuxiliaryLossConfig(
+                mlm_weight=1.0,
+                inv_weight=0.0,
+                var_weight=0.0,
+                cov_weight=0.0,
+                nce_weight=0.0,
+                alone_var_weight=1.0,
+                alone_cov_weight=0.1,
+                warmup_steps=0,
+            )
+
+        with when("the loss is assembled"):
+            total, components = auxiliary_losses(
+                mlm, embeddings, anchors, alone, config
+            )
+
+        with then("the alone terms are computed from the alone embeddings"):
+            expected_var, expected_cov = vicreg_terms(alone)
+            assert components["alone_var"].item() == pytest.approx(expected_var.item())
+            assert components["alone_cov"].item() == pytest.approx(expected_cov.item())
+            assert "var" not in components
+            assert "cov" not in components
+            assert total.item() == pytest.approx(
+                mlm.item() + expected_var.item() + 0.1 * expected_cov.item()
+            )
+        return
+
 
 class TestComputeTrainingLoss:
     def test_mlm_only_configuration_matches_the_model_loss(self):
@@ -312,6 +417,8 @@ class TestComputeTrainingLoss:
                 var_weight=0.0,
                 cov_weight=0.0,
                 nce_weight=0.0,
+                alone_var_weight=0.0,
+                alone_cov_weight=0.0,
             )
 
         with when("the training loss is computed"):
@@ -340,6 +447,8 @@ class TestComputeTrainingLoss:
                 var_weight=0.1,
                 cov_weight=0.01,
                 nce_weight=0.0,
+                alone_var_weight=0.1,
+                alone_cov_weight=0.01,
             )
 
         with when("the training loss is computed and backpropagated"):
@@ -351,14 +460,52 @@ class TestComputeTrainingLoss:
             )
             total.backward()
 
-        with then("invariance, variance and covariance are present"):
-            assert {"mlm", "inv", "var", "cov"} == set(components)
+        with then("invariance, in-context and alone VICReg are present"):
+            assert {"mlm", "inv", "var", "cov", "alone_var", "alone_cov"} == set(
+                components
+            )
             assert "nce" not in components
             assert all(
                 parameter.grad is not None
                 for parameter in model.parameters()
                 if parameter.requires_grad
             )
+        return
+
+    def test_alone_view_is_fully_visible(self):
+        with given("a masked batch and a spy on the alone encoder"):
+            model = tiny_model()
+            batch = tiny_batch()
+            config = AuxiliaryLossConfig(
+                mlm_weight=1.0,
+                inv_weight=0.1,
+                var_weight=0.0,
+                cov_weight=0.0,
+                nce_weight=0.0,
+                alone_var_weight=0.0,
+                alone_cov_weight=0.0,
+                warmup_steps=0,
+            )
+            captured: dict[str, torch.Tensor] = {}
+            original_encode = model.encode
+
+            def spy(tokens, segment_ids, padding_mask=None):
+                captured["tokens"] = tokens.detach().clone()
+                return original_encode(tokens, segment_ids, padding_mask)
+
+            model.encode = spy
+
+        with when("the training loss is computed"):
+            compute_training_loss(
+                model,
+                batch,
+                config,
+                generator=torch.Generator().manual_seed(0),
+            )
+
+        with then("the alone view contains no mask tokens"):
+            assert "tokens" in captured
+            assert captured["tokens"].ne(MASK).all()
         return
 
     def test_info_nce_can_be_enabled_without_changing_the_interface(self):
@@ -371,6 +518,8 @@ class TestComputeTrainingLoss:
                 var_weight=0.0,
                 cov_weight=0.0,
                 nce_weight=0.5,
+                alone_var_weight=0.0,
+                alone_cov_weight=0.0,
             )
 
         with when("the training loss is computed"):

@@ -51,6 +51,9 @@ training:
   cov_weight: 0.1
   nce_weight: 0.1
   nce_temperature: 0.1
+  alone_var_weight: 1.0   # VICReg on fully visible alone position embeddings
+  alone_cov_weight: 0.1
+  alone_targets_per_window: 4  # multiple targets -> more NCE negatives
   aux_warmup: 200
 
   # Optional measurements at each eval.

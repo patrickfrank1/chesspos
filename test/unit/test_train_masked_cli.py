@@ -23,6 +23,17 @@ class TestParseArgs:
             assert args.d_ff == 2048
         return
 
+    def test_validation_pool_is_bounded_by_default(self, monkeypatch):
+        with given("no CLI arguments"):
+            monkeypatch.setattr("sys.argv", ["train_masked_transformer"])
+
+        with when("the arguments are parsed"):
+            args = parse_args()
+
+        with then("the validation pool is capped rather than loading the test split"):
+            assert args.eval_pool_games == 8192
+        return
+
 
 class TestStreamingFlag:
     def test_streaming_defaults_to_off(self, monkeypatch):
@@ -246,6 +257,9 @@ class TestAuxiliaryConfig:
             assert config.var_weight == 1.0
             assert config.cov_weight == 0.1
             assert config.nce_weight == 0.1
+            assert config.alone_var_weight == 1.0
+            assert config.alone_cov_weight == 0.1
+            assert config.alone_targets_per_window == 4
             assert config.warmup_steps == 200
             assert config.auxiliary_enabled() is True
         return
@@ -263,6 +277,10 @@ class TestAuxiliaryConfig:
                     "--cov-weight",
                     "0",
                     "--nce-weight",
+                    "0",
+                    "--alone-var-weight",
+                    "0",
+                    "--alone-cov-weight",
                     "0",
                 ],
             )
@@ -304,6 +322,31 @@ class TestAuxiliaryConfig:
             assert config.nce_weight == 0.3
             assert config.nce_temperature == 0.07
             assert config.warmup_steps == 100
+        return
+
+    def test_alone_vicreg_flags_override(self, monkeypatch):
+        with given("explicit alone-view weights and target count"):
+            monkeypatch.setattr(
+                "sys.argv",
+                [
+                    "train_masked_transformer",
+                    "--alone-var-weight",
+                    "0.4",
+                    "--alone-cov-weight",
+                    "0.04",
+                    "--alone-targets-per-window",
+                    "2",
+                ],
+            )
+            args = parse_args()
+
+        with when("the auxiliary config is built"):
+            config = auxiliary_config(args)
+
+        with then("the alone-view settings reach the config"):
+            assert config.alone_var_weight == 0.4
+            assert config.alone_cov_weight == 0.04
+            assert config.alone_targets_per_window == 2
         return
 
 

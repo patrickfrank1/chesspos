@@ -67,7 +67,14 @@ def varlen_attention(
     by ``cu_seqlens_q``. Uses the flash-attn varlen kernel on CUDA when the
     ``flash_attn`` package is installed, otherwise a per-segment SDPA loop.
     """
-    if FLASH_AVAILABLE and q.is_cuda:  # pragma: no cover - requires CUDA
+    flash_dtypes = (torch.float16, torch.bfloat16)
+    if (  # pragma: no cover - requires CUDA
+        FLASH_AVAILABLE
+        and q.is_cuda
+        and q.dtype in flash_dtypes
+        and k.dtype in flash_dtypes
+        and v.dtype in flash_dtypes
+    ):
         return flash_attn_varlen_func(
             q,
             k,

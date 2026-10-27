@@ -87,6 +87,16 @@ def upload_log(
     return
 
 
+def upload_file(
+    path: Path,
+    bucket_id: str,
+    remote_path: str,
+) -> None:
+    """Upload one artifact to a bucket under an explicit remote path."""
+    batch_bucket_files(bucket_id, add=[(Path(path), remote_path)])
+    return
+
+
 def upload_checkpoint(
     checkpoint_path: Path,
     bucket_id: str,

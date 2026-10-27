@@ -1,5 +1,6 @@
 # Custom
 mlruns
+logs
 volumes
 deprecated
 requirements.txt

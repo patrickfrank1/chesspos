@@ -757,7 +757,14 @@ def embed_positions(
     encoder.eval()
     rows: list[np.ndarray] = []
     try:
-        with torch.no_grad():
+        with (
+            torch.no_grad(),
+            torch.autocast(
+                device_type=device.type,
+                dtype=torch.bfloat16,
+                enabled=device.type == "cuda",
+            ),
+        ):
             for start in range(0, len(tokens), batch_size):
                 batch = tokens[start : start + batch_size]
                 packed = [
@@ -772,7 +779,7 @@ def embed_positions(
                 embeddings, _ = encoder.embed(
                     token_tensor.to(device), segment_tensor.to(device)
                 )
-                rows.append(embeddings[:, 0].cpu().numpy())
+                rows.append(embeddings[:, 0].float().cpu().numpy())
     finally:
         encoder.train(was_training)
     return np.concatenate(rows) if rows else np.zeros((0, 0))

@@ -344,6 +344,24 @@ def corrupt_segment(segment: np.ndarray, rng: np.random.Generator) -> np.ndarray
     return corrupted
 
 
+def random_child(board, rng: np.random.Generator):
+    """Return a legal one-ply child, or None when the board is terminal."""
+    moves = list(board.legal_moves)
+    if not moves:
+        return None
+    child = board.copy()
+    child.push(moves[int(rng.integers(len(moves)))])
+    return child
+
+
+def random_second_child(board, rng: np.random.Generator):
+    """Return a legal two-ply descendant, so the side to move is unchanged."""
+    child = random_child(board, rng)
+    if child is None:
+        return None
+    return random_child(child, rng)
+
+
 @torch.no_grad()
 def counterfactual_stats(
     model: MaskedStreamTransformer,
@@ -359,21 +377,24 @@ def counterfactual_stats(
     picks = rng.choice(len(segments), size=min(n, len(segments)), replace=False)
     encoder = TokenStreamEncoder()
     children: list[np.ndarray] = []
+    second_children: list[np.ndarray] = []
     corrupted: list[np.ndarray] = []
     used: list[int] = []
     for i in picks:
         board = boards[int(i)]
-        moves = list(board.legal_moves)
-        if not moves:
+        child = random_child(board, rng)
+        second_child = random_second_child(board, rng)
+        if child is None or second_child is None:
             continue
-        child = board.copy()
-        child.push(moves[int(rng.integers(len(moves)))])
         children.append(encoder.encode(child))
+        second_children.append(encoder.encode(second_child))
+        # corrupt_segment only changes piece slots, so the turn is preserved.
         corrupted.append(corrupt_segment(segments[int(i)], rng))
         used.append(int(i))
     if not used:
         return {}
     child_embeds = embed_segments(model, children, device, batch_size)
+    second_child_embeds = embed_segments(model, second_children, device, batch_size)
     corrupted_embeds = embed_segments(model, corrupted, device, batch_size)
     base = embeds[torch.tensor(used)]
     used_t = torch.tensor(used)
@@ -384,6 +405,9 @@ def counterfactual_stats(
         clash = random_j == used_t
     return {
         "cos_to_move_child": torch.sum(base * child_embeds, dim=-1).mean().item(),
+        "cos_to_second_child": torch.sum(base * second_child_embeds, dim=-1)
+        .mean()
+        .item(),
         "cos_to_corrupted": torch.sum(base * corrupted_embeds, dim=-1).mean().item(),
         "cos_to_random_position": torch.sum(base * embeds[random_j], dim=-1)
         .mean()
@@ -418,6 +442,31 @@ def material_probe(
     return {"test_r2_material": 1.0 - ss_res / max(ss_tot, 1e-9)}
 
 
+def material_probe_ci(
+    embeds: torch.Tensor,
+    materials: np.ndarray,
+    seed: int,
+    n_seeds: int = 5,
+) -> dict[str, float]:
+    """Ridge-probe R² aggregated over multiple train/test splits."""
+    values = np.array(
+        [
+            material_probe(embeds, materials, seed + offset)["test_r2_material"]
+            for offset in range(max(1, n_seeds))
+        ],
+        dtype=float,
+    )
+    mean = float(values.mean())
+    std = float(values.std(ddof=1)) if values.size > 1 else 0.0
+    margin = 1.96 * std / np.sqrt(values.size)
+    return {
+        "test_r2_material": mean,
+        "test_r2_material_std": std,
+        "test_r2_material_ci_low": mean - margin,
+        "test_r2_material_ci_high": mean + margin,
+    }
+
+
 def side_to_move_probe(
     embeds: torch.Tensor, boards: list, seed: int
 ) -> dict[str, float]:
@@ -432,13 +481,62 @@ def side_to_move_probe(
 def phase_stats(
     embeds: torch.Tensor, piece_counts: np.ndarray
 ) -> tuple[np.ndarray, float, float]:
+    """PCA phase correlation with a deterministic, non-negative sign.
+
+    The sign of an SVD component is arbitrary; flipping each component so its
+    correlation with the piece count is non-negative makes the value stable
+    across samples and bootstrap resamples.
+    """
     x = embeds.numpy()
     x = x - x.mean(axis=0)
     _, _, vt = np.linalg.svd(x, full_matrices=False)
     projected = x @ vt[:2].T
-    corr1 = float(np.corrcoef(projected[:, 0], piece_counts)[0, 1])
-    corr2 = float(np.corrcoef(projected[:, 1], piece_counts)[0, 1])
+
+    def safe_corr(values: np.ndarray, targets: np.ndarray) -> float:
+        if np.std(values) == 0 or np.std(targets) == 0:
+            return 0.0
+        return float(np.corrcoef(values, targets)[0, 1])
+
+    corr1 = safe_corr(projected[:, 0], piece_counts)
+    corr2 = safe_corr(projected[:, 1], piece_counts)
+    if corr1 < 0:
+        projected[:, 0] *= -1
+        corr1 = -corr1
+    if corr2 < 0:
+        projected[:, 1] *= -1
+        corr2 = -corr2
     return projected, corr1, corr2
+
+
+def phase_stats_ci(
+    embeds: torch.Tensor,
+    piece_counts: np.ndarray,
+    seed: int,
+    n_bootstrap: int = 20,
+) -> dict[str, float]:
+    """Bootstrap confidence interval for the PCA phase correlations."""
+    _, corr1, corr2 = phase_stats(embeds, piece_counts)
+    rng = np.random.default_rng(seed)
+    n = len(embeds)
+    values = []
+    for _ in range(max(2, n_bootstrap)):
+        indices = rng.integers(0, n, n)
+        _, c1, c2 = phase_stats(embeds[indices], piece_counts[indices])
+        values.append((c1, c2))
+    array = np.asarray(values, dtype=float)
+    pc1 = array[:, 0]
+    pc2 = array[:, 1]
+    metrics = {
+        "pc1_piece_corr": corr1,
+        "pc1_piece_corr_std": float(pc1.std(ddof=1)),
+        "pc1_piece_corr_ci_low": float(np.percentile(pc1, 2.5)),
+        "pc1_piece_corr_ci_high": float(np.percentile(pc1, 97.5)),
+        "pc2_piece_corr": corr2,
+        "pc2_piece_corr_std": float(pc2.std(ddof=1)),
+        "pc2_piece_corr_ci_low": float(np.percentile(pc2, 2.5)),
+        "pc2_piece_corr_ci_high": float(np.percentile(pc2, 97.5)),
+    }
+    return metrics
 
 
 def plot_phase_projection(
@@ -499,7 +597,7 @@ def full_eval(
         bf16=bf16,
     ).items():
         for key, value in stats.items():
-            metrics[f"{mode}_{key}"] = value
+            metrics[f"mlm_{mode}_{key}"] = value
     segments = sample_segments(val_games, pool_size, seed)
     if len(segments) >= 8:
         embeds = embed_segments(model, segments, device, bf16=bf16)
@@ -521,11 +619,10 @@ def full_eval(
                     seed,
                 )
             )
-        metrics.update(material_probe(embeds, materials, seed))
+        metrics.update(material_probe_ci(embeds, materials, seed))
         metrics.update(side_to_move_probe(embeds, boards, seed))
-        projected, corr1, corr2 = phase_stats(embeds, piece_counts)
-        metrics["pc1_piece_corr"] = corr1
-        metrics["pc2_piece_corr"] = corr2
+        projected, _, _ = phase_stats(embeds, piece_counts)
+        metrics.update(phase_stats_ci(embeds, piece_counts, seed))
         if plot_dir is not None:
             plot_phase_projection(projected, piece_counts, plot_dir)
     if was_training:
