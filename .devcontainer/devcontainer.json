@@ -1,13 +1,10 @@
 {
-  "name": "Dev Container",
+  "name": "chesspos",
   "build": {
     "dockerfile": "Dockerfile"
   },
-  "remoteUser": "root",
-  "features": {
-    "ghcr.io/devcontainers/features/docker-in-docker:2": {},
-      "ghcr.io/devcontainers/features/node:1": {}
-  },
+  "remoteUser": "dev",
+  "workspaceFolder": "/workspace",
   "customizations": {
     "vscode": {
       "extensions": [
@@ -38,9 +35,6 @@
       }
     }
   },
-  "postCreateCommand": "uv --version && python --version && npm --version && node --version && dockerd --version && docker --version",
-  "forwardPorts": [],
-  "mounts": [
-    "source=/var/run/docker.sock,target=/var/run/docker.sock,type=bind"
-  ]
+  "postCreateCommand": "bash .devcontainer/post-create.sh",
+  "forwardPorts": [8265, 5000]
 }

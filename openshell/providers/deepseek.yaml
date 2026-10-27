@@ -1,0 +1,21 @@
+id: deepseek
+display_name: DeepSeek
+description: DeepSeek inference API
+category: inference
+inference_capable: true
+credentials:
+  - name: api_key
+    description: DeepSeek API key
+    env_vars: [DEEPSEEK_API_KEY]
+    required: true
+    auth_style: bearer
+    header_name: authorization
+discovery:
+  credentials: [api_key]
+endpoints:
+  - host: api.deepseek.com
+    port: 443
+    protocol: rest
+    access: read-write
+    enforcement: enforce
+binaries: [/usr/local/bin/opencode]

@@ -1,0 +1,213 @@
+version: 1
+
+filesystem_policy:
+  include_workdir: true
+  read_only:
+    - /bin
+    - /usr
+    - /lib
+    - /lib64
+    - /etc
+    - /proc
+    - /dev/urandom
+    - /var/log
+  read_write:
+    - /tmp
+    - /dev/null
+    - /dev/shm
+    - /home/dev
+
+landlock:
+  compatibility: hard_requirement
+
+process:
+  run_as_user: "1000"
+  run_as_group: "1000"
+
+network_policies:
+  pypi:
+    endpoints:
+      - host: pypi.org
+        port: 443
+        protocol: rest
+        access: read-only
+        enforcement: enforce
+      - host: files.pythonhosted.org
+        port: 443
+        protocol: rest
+        access: read-only
+        enforcement: enforce
+      - host: downloads.python.org
+        port: 443
+        protocol: rest
+        access: read-only
+        enforcement: enforce
+      - host: download.pytorch.org
+        port: 443
+        protocol: rest
+        access: read-only
+        enforcement: enforce
+    binaries:
+      - path: /usr/local/bin/uv
+      - path: /usr/local/bin/python3.11
+      - path: /workspace/.venv/bin/python
+      - path: /workspace/.venv/bin/python3
+      - path: /workspace/.venv/bin/python3.11
+      - path: "/home/dev/.local/share/uv/python/**/bin/python3"
+      - path: "/home/dev/.local/share/uv/python/**/bin/python3.11"
+
+  huggingface:
+    endpoints:
+      - host: huggingface.co
+        port: 443
+        protocol: rest
+        access: read-write
+        enforcement: enforce
+      - host: cdn-lfs.huggingface.co
+        port: 443
+        protocol: rest
+        access: read-write
+        enforcement: enforce
+      - host: cdn-lfs-us-1.huggingface.co
+        port: 443
+        protocol: rest
+        access: read-write
+        enforcement: enforce
+      - host: "*.xethub.hf.co"
+        port: 443
+        protocol: rest
+        access: read-write
+        enforcement: enforce
+      - host: hf.co
+        port: 443
+        protocol: rest
+        access: read-only
+        enforcement: enforce
+    binaries:
+      - path: /usr/local/bin/uv
+      - path: /usr/local/bin/python3.11
+      - path: /workspace/.venv/bin/python
+      - path: /workspace/.venv/bin/python3
+      - path: /workspace/.venv/bin/python3.11
+      - path: "/home/dev/.local/share/uv/python/**/bin/python3"
+      - path: "/home/dev/.local/share/uv/python/**/bin/python3.11"
+
+  models_dev:
+    endpoints:
+      - host: models.dev
+        port: 443
+        protocol: rest
+        access: read-only
+        enforcement: enforce
+    binaries:
+      - path: /usr/local/bin/opencode
+
+  npm:
+    endpoints:
+      - host: registry.npmjs.org
+        port: 443
+        protocol: rest
+        access: read-only
+        allow_encoded_slash: true
+        enforcement: enforce
+    binaries:
+      - path: /usr/bin/node
+
+  context7:
+    endpoints:
+      - host: context7.com
+        port: 443
+        protocol: rest
+        access: read-write
+        enforcement: enforce
+    binaries:
+      - path: /usr/bin/node
+
+  github_read:
+    endpoints:
+      - host: github.com
+        port: 443
+        protocol: rest
+        enforcement: enforce
+        rules:
+          - allow: { method: GET, path: "**" }
+          - allow: { method: HEAD, path: "**" }
+          - allow: { method: OPTIONS, path: "**" }
+          - allow: { method: POST, path: "/**/git-upload-pack" }
+      - host: codeload.github.com
+        port: 443
+        protocol: rest
+        access: read-only
+        enforcement: enforce
+      - host: objects.githubusercontent.com
+        port: 443
+        protocol: rest
+        access: read-only
+        enforcement: enforce
+    binaries:
+      - path: /usr/bin/git
+      - path: /usr/local/bin/uv
+      - path: /usr/local/bin/python3.11
+      - path: /workspace/.venv/bin/python
+      - path: /workspace/.venv/bin/python3
+      - path: /workspace/.venv/bin/python3.11
+      - path: "/home/dev/.local/share/uv/python/**/bin/python3"
+      - path: "/home/dev/.local/share/uv/python/**/bin/python3.11"
+
+  github_push:
+    endpoints:
+      - host: github.com
+        port: 443
+        protocol: rest
+        enforcement: enforce
+        rules:
+          - allow: { method: POST, path: "/__GITHUB_REPO__.git/git-receive-pack" }
+    binaries:
+      - path: /usr/bin/git
+
+  vscode:
+    endpoints:
+      - host: update.code.visualstudio.com
+        port: 443
+        protocol: rest
+        access: read-only
+        enforcement: enforce
+      - host: vscode.download.prss.microsoft.com
+        port: 443
+        protocol: rest
+        access: read-only
+        enforcement: enforce
+      - host: code.visualstudio.com
+        port: 443
+        protocol: rest
+        access: read-only
+        enforcement: enforce
+      - host: marketplace.visualstudio.com
+        port: 443
+        protocol: rest
+        access: read-only
+        enforcement: enforce
+      - host: "*.gallerycdn.vsassets.io"
+        port: 443
+        protocol: rest
+        access: read-only
+        enforcement: enforce
+      - host: "*.vsassets.io"
+        port: 443
+        protocol: rest
+        access: read-only
+        enforcement: enforce
+      - host: "*.vscode-cdn.net"
+        port: 443
+        protocol: rest
+        access: read-only
+        enforcement: enforce
+      - host: "*.vo.msecnd.net"
+        port: 443
+        protocol: rest
+        access: read-only
+        enforcement: enforce
+    binaries:
+      - path: /usr/bin/curl
+      - path: /usr/bin/wget
+      - path: "/home/dev/.vscode-server/bin/**/node"
