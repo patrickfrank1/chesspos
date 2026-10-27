@@ -1,0 +1,27 @@
+id: huggingface
+display_name: Hugging Face
+description: Hugging Face Hub API
+category: data
+credentials:
+  - name: token
+    description: Hugging Face access token
+    env_vars: [HF_TOKEN, HUGGING_FACE_HUB_TOKEN]
+    required: true
+    auth_style: bearer
+    header_name: authorization
+discovery:
+  credentials: [token]
+endpoints:
+  - host: huggingface.co
+    port: 443
+    protocol: rest
+    access: read-write
+    enforcement: enforce
+binaries:
+  - /usr/local/bin/uv
+  - /usr/local/bin/python3.11
+  - /workspace/.venv/bin/python
+  - /workspace/.venv/bin/python3
+  - /workspace/.venv/bin/python3.11
+  - "/home/dev/.local/share/uv/python/**/bin/python3"
+  - "/home/dev/.local/share/uv/python/**/bin/python3.11"

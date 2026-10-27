@@ -1,0 +1,23 @@
+id: vastai
+display_name: Vast.ai
+description: Vast.ai GPU instance API
+category: other
+credentials:
+  - name: api_key
+    description: Vast.ai API key
+    env_vars: [VAST_AI_API_KEY, VASTAI_API_KEY, VAST_API_KEY]
+    required: true
+    auth_style: bearer
+    header_name: authorization
+discovery:
+  credentials: [api_key]
+endpoints:
+  - host: console.vast.ai
+    port: 443
+    protocol: rest
+    access: full
+    enforcement: enforce
+binaries:
+  - /home/dev/.local/share/vastai-venv/bin/python
+  - /home/dev/.local/share/vastai-venv/bin/python3
+  - /home/dev/.local/share/vastai-venv/bin/python3.11

@@ -61,7 +61,7 @@ network_policies:
       - host: huggingface.co
         port: 443
         protocol: rest
-        access: read-write
+        access: read-only
         enforcement: enforce
       - host: cdn-lfs.huggingface.co
         port: 443

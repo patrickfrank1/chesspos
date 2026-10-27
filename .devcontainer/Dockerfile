@@ -3,6 +3,7 @@ FROM python:3.11.8-slim-bookworm
 ARG DEBIAN_FRONTEND=noninteractive
 ARG UV_VERSION=0.13.6
 ARG OPENCODE_VERSION=1.19.4
+ARG VASTAI_VERSION=1.9.1
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
@@ -39,7 +40,11 @@ RUN curl -fsSL https://opencode.ai/install \
 RUN groupadd --gid 1000 dev \
     && useradd --uid 1000 --gid dev --create-home --shell /bin/bash dev \
     && mkdir -p /workspace /home/dev/.cache /home/dev/.config \
-       /home/dev/.local/share /home/dev/.vscode-server \
+       /home/dev/.local/bin /home/dev/.local/share /home/dev/.vscode-server \
+    && python -m venv --copies /home/dev/.local/share/vastai-venv \
+    && /home/dev/.local/share/vastai-venv/bin/pip install --no-cache-dir \
+       "vastai==${VASTAI_VERSION}" \
+    && ln -s /home/dev/.local/share/vastai-venv/bin/vastai /home/dev/.local/bin/vastai \
     && chown -R dev:dev /workspace /home/dev
 
 ENV PATH="/home/dev/.local/bin:${PATH}" \

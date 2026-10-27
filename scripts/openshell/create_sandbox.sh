@@ -25,23 +25,28 @@ done
 create_provider() {
     local name=$1
     local type=$2
-    local variable=$3
+    shift 2
 
     if openshell provider get "$name" >/dev/null 2>&1; then
         return
     fi
-    if [[ -n "${!variable:-}" ]]; then
-        openshell provider create --name "$name" --type "$type" --from-existing
-    fi
+    for variable in "$@"; do
+        if [[ -n "${!variable:-}" ]]; then
+            openshell provider create --name "$name" --type "$type" --from-existing
+            return
+        fi
+    done
 }
 
 create_provider deepseek deepseek DEEPSEEK_API_KEY
 create_provider zai zai ZAI_API_KEY
 create_provider github github GITHUB_TOKEN
+create_provider huggingface huggingface HF_TOKEN HUGGING_FACE_HUB_TOKEN
+create_provider vastai vastai VAST_AI_API_KEY VASTAI_API_KEY VAST_API_KEY
 
 providers=()
 provider_names=()
-for name in deepseek zai github; do
+for name in deepseek zai github huggingface vastai; do
     if openshell provider get "$name" >/dev/null 2>&1; then
         providers+=(--provider "$name")
         provider_names+=("$name")

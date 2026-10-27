@@ -1,5 +1,143 @@
 # Chess Position Embeddings
 
+## Project Setup
+
+The supported development environment is an NVIDIA OpenShell sandbox built from
+the shared Dev Container image (`.devcontainer/Dockerfile`). The same image also
+works as a plain Dev Container, but OpenShell is the default because it enforces
+a default-deny network policy and injects credentials at the edge instead of
+placing them in the workload.
+
+### Prerequisites
+
+- Docker on the host
+- The [OpenShell](https://github.com/NVIDIA/OpenShell) CLI and a selected gateway
+- VS Code with the Remote - SSH extension
+- `uv` for work outside the sandbox
+
+### 1. Install OpenShell
+
+```bash
+curl -LsSf https://raw.githubusercontent.com/NVIDIA/OpenShell/main/install.sh | sh
+openshell gateway list
+```
+
+The installer normally starts and selects a local gateway. If no gateway is
+selected, add one with:
+
+```bash
+openshell gateway add http://127.0.0.1:18080 --local --name local
+openshell gateway select local
+```
+
+### 2. Export credentials
+
+Export these in the host shell before creating the sandbox. Never commit them or
+paste them into a terminal that writes to a log; `.env*` files are ignored and
+excluded from sandbox uploads.
+
+```bash
+export DEEPSEEK_API_KEY=...
+export ZAI_API_KEY=...
+export GITHUB_TOKEN=...        # fine-grained token, Contents: read/write on patrickfrank1/chesspos
+export HF_TOKEN=...            # HUGGING_FACE_HUB_TOKEN is also accepted
+export VAST_AI_API_KEY=...     # VASTAI_API_KEY and VAST_API_KEY are also accepted
+```
+
+`VASTAI_API_KEY` is the name `scripts/provision_vast.py` reads; `VAST_API_KEY`
+is the name the upstream `vastai` CLI reads. The OpenShell provider exposes
+placeholders under all three names, so either works inside the sandbox.
+
+### 3. Create the sandbox
+
+```bash
+scripts/openshell/create_sandbox.sh
+```
+
+The script imports the provider profiles, creates the providers from the
+exported variables, builds `chesspos-agent:local`, creates the `chesspos`
+sandbox, uploads the repository to `/workspace`, and runs
+`uv sync --extra cpu`. It then opens VS Code in the sandbox.
+
+Reconnect later with:
+
+```bash
+openshell sandbox connect chesspos --editor vscode
+```
+
+On a headless VM, create without launching VS Code:
+
+```bash
+NO_EDITOR=1 scripts/openshell/create_sandbox.sh
+```
+
+### 4. Develop inside the sandbox
+
+The sandbox opens in `/workspace`. Run `opencode` from the integrated terminal:
+
+```bash
+opencode
+opencode models
+opencode -m deepseek/deepseek-chat
+```
+
+Git push works through the `github` provider and is restricted to the repository
+selected by `GITHUB_REPO` (default: `patrickfrank1/chesspos`). Hugging Face and
+Vast.ai calls use the `huggingface` and `vastai` providers, so the workload never
+sees the real tokens:
+
+```bash
+uv run python scripts/provision_vast.py
+uv run hf download patrickfrank1/chess-positions --repo-type dataset
+```
+
+### Syncing files
+
+The sandbox workspace is a copy, not a bind mount:
+
+```bash
+scripts/openshell/sync.sh out   # sandbox -> host
+scripts/openshell/sync.sh in    # host -> sandbox
+```
+
+### Rebuilding the image
+
+After changing `.devcontainer/Dockerfile`, recreate the sandbox:
+
+```bash
+RECREATE=1 scripts/openshell/create_sandbox.sh
+```
+
+After changing only network rules, re-render and apply the policy to the running
+sandbox:
+
+```bash
+sed "s|__GITHUB_REPO__|${GITHUB_REPO:-patrickfrank1/chesspos}|g" \
+  openshell/policy.yaml > .openshell/policy.yaml
+openshell policy set chesspos --policy .openshell/policy.yaml --wait
+```
+
+Filesystem, Landlock, and process settings require a recreate.
+
+### Dev Container fallback
+
+Open the repository in VS Code and choose **Reopen in Container**. The
+Dev Container uses the same image, runs `uv sync --extra cpu` via
+`.devcontainer/post-create.sh`, and intentionally has no root user, no
+Docker-in-Docker, and no Docker socket mount.
+
+### Sandbox network access
+
+`openshell/policy.yaml` denies egress by default and allows only PyPI/PyTorch,
+Hugging Face, npm/context7, `models.dev`, the VS Code server and marketplace,
+and GitHub read plus repository-scoped push. Add hosts there when a task needs
+them; the policy advisor can propose narrow rules via `openshell rule get
+chesspos --status pending`.
+
+The GitHub MCP from `opencode.json` is not wired into the sandbox and fails
+closed; use the GitHub provider for push, or add explicit
+`api.githubcopilot.com` rules if you want that MCP inside the sandbox.
+
 ## Cheat Sheet
 
 - Generate training positions
@@ -21,8 +159,12 @@ Generates chess position datasets from PGN files and pushes them to HuggingFace 
 
 1. **Authenticate with HuggingFace Hub:**
 
+   Inside the OpenShell sandbox, the `huggingface` provider injects `HF_TOKEN`
+   as an opaque placeholder at the approved endpoint, so no login is needed.
+   Outside the sandbox, export `HF_TOKEN` or run:
+
    ```bash
-   uv run huggingface-cli login
+   uv run hf auth login
    ```
 
    You'll need a HuggingFace access token (get one at https://huggingface.co/settings/tokens).
