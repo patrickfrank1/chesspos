@@ -21,7 +21,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     procps \
     ripgrep \
     unzip \
-    wget \
     xz-utils \
     && rm -rf /var/lib/apt/lists/*
 
@@ -46,6 +45,9 @@ RUN groupadd --gid 1000 dev \
        "vastai==${VASTAI_VERSION}" \
     && ln -s /home/dev/.local/share/vastai-venv/bin/vastai /home/dev/.local/bin/vastai \
     && chown -R dev:dev /sandbox /workspace /home/dev
+
+COPY --chown=dev:dev .devcontainer/sitecustomize.py \
+    /home/dev/.local/share/vastai-venv/lib/python3.11/site-packages/sitecustomize.py
 
 ENV PATH="/home/dev/.local/bin:${PATH}" \
     UV_LINK_MODE=copy

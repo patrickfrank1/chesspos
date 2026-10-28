@@ -15,6 +15,8 @@ filesystem_policy:
     - /tmp
     - /dev/null
     - /dev/shm
+    - /dev/ptmx
+    - /dev/pts
     - /home/dev
     - /workspace
 
@@ -113,26 +115,6 @@ network_policies:
     binaries:
       - path: /usr/local/bin/opencode
 
-  opencode_llm:
-    endpoints:
-      - host: opencode.ai
-        port: 443
-        protocol: rest
-        access: read-write
-        enforcement: enforce
-      - host: api.deepseek.com
-        port: 443
-        protocol: rest
-        access: read-write
-        enforcement: enforce
-      - host: api.z.ai
-        port: 443
-        protocol: rest
-        access: read-write
-        enforcement: enforce
-    binaries:
-      - path: /usr/local/bin/opencode
-
   npm:
     endpoints:
       - host: registry.npmjs.org
@@ -143,7 +125,6 @@ network_policies:
         enforcement: enforce
     binaries:
       - path: /usr/bin/node
-      - path: /usr/local/bin/opencode
 
   context7:
     endpoints:
@@ -242,5 +223,6 @@ network_policies:
     binaries:
       - path: /usr/bin/curl
       - path: /usr/bin/wget
-      - path: "/home/dev/.vscode-server/bin/**/node"
+      - path: "/home/dev/.vscode-server/code-*"
+      - path: "/home/dev/.vscode-server/**/node"
       - path: "/workspace/.vscode-server/bin/**/node"

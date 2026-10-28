@@ -135,6 +135,12 @@ With the snap installation, this also works from a desktop terminal:
 The bottom-left indicator must read `SSH: openshell-chesspos.default`, and the
 integrated terminal must start in `/workspace`.
 
+Remote-SSH downloads the VS Code server inside the sandbox with `curl`. The
+image intentionally omits `wget`, because GNU `wget` ignores the OpenShell egress
+CA bundle (`CURL_CA_BUNDLE`/`SSL_CERT_FILE`) and the certificate check fails. The
+sandbox also exposes no SFTP, so `remote.SSH.localServerDownload` must not be set
+to `always`; leave it on `auto` so the server is fetched on the sandbox.
+
 On a headless VM, create without launching VS Code:
 
 ```bash
