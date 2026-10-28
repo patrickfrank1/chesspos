@@ -6,6 +6,11 @@ SANDBOX=${SANDBOX:-chesspos}
 
 cd "$ROOT"
 
+if openshell sandbox exec "$SANDBOX" --workdir /workspace -- test -d /workspace/.git >/dev/null 2>&1; then
+    printf 'bind mount active; repository is shared, nothing to sync\n' >&2
+    exit 0
+fi
+
 case "${1:-}" in
     in)
         openshell sandbox upload "$SANDBOX" . /workspace

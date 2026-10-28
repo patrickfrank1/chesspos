@@ -16,6 +16,7 @@ filesystem_policy:
     - /dev/null
     - /dev/shm
     - /home/dev
+    - /workspace
 
 landlock:
   compatibility: hard_requirement
@@ -43,6 +44,11 @@ network_policies:
         access: read-only
         enforcement: enforce
       - host: download.pytorch.org
+        port: 443
+        protocol: rest
+        access: read-only
+        enforcement: enforce
+      - host: "download-*.pytorch.org"
         port: 443
         protocol: rest
         access: read-only
@@ -95,6 +101,11 @@ network_policies:
   models_dev:
     endpoints:
       - host: models.dev
+        port: 443
+        protocol: rest
+        access: read-only
+        enforcement: enforce
+      - host: models.opencode.ai
         port: 443
         protocol: rest
         access: read-only
@@ -211,3 +222,4 @@ network_policies:
       - path: /usr/bin/curl
       - path: /usr/bin/wget
       - path: "/home/dev/.vscode-server/bin/**/node"
+      - path: "/workspace/.vscode-server/bin/**/node"

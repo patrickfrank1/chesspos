@@ -1,9 +1,16 @@
 {
-  "$schema": "https://opencode.ai/config.json",  
+  "$schema": "https://opencode.ai/config.json",
+  "provider": {
+    "zai": {
+      "options": {
+        "apiKey": "{env:ZAI_API_KEY}"
+      }
+    }
+  },
   "mcp": {
     "context7": {
       "type": "local",
-      "command": ["npx", "context7-mcp"],
+      "command": ["npx", "-y", "@upstash/context7-mcp"],
       "enabled": true
     },
     "github": {

@@ -11,42 +11,87 @@ placing them in the workload.
 ### Prerequisites
 
 - Docker on the host
-- The [OpenShell](https://github.com/NVIDIA/OpenShell) CLI and a selected gateway
+- The [OpenShell](https://github.com/NVIDIA/OpenShell) CLI and a running gateway
+- A systemd **user** session on the VM (`sudo loginctl enable-linger "$USER"` for headless use)
 - VS Code with the Remote - SSH extension
 - `uv` for work outside the sandbox
 
-### 1. Install OpenShell
+### 1. Install and start OpenShell
 
 ```bash
 curl -LsSf https://raw.githubusercontent.com/NVIDIA/OpenShell/main/install.sh | sh
-openshell gateway list
 ```
 
-The installer normally starts and selects a local gateway. If no gateway is
-selected, add one with:
+On a headless VM, enable a persistent systemd user session once (this is the
+only privileged setup step):
 
 ```bash
-openshell gateway add http://127.0.0.1:18080 --local --name local
-openshell gateway select local
+sudo loginctl enable-linger "$USER"
 ```
 
-### 2. Export credentials
-
-Export these in the host shell before creating the sandbox. Never commit them or
-paste them into a terminal that writes to a log; `.env*` files are ignored and
-excluded from sandbox uploads.
+Then start the gateway and confirm it is actually reachable:
 
 ```bash
-export DEEPSEEK_API_KEY=...
-export ZAI_API_KEY=...
-export GITHUB_TOKEN=...        # fine-grained token, Contents: read/write on patrickfrank1/chesspos
-export HF_TOKEN=...            # HUGGING_FACE_HUB_TOKEN is also accepted
-export VAST_AI_API_KEY=...     # VASTAI_API_KEY and VAST_API_KEY are also accepted
+systemctl --user enable --now openshell-gateway
+openshell status
 ```
+
+`openshell status` must report `Connected`. `openshell gateway list` only shows
+the registered endpoint; it does not prove the gateway process is running.
+
+If `systemctl --user` reports `Failed to connect to bus`, the login session has
+no user manager. Use the linger command above, or run the gateway manually for
+the current session:
+
+```bash
+mkdir -p ~/.local/state
+nohup openshell-gateway > ~/.local/state/openshell-gateway.log 2>&1 &
+sleep 2
+openshell status
+```
+
+The manual process does not survive logout or reboot. If no gateway is
+registered, register the package-managed mTLS gateway:
+
+```bash
+openshell gateway add --local https://127.0.0.1:17670 --name openshell
+openshell gateway select openshell
+openshell status
+```
+
+If `gateway list` also shows a stale `local` entry on
+`http://127.0.0.1:18080`, remove it after selecting `openshell`:
+
+```bash
+openshell gateway remove local
+```
+
+### 2. Add credentials to `.env`
+
+Create or edit `.env` in the repository root (already gitignored):
+
+```bash
+DEEPSEEK_API_KEY=...
+ZAI_API_KEY=...
+GITHUB_TOKEN=...        # fine-grained token, Contents: read/write on patrickfrank1/chesspos
+HF_TOKEN=...            # HUGGING_FACE_HUB_TOKEN is also accepted
+VAST_AI_API_KEY=...     # VASTAI_API_KEY and VAST_API_KEY are also accepted
+```
+
+`scripts/openshell/create_sandbox.sh` loads this file automatically. Variables
+already exported in the shell take precedence, and `ENV_FILE=/path/to/file`
+selects a different file.
+
+`.env` is sourced as shell code and is not encrypted: gitignore only prevents
+accidental commits and uploads. Keep it `chmod 600`, only put trusted content in
+it, and never store it in a synced folder. The script refuses to run if the file
+is tracked by git or is inside the repository but not gitignored.
 
 `VASTAI_API_KEY` is the name `scripts/provision_vast.py` reads; `VAST_API_KEY`
-is the name the upstream `vastai` CLI reads. The OpenShell provider exposes
-placeholders under all three names, so either works inside the sandbox.
+is the name the upstream `vastai` CLI reads. The provider exposes a placeholder
+under the name that was present on the host (`VASTAI_API_KEY` in the example
+above), so `scripts/provision_vast.py` works inside the sandbox. For direct
+`vastai` CLI use, pass `--api-key "$VASTAI_API_KEY"`.
 
 ### 3. Create the sandbox
 
@@ -56,14 +101,39 @@ scripts/openshell/create_sandbox.sh
 
 The script imports the provider profiles, creates the providers from the
 exported variables, builds `chesspos-agent:local`, creates the `chesspos`
-sandbox, uploads the repository to `/workspace`, and runs
+sandbox with the repository bind-mounted at `/workspace`, and runs
 `uv sync --extra cpu`. It then opens VS Code in the sandbox.
+
+Bind mounts require `allow_driver_config = true` and `enable_bind_mounts = true`
+under `[openshell.drivers.docker]` in `~/.config/openshell/gateway.toml`,
+followed by a gateway restart and `RECREATE=1 scripts/openshell/create_sandbox.sh`.
+The image's `WORKDIR` is `/sandbox` so OpenShell's workspace root does not
+collide with the `/workspace` mount. Set `BIND_MOUNT=0` to upload a copy
+instead, and `SANDBOX_HOME` to change the sandbox `HOME` (default `/home/dev`,
+which keeps `.vscode-server` and caches out of the repository).
 
 Reconnect later with:
 
 ```bash
 openshell sandbox connect chesspos --editor vscode
 ```
+
+If VS Code opens an empty or local window, the `code` on `PATH` may be the
+Remote-SSH helper from `~/.vscode-server` rather than the desktop app. In that
+case use the VS Code UI:
+
+1. `Ctrl+Shift+P` → **Remote-SSH: Connect to Host…**
+2. Select `openshell-chesspos.default`
+3. **File → Open Folder…** → `/workspace`
+
+With the snap installation, this also works from a desktop terminal:
+
+```bash
+/snap/bin/code --remote ssh-remote+openshell-chesspos.default /workspace
+```
+
+The bottom-left indicator must read `SSH: openshell-chesspos.default`, and the
+integrated terminal must start in `/workspace`.
 
 On a headless VM, create without launching VS Code:
 
@@ -78,7 +148,8 @@ The sandbox opens in `/workspace`. Run `opencode` from the integrated terminal:
 ```bash
 opencode
 opencode models
-opencode -m deepseek/deepseek-chat
+opencode -m deepseek/deepseek-flash
+opencode -m zai/glm-5.3
 ```
 
 Git push works through the `github` provider and is restricted to the repository
@@ -91,9 +162,45 @@ uv run python scripts/provision_vast.py
 uv run hf download patrickfrank1/chess-positions --repo-type dataset
 ```
 
+### Troubleshooting `connect error: transport error`
+
+**From `openshell`:** the CLI cannot reach the selected gateway.
+
+```bash
+openshell status
+openshell gateway list
+ss -ltnp | grep -E '17670|18080'
+```
+
+The package-managed gateway listens on `https://127.0.0.1:17670` with mTLS. If
+`gateway list` points at `http://127.0.0.1:18080`, register and select
+`openshell` as shown above, then remove the stale `local` entry.
+
+**From `opencode`:** an outbound request from the sandbox failed.
+
+```bash
+opencode mcp list
+openshell logs chesspos --since 5m
+```
+
+The sandbox disables the GitHub MCP because `api.githubcopilot.com` is not in
+the policy. On an existing sandbox, either recreate it or export the override
+before starting opencode:
+
+```bash
+export OPENCODE_CONFIG_CONTENT='{"mcp":{"github":{"enabled":false}}}'
+opencode
+```
+
+If the error appears when sending a prompt, the model provider is not attached.
+Confirm the key is in `.env`, rerun `scripts/openshell/create_sandbox.sh`, and
+start a fresh opencode process.
+
 ### Syncing files
 
-The sandbox workspace is a copy, not a bind mount:
+With the default `BIND_MOUNT=1` the host repository is mounted at `/workspace`,
+so edits are already shared and `sync.sh` is a no-op. With `BIND_MOUNT=0` the
+workspace is a copy:
 
 ```bash
 scripts/openshell/sync.sh out   # sandbox -> host
@@ -134,9 +241,10 @@ and GitHub read plus repository-scoped push. Add hosts there when a task needs
 them; the policy advisor can propose narrow rules via `openshell rule get
 chesspos --status pending`.
 
-The GitHub MCP from `opencode.json` is not wired into the sandbox and fails
-closed; use the GitHub provider for push, or add explicit
-`api.githubcopilot.com` rules if you want that MCP inside the sandbox.
+The GitHub MCP from `opencode.json` is not wired into the sandbox and is
+disabled there through `OPENCODE_CONFIG_CONTENT`; use the GitHub provider for
+push. If you later add `api.githubcopilot.com` rules and a Copilot token
+provider, override `OPENCODE_CONFIG_CONTENT` when creating the sandbox.
 
 ## Cheat Sheet
 

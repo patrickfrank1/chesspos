@@ -39,16 +39,16 @@ RUN curl -fsSL https://opencode.ai/install \
 
 RUN groupadd --gid 1000 dev \
     && useradd --uid 1000 --gid dev --create-home --shell /bin/bash dev \
-    && mkdir -p /workspace /home/dev/.cache /home/dev/.config \
+    && mkdir -p /sandbox /workspace /home/dev/.cache /home/dev/.config \
        /home/dev/.local/bin /home/dev/.local/share /home/dev/.vscode-server \
     && python -m venv --copies /home/dev/.local/share/vastai-venv \
     && /home/dev/.local/share/vastai-venv/bin/pip install --no-cache-dir \
        "vastai==${VASTAI_VERSION}" \
     && ln -s /home/dev/.local/share/vastai-venv/bin/vastai /home/dev/.local/bin/vastai \
-    && chown -R dev:dev /workspace /home/dev
+    && chown -R dev:dev /sandbox /workspace /home/dev
 
 ENV PATH="/home/dev/.local/bin:${PATH}" \
     UV_LINK_MODE=copy
 
 USER dev
-WORKDIR /workspace
+WORKDIR /sandbox
