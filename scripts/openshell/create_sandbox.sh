@@ -11,6 +11,8 @@ SANDBOX_HOME=${SANDBOX_HOME:-/home/dev}
 OPENCODE_CONFIG_CONTENT=${OPENCODE_CONFIG_CONTENT:-'{"mcp":{"github":{"enabled":false}}}'}
 ENV_FILE=${ENV_FILE:-"$ROOT/.env"}
 [[ $ENV_FILE = /* ]] || ENV_FILE="$CALLER_PWD/$ENV_FILE"
+GIT_USER_NAME=${GIT_USER_NAME:-$(git config --global --get user.name 2>/dev/null || true)}
+GIT_USER_EMAIL=${GIT_USER_EMAIL:-$(git config --global --get user.email 2>/dev/null || true)}
 
 cd "$ROOT"
 
@@ -172,6 +174,14 @@ fi
 
 openshell sandbox exec -n "$SANDBOX" --workdir /workspace -- \
     git config --global --add safe.directory /workspace
+if [[ -n $GIT_USER_NAME ]]; then
+    openshell sandbox exec -n "$SANDBOX" --workdir /workspace -- \
+        git config --global user.name "$GIT_USER_NAME"
+fi
+if [[ -n $GIT_USER_EMAIL ]]; then
+    openshell sandbox exec -n "$SANDBOX" --workdir /workspace -- \
+        git config --global user.email "$GIT_USER_EMAIL"
+fi
 openshell sandbox exec -n "$SANDBOX" --workdir /workspace -- uv sync --extra cpu
 
 if [[ ${NO_EDITOR:-0} != 1 ]]; then
