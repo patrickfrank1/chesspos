@@ -198,8 +198,12 @@ network_policies:
       - host: marketplace.visualstudio.com
         port: 443
         protocol: rest
-        access: read-only
         enforcement: enforce
+        rules:
+          - allow: { method: GET, path: "**" }
+          - allow: { method: HEAD, path: "**" }
+          - allow: { method: OPTIONS, path: "**" }
+          - allow: { method: POST, path: "/_apis/public/gallery/extensionquery" }
       - host: "*.gallerycdn.vsassets.io"
         port: 443
         protocol: rest
