@@ -52,20 +52,16 @@ def build_contrastive_masks(
     game_ids: Sequence[object],
     ply_indices: Sequence[int],
     temporal_radius: int = 3,
-    opening: Sequence[bool] | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Build positive and ignored-pair masks for contrastive views.
 
     Pairs from the same game within ``temporal_radius`` plies are positives.
     Same-game pairs farther apart than the radius are ignored, so they never
-    become false negatives. Pairs from different games are ordinary negatives,
-    except that any pair involving an ``opening`` view is ignored: opening
-    positions are too similar across games to be useful negatives.
+    become false negatives. Pairs from different games are ordinary negatives;
+    opening positions are excluded earlier, when the views are selected.
     """
     if len(game_ids) != len(ply_indices):
         raise ValueError("game_ids and ply_indices must have the same length")
-    if opening is not None and len(opening) != len(game_ids):
-        raise ValueError("opening must match game_ids")
     if temporal_radius < 0:
         raise ValueError("temporal_radius must be non-negative")
 
@@ -79,9 +75,6 @@ def build_contrastive_masks(
     distance = (plies[:, None] - plies[None, :]).abs()
     positive = same_game & (distance <= temporal_radius)
     ignore = same_game & (distance > temporal_radius)
-    if opening is not None:
-        is_opening = torch.as_tensor(opening, dtype=torch.bool)
-        ignore = ignore | ((~same_game) & (is_opening[:, None] | is_opening[None, :]))
     positive.fill_diagonal_(False)
     ignore.fill_diagonal_(False)
     return positive, ignore

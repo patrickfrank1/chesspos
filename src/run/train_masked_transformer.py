@@ -292,22 +292,20 @@ def parse_args() -> argparse.Namespace:
         help="Use multi-positive SupCon instead of window/alone InfoNCE",
     )
     parser.add_argument(
-        "--turn-flip",
-        action="store_true",
-        help="Add the turn-flipped board as an extra SupCon positive",
-    )
-    parser.add_argument(
         "--temporal-radius",
         type=int,
         default=3,
-        help="Ply radius for same-game SupCon positives; farther pairs are ignored",
+        help=(
+            "Ply radius for same-game SupCon positives and target clustering; "
+            "farther pairs are ignored"
+        ),
     )
     parser.add_argument(
-        "--ignore-opening-negatives",
-        action="store_true",
-        help="Exclude opening positions from cross-game contrastive negatives",
+        "--opening-ply-threshold",
+        type=int,
+        default=30,
+        help="Segments before this ply are never selected as SupCon targets",
     )
-    parser.add_argument("--opening-ply-threshold", type=int, default=30)
     parser.add_argument("--hard-negative-top-k", type=int, default=100)
     parser.add_argument("--aux-material-weight", type=float, default=0.0)
     parser.add_argument("--aux-piece-count-weight", type=float, default=0.0)
@@ -378,9 +376,7 @@ def auxiliary_config(args: argparse.Namespace) -> AuxiliaryLossConfig:
         warmup_steps=args.aux_warmup,
         content_pooling=args.content_pooling,
         use_supcon=args.supcon,
-        turn_flip=args.turn_flip,
         temporal_radius=args.temporal_radius,
-        ignore_opening_negatives=args.ignore_opening_negatives,
         opening_ply_threshold=args.opening_ply_threshold,
         material_weight=args.aux_material_weight,
         piece_count_weight=args.aux_piece_count_weight,
