@@ -180,6 +180,51 @@ class TestStreamingBasics:
             assert all(length <= 128 for length in lengths)
         return
 
+    def test_shard_games_match_materialized_loader(self, tmp_path):
+        with given("a shard with three games"):
+            directory = tmp_path / "train"
+            write_stream_shard(directory, "a.parquet", (1, 2, 3))
+            shard_path = directory / "a.parquet"
+
+        with when("the lazy shard view and the materialized loader both read it"):
+            lazy = window_dataset._load_shard_games(shard_path)
+            materialized = _load_game_segments(shard_path)
+
+        with then("both yield the same games in the same order"):
+            assert len(lazy) == 3
+            assert [packed_from_segments(g) for g in lazy] == [
+                packed_from_segments(g) for g in materialized
+            ]
+        return
+
+    def test_shard_games_split_segments_lazily(self, tmp_path, monkeypatch):
+        with given("a loaded shard and a spy on segment splitting"):
+            directory = tmp_path / "train"
+            write_stream_shard(directory, "a.parquet", (1, 2, 3))
+            shard = window_dataset._load_shard_games(directory / "a.parquet")
+            calls: list[int] = []
+            original = window_dataset._split_segments
+
+            def spy(stream):
+                calls.append(1)
+                return original(stream)
+
+            monkeypatch.setattr(window_dataset, "_split_segments", spy)
+
+        with when("the shard is only loaded but not iterated"):
+            pass
+
+        with then("no game has been split yet"):
+            assert calls == []
+
+        with when("the shard is iterated"):
+            games = list(shard)
+
+        with then("segments are split once per game, on demand"):
+            assert len(games) == 3
+            assert len(calls) == 3
+        return
+
 
 class TestStreamingWorkers:
     def test_worker_shards_are_disjoint_and_covering(self, monkeypatch, tmp_path):
@@ -232,6 +277,45 @@ class TestStreamingWorkers:
             assert sorted(signatures) == expected
         return
 
+    def test_empty_worker_assignment_returns_without_spinning(self, tmp_path):
+        with given("a dataset and a worker that owns no shards"):
+            directory = tmp_path / "train"
+            write_stream_shard(directory, "a.parquet", (1, 2, 3))
+            dataset = StreamingWindowDataset(make_config(directory))
+
+        with when("the empty worker's window generator is consumed"):
+            windows = list(dataset._iter_windows(worker_id=1, worker_indices=[]))
+
+        with then("it yields nothing and returns instead of looping forever"):
+            assert windows == []
+        return
+
+    def test_dataloader_with_more_workers_than_shards_covers_all_games(self, tmp_path):
+        with given("two shards but four dataloader workers"):
+            directory = tmp_path / "train"
+            for i in range(2):
+                write_stream_shard(directory, f"s{i}.parquet", range(i * 4, i * 4 + 4))
+            dataset = StreamingWindowDataset(make_config(directory))
+            loader = DataLoader(
+                dataset,
+                batch_size=2,
+                num_workers=4,
+                collate_fn=collate_windows,
+            )
+
+        with when("one epoch is consumed"):
+            signatures = []
+            for batch in loader:
+                for row in batch["tokens"].numpy().astype(np.int16):
+                    signatures.append(np.trim_zeros(row, "b").tobytes())
+                if len(signatures) >= len(dataset):
+                    break
+
+        with then("all games are produced without idle workers stalling the run"):
+            expected = sorted(g.tobytes() for g in expected_packed_games(directory))
+            assert sorted(signatures) == expected
+        return
+
 
 class TestStreamingUnigramCounts:
     def test_matches_preloaded_counts(self, tmp_path):
@@ -247,6 +331,25 @@ class TestStreamingUnigramCounts:
 
         with then("the counts are identical"):
             assert np.array_equal(streamed, preloaded)
+        return
+
+    def test_batched_shard_counts_match_reference(self, tmp_path, monkeypatch):
+        with given("a shard with several games"):
+            directory = tmp_path / "train"
+            write_stream_shard(directory, "a.parquet", (1, 2, 3, 4, 5))
+            shard_path = directory / "a.parquet"
+            expected = unigram_counts(_load_game_segments(shard_path))
+
+        with when("counts are computed in one-row batches without reading the table"):
+            monkeypatch.setattr(
+                window_dataset.pq,
+                "read_table",
+                lambda *args, **kwargs: pytest.fail("must stream batches"),
+            )
+            counts = window_dataset._shard_counts(shard_path, batch_size=1)
+
+        with then("the histogram matches the whole-shard reference"):
+            assert np.array_equal(counts, expected)
         return
 
     def test_progress_is_logged(self, tmp_path):

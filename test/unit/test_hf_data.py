@@ -372,3 +372,54 @@ class TestFetchAndDeleteShard:
         with then("the file is gone and the second delete is a no-op"):
             assert not shard.exists()
         return
+
+
+class TestBoundedDownloadPruning:
+    def test_bounded_download_prunes_stale_shards(self, monkeypatch, tmp_path):
+        with given("a snapshot cache holding extra shards from an earlier run"):
+            root = tmp_path / "snapshot"
+            train = root / "train"
+            train.mkdir(parents=True)
+            for name in ("a", "b", "c", "stale"):
+                (train / f"{name}.parquet").touch()
+                (train / f"{name}.meta.json").touch()
+            files = [
+                FakeRepoFile("train/a.parquet", 100),
+                FakeRepoFile("train/b.parquet", 100),
+                FakeRepoFile("train/c.parquet", 100),
+            ]
+            monkeypatch.setattr(hf_data, "HfApi", lambda **kwargs: FakeApi(files))
+            monkeypatch.setattr(
+                hf_data, "snapshot_download", lambda repo_id, **kwargs: str(root)
+            )
+
+        with when("the train split is downloaded with a two-shard budget"):
+            path = hf_data.download_split("user/chesspos", "train", max_bytes=200)
+
+        with then("only the selected shards and their sidecars remain"):
+            assert sorted(p.name for p in path.glob("*.parquet")) == [
+                "a.parquet",
+                "b.parquet",
+            ]
+            assert sorted(p.name for p in path.glob("*.meta.json")) == [
+                "a.meta.json",
+                "b.meta.json",
+            ]
+        return
+
+    def test_unbounded_download_does_not_prune(self, monkeypatch, tmp_path):
+        with given("a snapshot cache with extra shards and no byte budget"):
+            root = tmp_path / "snapshot"
+            train = root / "train"
+            train.mkdir(parents=True)
+            (train / "keep.parquet").touch()
+            monkeypatch.setattr(
+                hf_data, "snapshot_download", lambda repo_id, **kwargs: str(root)
+            )
+
+        with when("the unbounded train split is downloaded"):
+            path = hf_data.download_split("user/chesspos", "train")
+
+        with then("pre-existing shards are left untouched"):
+            assert (path / "keep.parquet").exists()
+        return

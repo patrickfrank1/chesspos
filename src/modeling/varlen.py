@@ -40,17 +40,26 @@ def cu_seqlens(padding_mask: torch.Tensor) -> tuple[torch.Tensor, int]:
 
 
 def flatten_valid(x: torch.Tensor, padding_mask: torch.Tensor) -> torch.Tensor:
-    """Gather the valid positions of a padded ``[B, S, ...]`` tensor to ``[T, ...]``."""
-    return x[padding_mask]
+    """Gather the valid positions of a padded ``[B, S, ...]`` tensor to ``[T, ...]``.
+
+    Uses ``masked_select`` rather than boolean indexing so ``torch.compile``
+    does not have to lower an explicit ``aten.nonzero`` for the gather.
+    """
+    mask = padding_mask.unsqueeze(-1)
+    return torch.masked_select(x, mask).view(-1, x.shape[-1])
 
 
 def scatter_valid(flat: torch.Tensor, padding_mask: torch.Tensor) -> torch.Tensor:
-    """Inverse of :func:`flatten_valid`: write ``[T, ...]`` values back into ``[B, S, ...]``."""
+    """Inverse of :func:`flatten_valid`: write ``[T, ...]`` values back into ``[B, S, ...]``.
+
+    Uses ``masked_scatter`` instead of boolean assignment; both operators
+    preserve row-major order, so the result matches ``out[mask] = flat`` while
+    avoiding an explicit ``aten.nonzero`` in the compiled graph.
+    """
     out = torch.zeros(
         (*padding_mask.shape, flat.shape[-1]), dtype=flat.dtype, device=flat.device
     )
-    out[padding_mask] = flat
-    return out
+    return out.masked_scatter(padding_mask.unsqueeze(-1), flat)
 
 
 def varlen_attention(

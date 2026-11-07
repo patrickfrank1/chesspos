@@ -83,9 +83,19 @@ system python on the box:
 
 ```bash
 cd /workspace && git clone https://github.com/patrickfrank1/chesspos.git && cd chesspos
-pip install -q chess pyarrow huggingface_hub datasets ray einops
+pip install -q chess pyarrow huggingface_hub datasets ray einops mlflow
 pip install -q -U brotli zstandard       # stale codecs break hf downloads
 ```
+
+`train_masked_transformer` imports `mlflow` unconditionally, so it is
+required even when tracking is disabled.
+
+Check the GPU architecture before trusting the image torch
+(`python3 -c "import torch;print(torch.__version__, torch.cuda.get_device_capability())"`).
+**Blackwell (RTX 50xx, e.g. 5090) is sm_120 and cannot run torch 2.2.1** —
+upgrade with `pip install --upgrade torch --index-url
+https://download.pytorch.org/whl/cu128`. **Ada (RTX 6000Ada, sm_89) runs
+2.2.1**, but `--compile` still needs torch >= 2.8 (see below).
 
 On the box, invoke project modules as
 `PYTHONPATH=/workspace/chesspos python3 -m src.run.<module>` — not
@@ -108,11 +118,18 @@ Use scp only for throwaway experiments or files not yet pushed.
 
 The box has **no nvcc** — flash-attn must be a prebuilt wheel matching the
 box's torch/CUDA/python/abi exactly. Find the wheel from the flash-attn
-GitHub releases page for the box's versions (e.g. torch 2.2.1 + cu121 →
-`flash_attn-2.6.3+cu123torch2.2cxx11abiFALSE-cp310-cp310-linux_x86_64.whl`;
-install with `pip install <wheel-url>`). Code guards with
-`FLASH_AVAILABLE` in `src/modeling/varlen.py`, so a missing wheel
-degrades to SDPA instead of failing.
+GitHub releases page for the box's versions. Examples:
+- torch 2.2.1 + cu121 (abi FALSE):
+  `flash_attn-2.6.3+cu123torch2.2cxx11abiFALSE-cp310-cp310-linux_x86_64.whl`
+- torch 2.8.0 + cu128 (abi TRUE):
+  `flash_attn-2.8.3+cu12torch2.8cxx11abiTRUE-cp310-cp310-linux_x86_64.whl`
+
+Check the abi with `python3 -c "import torch;print(torch._C._GLIBCXX_USE_CXX11_ABI)"`.
+Newer flash-attn releases ship wheels only up to **torch 2.8**, so 2.8 is the
+newest torch that has both a wheel and a working `torch.compile`. Install with
+`pip install <wheel-url>`. Code guards with `FLASH_AVAILABLE` in
+`src/modeling/varlen.py`, so a missing wheel degrades to SDPA instead of
+failing.
 
 ### HuggingFace token
 
@@ -143,10 +160,13 @@ ssh ... 'export HF_TOKEN=$(cat /root/.hf_token); hf buckets sync ...'
      `export TORCHINDUCTOR_COMPILE_THREADS=1`
   4. **Still** `RuntimeError: Triton Error [CUDA]: invalid device context`
      during inductor autotune even in-process — torch 2.2.1/triton 2.2.0 is
-     incompatible with the container's driver stack. Fix = upgrade torch on
-     the box (rebuild flash-attn wheel accordingly). Until then: no
-     `--compile`. Dynamo logs `Unsupported: HigherOrderOperator ... tuple`
-     warnings around flash-attn's autograd.Function — benign graph breaks.
+     incompatible with the container's driver stack. Fix = upgrade to
+     **torch 2.8.0+cu128** (triton 3.4) plus the matching flash-attn 2.8.3
+     wheel; with gcc, the `libcuda.so` symlink and
+     `TORCHINDUCTOR_COMPILE_THREADS=1`, `--compile` then works and adds
+     ~20–25% on top of flash-attn. Until then: no `--compile`. Dynamo logs
+     `Unsupported: HigherOrderOperator ... tuple` warnings around
+     flash-attn's autograd.Function — benign graph breaks.
 - **Brotli codec bug:** `TypeError: process() takes no keyword arguments`
   during hf_hub download (CDN serves brotli-compressed small files, e.g.
   changed `.meta.json` sidecars) = Brotli too old for httpx2. Fix:

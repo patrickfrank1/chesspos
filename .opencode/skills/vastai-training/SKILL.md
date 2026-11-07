@@ -334,8 +334,8 @@ tok/s, 41/47 GB VRAM, GPU 100%.
 If GPU shows 0% util and idle clocks, the run has died — read
 `watchdog.log` (relaunch loop) and `nohup.out` (traceback). Past causes:
 `ValueError: low >= high` from single-segment games, missing Brotli upgrade,
-missing gcc, triton `invalid device context` with `--compile` (see
-`vastai-gpu`).
+missing gcc, triton `invalid device context` with `--compile` (torch 2.2.1
+cannot compile — upgrade to torch 2.8 + flash-attn 2.8.3; see `vastai-gpu`).
 
 For the puzzle classifier, an epoch ends with
 `epoch=N train_loss=... val_loss=... auroc=... pr_auc=... f1=... threshold=...`
@@ -380,7 +380,7 @@ to ..."). Teardown template: `/tmp/opencode/shutdown_d256l3.sh` (2026-10-19).
 |---|---|
 | `TypeError: process() takes no keyword arguments` during hf download | old Brotli; `pip install -U Brotli` (see `vastai-gpu`) |
 | `Failed to find C compiler` | `apt-get install -y gcc` (see `vastai-gpu`) |
-| Triton `invalid device context` | drop `--compile`; torch 2.2.1 driver mismatch (see `vastai-gpu`) |
+| Triton `invalid device context` | torch 2.2.1/triton 2.2.0 cannot compile; upgrade to torch 2.8 + flash-attn 2.8.3 (see `vastai-gpu`) |
 | `ValueError: low >= high` | single-segment games in the batch; fix data/windowing |
 | `RuntimeError: FlashAttention only support fp16 and bf16 data type` | eval path outside bf16 autocast (retrieval/hard negatives); not OOM — see “Flash-attn eval paths” above |
 | GPU 0%, idle clocks | process died; read `watchdog.log` and `nohup.out` |
