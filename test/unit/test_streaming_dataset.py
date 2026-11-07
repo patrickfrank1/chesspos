@@ -1,12 +1,14 @@
 import json
+from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 import torch
-from types import SimpleNamespace
 
+import src.training.hf_data as hf_data
 import src.training.window_dataset as window_dataset
 from bdd import given, then, when
 from src.dataset.token_stream import CLS, EMPTY, SEP, VOCAB_SIZE
@@ -17,6 +19,7 @@ from src.training.window_dataset import (
     load_game_pool,
     worker_skip_windows,
     collate_windows,
+    remote_unigram_counts,
     streaming_unigram_counts,
     unigram_counts,
 )
@@ -294,6 +297,98 @@ class TestStreamingUnigramCounts:
             assert any("sidecar" in message for message in messages)
         return
 
+    def test_remote_counts_match_local_and_delete_shards(self, monkeypatch, tmp_path):
+        with given("two local shards mirrored by a fake remote repo"):
+            source = tmp_path / "source"
+            write_stream_shard(source, "a.parquet", (1, 2))
+            write_stream_shard(source, "b.parquet", (3,))
+            cache = tmp_path / "cache"
+            cache.mkdir()
+            expected = streaming_unigram_counts(str(source))
+            listing = [("train/a.parquet", 1), ("train/b.parquet", 1)]
+            fetched: list[str] = []
+            deleted: list[str] = []
+
+            monkeypatch.setattr(
+                hf_data,
+                "list_split_shards",
+                lambda repo_id, split, revision=None: listing,
+            )
+
+            def fake_fetch(repo_id, filename, cache_dir=None, revision=None):
+                fetched.append(filename)
+                name = filename.rsplit("/", 1)[-1]
+                target = Path(cache_dir) / name
+                target.write_bytes((source / name).read_bytes())
+                return target
+
+            def fake_delete(path):
+                deleted.append(Path(path).name)
+                Path(path).unlink(missing_ok=True)
+
+            monkeypatch.setattr(hf_data, "fetch_shard", fake_fetch)
+            monkeypatch.setattr(hf_data, "delete_shard", fake_delete)
+
+        with when("remote unigram counts are computed"):
+            messages: list[str] = []
+            counts = remote_unigram_counts(
+                "user/chesspos", cache_dir=str(cache), log=messages.append
+            )
+
+        with then("the histogram matches the local pass and every shard is deleted"):
+            assert np.array_equal(counts, expected)
+            assert sorted(set(fetched)) == ["train/a.parquet", "train/b.parquet"]
+            assert sorted(set(deleted)) == ["a.parquet", "b.parquet"]
+            assert not list(cache.rglob("*.parquet"))
+            assert any("remote unigram pass" in message for message in messages)
+        return
+
+    def test_remote_counts_are_cached_and_reused(self, monkeypatch, tmp_path):
+        with given("two remote shards and a unigram cache path"):
+            source = tmp_path / "source"
+            write_stream_shard(source, "a.parquet", (1, 2))
+            write_stream_shard(source, "b.parquet", (3,))
+            cache = tmp_path / "cache"
+            cache.mkdir()
+            cache_path = tmp_path / "unigram_counts.npz"
+            listing = [("train/a.parquet", 1), ("train/b.parquet", 1)]
+            fetched: list[str] = []
+
+            monkeypatch.setattr(
+                hf_data,
+                "list_split_shards",
+                lambda repo_id, split, revision=None: list(listing),
+            )
+
+            def fake_fetch(repo_id, filename, cache_dir=None, revision=None):
+                fetched.append(filename)
+                name = filename.rsplit("/", 1)[-1]
+                target = Path(cache_dir) / name
+                target.write_bytes((source / name).read_bytes())
+                return target
+
+            monkeypatch.setattr(hf_data, "fetch_shard", fake_fetch)
+            monkeypatch.setattr(
+                hf_data,
+                "delete_shard",
+                lambda path: Path(path).unlink(missing_ok=True),
+            )
+
+        with when("the remote counts are computed twice with the same cache path"):
+            first = remote_unigram_counts(
+                "user/chesspos", cache_dir=str(cache), cache_path=cache_path
+            )
+            fetched.clear()
+            second = remote_unigram_counts(
+                "user/chesspos", cache_dir=str(cache), cache_path=cache_path
+            )
+
+        with then("the second call reuses the cache without downloading again"):
+            assert np.array_equal(first, second)
+            assert fetched == []
+            assert cache_path.exists()
+        return
+
     def test_missing_sidecar_falls_back_to_parquet(self, tmp_path):
         with given("one shard with a true sidecar histogram and one without"):
             directory = tmp_path / "train"
@@ -539,4 +634,111 @@ class TestValidationGamePool:
             assert [packed_from_segments(g) for g in first] == [
                 packed_from_segments(g) for g in second
             ]
+        return
+
+
+class TestStreamingRemoteShards:
+    """Lazy Hub shard fetching: list on init, fetch+decode+delete per shard."""
+
+    def remote_config(self, directory, **overrides):
+        return make_config(
+            directory,
+            remote_repo="user/chess-positions",
+            remote_split="train",
+            remote_cache_dir=str(directory / "shard-cache"),
+            **overrides,
+        )
+
+    def test_lists_remote_shards_without_downloading(self, monkeypatch, tmp_path):
+        with given("a remote repo whose shard listing is unsorted"):
+            listing = [("train/b.parquet", 2), ("train/a.parquet", 1)]
+            monkeypatch.setattr(
+                hf_data,
+                "list_split_shards",
+                lambda repo_id, split, revision=None: listing,
+            )
+            fetched: list[str] = []
+            monkeypatch.setattr(
+                hf_data,
+                "fetch_shard",
+                lambda *args, **kwargs: fetched.append("x"),
+            )
+
+        with when("the streaming dataset is created"):
+            dataset = StreamingWindowDataset(self.remote_config(tmp_path))
+
+        with then("shards are sorted, marked remote, and nothing is fetched yet"):
+            assert dataset.shards == ["train/a.parquet", "train/b.parquet"]
+            assert dataset.remote is True
+            assert len(dataset) == 0
+            assert fetched == []
+        return
+
+    def test_fetches_and_deletes_each_shard_after_decoding(self, monkeypatch, tmp_path):
+        with given("two remote shards and a fake fetch/delete pair"):
+            monkeypatch.setattr(
+                hf_data,
+                "list_split_shards",
+                lambda repo_id, split, revision=None: [
+                    ("train/a.parquet", 10),
+                    ("train/b.parquet", 10),
+                ],
+            )
+            fetched: list[str] = []
+            deleted: list[str] = []
+
+            def fake_fetch(repo_id, filename, cache_dir=None, revision=None):
+                fetched.append(filename)
+                name = filename.rsplit("/", 1)[-1]
+                return write_stream_shard(
+                    tmp_path / name.removesuffix(".parquet"), name, seeds=(1, 2, 3)
+                )
+
+            def fake_delete(path):
+                deleted.append(Path(path).name)
+                Path(path).unlink(missing_ok=True)
+
+            monkeypatch.setattr(hf_data, "fetch_shard", fake_fetch)
+            monkeypatch.setattr(hf_data, "delete_shard", fake_delete)
+            dataset = StreamingWindowDataset(self.remote_config(tmp_path))
+
+        with when("one epoch of remote windows is consumed"):
+            seen = []
+            for sample in dataset:
+                seen.append(sample_signature(sample))
+                if len(seen) == 6:
+                    break
+
+        with then("both shards are fetched and removed again after decoding"):
+            assert sorted(set(fetched)) == ["train/a.parquet", "train/b.parquet"]
+            assert sorted(set(deleted)) == ["a.parquet", "b.parquet"]
+            assert not list(tmp_path.rglob("*.parquet"))
+        return
+
+    def test_delete_can_be_disabled(self, monkeypatch, tmp_path):
+        with given("a remote shard with deletion disabled"):
+            monkeypatch.setattr(
+                hf_data,
+                "list_split_shards",
+                lambda repo_id, split, revision=None: [("train/a.parquet", 10)],
+            )
+            deleted: list[str] = []
+
+            def fake_fetch(repo_id, filename, cache_dir=None, revision=None):
+                return write_stream_shard(tmp_path / "a", "a.parquet", seeds=(1, 2, 3))
+
+            monkeypatch.setattr(hf_data, "fetch_shard", fake_fetch)
+            monkeypatch.setattr(
+                hf_data, "delete_shard", lambda path: deleted.append(str(path))
+            )
+            dataset = StreamingWindowDataset(
+                self.remote_config(tmp_path, remote_delete=False)
+            )
+
+        with when("one window is consumed"):
+            next(iter(dataset))
+
+        with then("the shard is fetched but not deleted"):
+            assert (tmp_path / "a" / "a.parquet").exists()
+            assert deleted == []
         return

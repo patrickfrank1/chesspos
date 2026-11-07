@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from huggingface_hub import HfApi, snapshot_download
+from huggingface_hub import HfApi, hf_hub_download, snapshot_download
 
 
 def download_split(
@@ -75,13 +75,50 @@ def select_shard_subset(shards: list[tuple[str, int]], max_bytes: int) -> list[s
     return selected
 
 
-def _list_split_shards(repo_id: str, split: str) -> list[tuple[str, int]]:
-    """List the split's Parquet shards with their sizes, sorted by path."""
+def _list_split_shards(
+    repo_id: str, split: str, revision: str | None = None
+) -> list[tuple[str, int]]:
+    """List the split's Parquet shards with their sizes."""
     api = HfApi()
+    kwargs = {"repo_type": "dataset", "path_in_repo": split, "recursive": True}
+    if revision is not None:
+        kwargs["revision"] = revision
     shards = []
-    for entry in api.list_repo_tree(
-        repo_id, repo_type="dataset", path_in_repo=split, recursive=True
-    ):
+    for entry in api.list_repo_tree(repo_id, **kwargs):
         if entry.path.endswith(".parquet"):
             shards.append((entry.path, entry.size))
     return shards
+
+
+def list_split_shards(
+    repo_id: str, split: str, revision: str | None = None
+) -> list[tuple[str, int]]:
+    """Return the split's Parquet shards as sorted ``(path, size)`` pairs."""
+    return sorted(_list_split_shards(repo_id, split, revision=revision))
+
+
+def fetch_shard(
+    repo_id: str,
+    filename: str,
+    cache_dir: str | None = None,
+    revision: str | None = None,
+) -> Path:
+    """Download a single shard into ``cache_dir`` and return its local path.
+
+    ``local_dir`` mode stores the file directly under ``cache_dir`` (rather
+    than as a symlink into the global blob cache), so :func:`delete_shard`
+    actually frees the disk space.
+    """
+    kwargs = {"repo_type": "dataset", "local_dir": cache_dir}
+    if revision is not None:
+        kwargs["revision"] = revision
+    return Path(hf_hub_download(repo_id, filename, **kwargs))
+
+
+def delete_shard(path: str | Path) -> None:
+    """Remove a previously fetched shard, ignoring it if it is already gone."""
+    try:
+        Path(path).unlink()
+    except FileNotFoundError:
+        pass
+    return

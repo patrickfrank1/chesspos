@@ -406,3 +406,78 @@ class TestRetrievalFlags:
             assert config.p_skip_gram == 0.0
             assert config.random_replace_prob == MaskingConfig().random_replace_prob
         return
+
+
+class TestStreamShardsFlags:
+    def test_stream_shards_defaults_off(self, monkeypatch):
+        with given("no CLI arguments"):
+            monkeypatch.setattr("sys.argv", ["train_masked_transformer"])
+
+        with when("the arguments are parsed"):
+            args = parse_args()
+
+        with then("lazy shard fetching is disabled with a default cache dir"):
+            assert args.stream_shards is False
+            assert args.stream_shard_cache == "data/hf-shards"
+        return
+
+    def test_stream_shards_flags_are_parsed(self, monkeypatch):
+        with given("the lazy shard flags"):
+            monkeypatch.setattr(
+                "sys.argv",
+                [
+                    "train_masked_transformer",
+                    "--stream-shards",
+                    "--stream-shard-cache",
+                    "/tmp/shards",
+                ],
+            )
+
+        with when("the arguments are parsed"):
+            args = parse_args()
+
+        with then("the flag and cache directory are carried through"):
+            assert args.stream_shards is True
+            assert args.stream_shard_cache == "/tmp/shards"
+        return
+
+    def test_streaming_config_carries_remote_shard_settings(self, monkeypatch):
+        with given("streaming args with lazy shard fetching"):
+            monkeypatch.setattr(
+                "sys.argv",
+                [
+                    "train_masked_transformer",
+                    "--streaming",
+                    "--stream-shards",
+                    "--data-repo",
+                    "user/chesspos",
+                    "--stream-shard-cache",
+                    "/tmp/shards",
+                ],
+            )
+            args = parse_args()
+
+        with when("the streaming train config is built"):
+            config = streaming_train_config(args, data_dir="/tmp/shards", start_step=0)
+
+        with then("the config targets the hub repo with lazy delete enabled"):
+            assert config.remote_repo == "user/chesspos"
+            assert config.remote_split == "train"
+            assert config.remote_cache_dir == "/tmp/shards"
+            assert config.remote_delete is True
+        return
+
+    def test_streaming_config_has_no_remote_shards_by_default(self, monkeypatch):
+        with given("streaming args without lazy shard fetching"):
+            monkeypatch.setattr(
+                "sys.argv",
+                ["train_masked_transformer", "--streaming", "--data-repo", "u/d"],
+            )
+            args = parse_args()
+
+        with when("the streaming train config is built"):
+            config = streaming_train_config(args, data_dir="data/train", start_step=0)
+
+        with then("remote shard fetching stays disabled"):
+            assert config.remote_repo is None
+        return

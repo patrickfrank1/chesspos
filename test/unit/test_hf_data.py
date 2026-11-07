@@ -298,3 +298,77 @@ class TestDownloadSplitWithLimit:
         with then("the split-wide allow pattern is used, no shard listing happens"):
             assert hub_calls[0]["allow_patterns"] == ["train/**"]
         return
+
+
+class TestListSplitShards:
+    def test_returns_sorted_parquet_entries_only(self, monkeypatch):
+        with given("a repo listing with unordered parquet and sidecar files"):
+            files = [
+                FakeRepoFile("train/b.parquet", 2),
+                FakeRepoFile("train/a.parquet", 1),
+                FakeRepoFile("train/a.meta.json", 3),
+            ]
+            monkeypatch.setattr(hf_data, "HfApi", lambda **kwargs: FakeApi(files))
+
+        with when("the train shards are listed"):
+            shards = hf_data.list_split_shards("user/chesspos", "train")
+
+        with then("only parquet shards are returned, sorted by path"):
+            assert shards == [("train/a.parquet", 1), ("train/b.parquet", 2)]
+        return
+
+
+class TestFetchAndDeleteShard:
+    def test_fetch_forwards_local_dir_and_revision(self, monkeypatch, tmp_path):
+        with given("a stubbed hub downloader and a target shard file"):
+            seen: dict = {}
+            target = tmp_path / "shard.parquet"
+            target.touch()
+
+            def fake_download(
+                repo_id, filename, repo_type=None, local_dir=None, revision=None
+            ):
+                seen.update(
+                    {
+                        "repo_id": repo_id,
+                        "filename": filename,
+                        "repo_type": repo_type,
+                        "local_dir": local_dir,
+                        "revision": revision,
+                    }
+                )
+                return str(target)
+
+            monkeypatch.setattr(hf_data, "hf_hub_download", fake_download)
+
+        with when("a single shard is fetched"):
+            path = hf_data.fetch_shard(
+                "user/chesspos",
+                "train/a.parquet",
+                cache_dir=str(tmp_path / "cache"),
+                revision="v1",
+            )
+
+        with then("the download targets the dataset repo and the given local dir"):
+            assert path == target
+            assert seen == {
+                "repo_id": "user/chesspos",
+                "filename": "train/a.parquet",
+                "repo_type": "dataset",
+                "local_dir": str(tmp_path / "cache"),
+                "revision": "v1",
+            }
+        return
+
+    def test_delete_removes_file_and_ignores_missing(self, tmp_path):
+        with given("an existing shard file"):
+            shard = tmp_path / "a.parquet"
+            shard.touch()
+
+        with when("the shard is deleted twice"):
+            hf_data.delete_shard(shard)
+            hf_data.delete_shard(shard)
+
+        with then("the file is gone and the second delete is a no-op"):
+            assert not shard.exists()
+        return

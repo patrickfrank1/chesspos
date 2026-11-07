@@ -49,6 +49,7 @@ from src.training.window_dataset import (
     load_game_pool,
     collate_windows,
     inverse_frequency_weights,
+    remote_unigram_counts,
     streaming_unigram_counts,
     unigram_counts,
 )
@@ -75,6 +76,19 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Size budget for the train split download (test split is always "
         "downloaded in full); only used with --data-repo",
+    )
+    parser.add_argument(
+        "--stream-shards",
+        action="store_true",
+        help="Fetch train shards from --data-repo on demand and delete each "
+        "after decoding, keeping disk use bounded (requires --streaming); "
+        "ignores --data-limit-gb",
+    )
+    parser.add_argument(
+        "--stream-shard-cache",
+        default="data/hf-shards",
+        help="Local directory for temporarily downloaded train shards in lazy "
+        "shard mode (default: data/hf-shards)",
     )
     parser.add_argument(
         "--upload-bucket",
@@ -395,7 +409,12 @@ def streaming_train_config(
     With ``start_step > 0`` each DataLoader worker fast-forwards its
     deterministic stream to the position the checkpoint left off, so a
     resumed run continues on fresh data instead of replaying from the start.
+
+    In lazy shard mode (``--stream-shards``) the train shards are listed from
+    the Hub and fetched/deleted one at a time instead of being downloaded up
+    front.
     """
+    lazy = getattr(args, "stream_shards", False)
     return WindowDatasetConfig(
         data_dir=data_dir,
         max_seq_len=args.max_seq_len,
@@ -407,6 +426,9 @@ def streaming_train_config(
         resume_step=start_step,
         batch_size=args.batch_size,
         num_workers=args.num_workers,
+        remote_repo=args.data_repo if lazy else None,
+        remote_split="train",
+        remote_cache_dir=args.stream_shard_cache if lazy else "data/hf-shards",
     )
 
 
@@ -415,8 +437,20 @@ def resolve_data_dirs(args: argparse.Namespace, log=None) -> tuple[Path, Path]:
 
     With ``--data-repo`` both splits are snapshot-downloaded (train bounded
     by ``--data-limit-gb``, test always in full); otherwise the local
-    ``--train-dir`` / ``--val-dir`` paths are used unchanged.
+    ``--train-dir`` / ``--val-dir`` paths are used unchanged. With
+    ``--stream-shards`` the train split is not downloaded: only the test
+    split is fetched, and train data is streamed lazily from the Hub.
     """
+    if getattr(args, "stream_shards", False):
+        if args.data_repo is None:
+            raise ValueError("--stream-shards requires --data-repo")
+        if not getattr(args, "streaming", False):
+            raise ValueError("--stream-shards requires --streaming")
+        val_dir = download_split(
+            args.data_repo, "test", cache_dir=args.data_cache, log=log
+        )
+        cache_dir = getattr(args, "stream_shard_cache", "data/hf-shards")
+        return Path(cache_dir), val_dir
     if args.data_repo is None:
         return Path(args.train_dir), Path(args.val_dir)
     max_bytes = (
@@ -491,10 +525,24 @@ def main() -> None:
             streaming_train_config(args, data_dir=str(train_dir), start_step=start_step)
         )
         if not args.no_freq_weighting:
-            train_dataset.config.unigram_weights = inverse_frequency_weights(
-                streaming_unigram_counts(str(train_dir), log=log), cap=args.freq_cap
-            )
-            log("frequency-aware loss weighting enabled (streaming counts)")
+            if getattr(args, "stream_shards", False):
+                train_dataset.config.unigram_weights = inverse_frequency_weights(
+                    remote_unigram_counts(
+                        args.data_repo,
+                        split="train",
+                        cache_dir=args.stream_shard_cache,
+                        log=log,
+                        cache_path=Path(args.stream_shard_cache) / "unigram_counts.npz",
+                    ),
+                    cap=args.freq_cap,
+                )
+                log("frequency-aware loss weighting enabled (lazy remote counts)")
+            else:
+                train_dataset.config.unigram_weights = inverse_frequency_weights(
+                    streaming_unigram_counts(str(train_dir), log=log),
+                    cap=args.freq_cap,
+                )
+                log("frequency-aware loss weighting enabled (streaming counts)")
     else:
         train_dataset = WindowDataset(
             WindowDatasetConfig(
@@ -529,7 +577,13 @@ def main() -> None:
             seed=args.seed,
         )
     )
-    log(f"train games={len(train_dataset)} val games={len(val_dataset)}")
+    if getattr(args, "stream_shards", False):
+        log(
+            f"train shards={len(train_dataset.shards)} (lazy fetch) "
+            f"val games={len(val_dataset)}"
+        )
+    else:
+        log(f"train games={len(train_dataset)} val games={len(val_dataset)}")
 
     retrieval_benchmark = None
     if args.retrieval_benchmark is not None:
@@ -544,7 +598,19 @@ def main() -> None:
             f"{sum(ids.size for ids in retrieval_benchmark.strategic_queries.values())}"
         )
 
-    train_provenance = collect_data_provenance(Path(train_dir))
+    if getattr(args, "stream_shards", False):
+        remote_shards = getattr(train_dataset, "remote_shards", [])
+        train_provenance = {
+            "remote_repo": args.data_repo,
+            "remote_split": "train",
+            "shards": [
+                {"path": path, "size": size, "games": 0} for path, size in remote_shards
+            ],
+            "total_bytes": sum(size for _, size in remote_shards),
+            "total_games": 0,
+        }
+    else:
+        train_provenance = collect_data_provenance(Path(train_dir))
     val_provenance = collect_data_provenance(Path(val_dir))
     git_commit = get_git_commit()
 
