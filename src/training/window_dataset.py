@@ -39,6 +39,11 @@ class WindowDatasetConfig:
     resume_step: int = 0
     batch_size: int = 1
     num_workers: int = 1
+    remote_repo: str | None = None
+    remote_split: str = "train"
+    remote_revision: str | None = None
+    remote_cache_dir: str = "data/hf-shards"
+    remote_delete: bool = True
 
 
 def worker_skip_windows(
@@ -258,6 +263,43 @@ def _build_window(
     }
 
 
+@dataclass
+class ShardGames:
+    """Iterate a shard's games from one packed token array.
+
+    Splitting each game's segment slices lazily keeps steady-state memory at
+    roughly the packed ``int16`` array instead of a Python list of millions of
+    small NumPy objects (which costs ~4–5x more).
+    """
+
+    values: np.ndarray
+    offsets: np.ndarray
+
+    def __len__(self) -> int:
+        return max(0, len(self.offsets) - 1)
+
+    def __iter__(self):
+        for index in range(len(self.offsets) - 1):
+            stream = self.values[self.offsets[index] : self.offsets[index + 1]]
+            segments = _split_segments(stream)
+            if segments:
+                yield segments
+        return
+
+
+def _load_shard_games(path: Path) -> ShardGames:
+    """Read one shard into a single packed array plus per-game offsets."""
+    table = pq.read_table(path, columns=["packed"])
+    column = table.column("packed").combine_chunks()
+    if len(column) == 0:
+        return ShardGames(np.empty(0, dtype=np.int16), np.zeros(1, dtype=np.int64))
+    offsets = np.asarray(column.offsets)
+    values = (
+        column.flatten().to_numpy(zero_copy_only=False).astype(np.int16, copy=False)
+    )
+    return ShardGames(values, offsets)
+
+
 def _load_game_segments(
     path: Path, max_workers: int | None = None
 ) -> list[list[np.ndarray]]:
@@ -280,19 +322,7 @@ def _load_game_segments(
             for shard_games in pool.map(_load_game_segments, shards):
                 games.extend(shard_games)
         return games
-    table = pq.read_table(path, columns=["packed"])
-    column = table.column("packed").combine_chunks()
-    if len(column) == 0:
-        return []
-    offsets = np.asarray(column.offsets)
-    values = column.flatten().to_numpy(zero_copy_only=False).astype(np.int16)
-    games = []
-    for i in range(len(column)):
-        stream = values[offsets[i] : offsets[i + 1]]
-        segments = _split_segments(stream)
-        if segments:
-            games.append(segments)
-    return games
+    return list(_load_shard_games(path))
 
 
 def _iter_shard_games(shards: list[Path], prefetch_shards: int):
@@ -358,18 +388,25 @@ def _split_segments(stream: np.ndarray) -> list[np.ndarray]:
     return segments
 
 
-def _shard_counts(shard: Path) -> np.ndarray:
-    """Per-shard token histogram with SEP and leading-CLS framing removed."""
+def _shard_counts(shard: Path, batch_size: int = 4096) -> np.ndarray:
+    """Per-shard token histogram with SEP and leading-CLS framing removed.
+
+    Row groups are processed in batches so peak memory stays bounded by
+    ``batch_size`` games rather than the whole shard.
+    """
     counts = np.zeros(VOCAB_SIZE, dtype=np.int64)
-    table = pq.read_table(shard, columns=["packed"])
-    column = table.column("packed").combine_chunks()
-    if len(column) == 0:
-        return counts
-    offsets = np.asarray(column.offsets)
-    values = column.flatten().to_numpy(zero_copy_only=False).astype(np.int16)
-    counts += np.bincount(values, minlength=VOCAB_SIZE)
-    counts[SEP] -= int((values == SEP).sum())
-    counts[CLS] -= int((values[offsets[:-1]] == CLS).sum())
+    parquet = pq.ParquetFile(shard)
+    for batch in parquet.iter_batches(columns=["packed"], batch_size=batch_size):
+        column = batch.column(0)
+        if len(column) == 0:
+            continue
+        offsets = np.asarray(column.offsets)
+        values = (
+            column.flatten().to_numpy(zero_copy_only=False).astype(np.int16, copy=False)
+        )
+        counts += np.bincount(values, minlength=VOCAB_SIZE)
+        counts[SEP] -= int((values == SEP).sum())
+        counts[CLS] -= int((values[offsets[:-1]] == CLS).sum())
     return counts
 
 
@@ -413,6 +450,87 @@ def streaming_unigram_counts(
     return counts
 
 
+def remote_unigram_counts(
+    repo_id: str,
+    split: str = "train",
+    revision: str | None = None,
+    cache_dir: str | None = "data/hf-shards",
+    log=None,
+    log_every: int = 25,
+    max_workers: int = 4,
+    cache_path: str | Path | None = None,
+) -> np.ndarray:
+    """Count tokens across a remote split, fetching and deleting each shard.
+
+    Mirrors :func:`streaming_unigram_counts` so frequency-aware loss weighting
+    works in lazy shard mode without keeping the corpus on disk. Up to
+    ``max_workers`` shards are downloaded concurrently; each is removed again
+    as soon as its histogram has been computed.
+
+    When ``cache_path`` is given the histogram is stored there and reused on
+    later calls whose shard inventory matches exactly, so watchdog restarts
+    do not re-download the corpus.
+    """
+    from src.training.hf_data import delete_shard, fetch_shard, list_split_shards
+
+    log = log or (lambda message: None)
+    entries = list_split_shards(repo_id, split, revision=revision)
+    shards = [path for path, _ in entries]
+    log(f"remote unigram pass: {len(shards)} shards in {repo_id}/{split}")
+    key = json.dumps(
+        {"repo": repo_id, "split": split, "revision": revision, "shards": entries},
+        sort_keys=True,
+    )
+    if cache_path is not None:
+        cached = _load_cached_unigram(cache_path, key)
+        if cached is not None:
+            log(f"remote unigram pass: reused cached counts from {cache_path}")
+            return cached
+    counts = np.zeros(VOCAB_SIZE, dtype=np.int64)
+    if not shards:
+        return counts
+
+    def count_shard(filename: str) -> np.ndarray:
+        local = fetch_shard(repo_id, filename, cache_dir=cache_dir, revision=revision)
+        try:
+            return _shard_counts(local)
+        finally:
+            delete_shard(local)
+
+    workers = max(1, min(max_workers, len(shards)))
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        for index, shard_count in enumerate(pool.map(count_shard, shards), start=1):
+            counts += shard_count
+            if index == 1 or index % log_every == 0 or index == len(shards):
+                log(f"remote unigram pass: shard {index}/{len(shards)} done")
+    if cache_path is not None:
+        _save_cached_unigram(cache_path, key, counts)
+    log(f"remote unigram pass: done, {int(counts.sum())} tokens counted")
+    return counts
+
+
+def _load_cached_unigram(cache_path: str | Path, key: str) -> np.ndarray | None:
+    """Load a cached histogram if it matches the current shard inventory."""
+    try:
+        with np.load(cache_path, allow_pickle=False) as data:
+            if str(data["key"].item()) != key:
+                return None
+            counts = np.asarray(data["counts"])
+    except (OSError, KeyError, ValueError):
+        return None
+    if counts.shape != (VOCAB_SIZE,):
+        return None
+    return counts.astype(np.int64, copy=False)
+
+
+def _save_cached_unigram(cache_path: str | Path, key: str, counts: np.ndarray) -> None:
+    """Persist a histogram together with the shard-inventory key."""
+    path = Path(cache_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    np.savez(path, counts=counts, key=np.asarray(key))
+    return
+
+
 def _sidecar_counts(shard: Path) -> np.ndarray | None:
     """Per-shard histogram from the ``.meta.json`` sidecar, if it has one."""
     sidecar = shard.with_suffix(".meta.json")
@@ -443,8 +561,23 @@ class StreamingWindowDataset(IterableDataset):
         self.mode_pattern = build_mode_pattern(config.masking)
         if config.games is not None:
             raise ValueError("streaming dataset requires data_dir, not preloaded games")
+        self.remote = config.remote_repo is not None
+        if self.remote:
+            from src.training.hf_data import list_split_shards
+
+            self.remote_shards = sorted(
+                list_split_shards(
+                    config.remote_repo,
+                    config.remote_split,
+                    revision=config.remote_revision,
+                )
+            )
+            self.shards = [path for path, _ in self.remote_shards]
+            self.shard_sizes: list[int] = []
+            return
         if not config.data_dir:
             raise ValueError("streaming dataset requires data_dir")
+        self.remote_shards: list[tuple[str, int]] = []
         self.shards = sorted(Path(config.data_dir).rglob("*.parquet"))
         self.shard_sizes = [
             pq.ParquetFile(shard).metadata.num_rows for shard in self.shards
@@ -453,6 +586,31 @@ class StreamingWindowDataset(IterableDataset):
 
     def __len__(self) -> int:
         return int(sum(self.shard_sizes))
+
+    def _load_shard(self, index: int) -> ShardGames:
+        """Decode one shard, fetching and deleting it when running remote.
+
+        Remote shards are downloaded into ``remote_cache_dir`` and removed
+        again as soon as their packed stream has been read into memory, so
+        disk usage stays bounded by the number of shards in flight rather
+        than the size of the corpus. Games are split out lazily by
+        :class:`ShardGames`, keeping per-worker memory near the packed array.
+        """
+        if not self.remote:
+            return _load_shard_games(self.shards[index])
+        from src.training.hf_data import delete_shard, fetch_shard
+
+        path = fetch_shard(
+            self.config.remote_repo,
+            self.shards[index],
+            cache_dir=self.config.remote_cache_dir,
+            revision=self.config.remote_revision,
+        )
+        try:
+            return _load_shard_games(path)
+        finally:
+            if self.config.remote_delete:
+                delete_shard(path)
 
     def _worker_shard_indices(self) -> list[int]:
         """Return this worker's round-robin subset of shard indices."""
@@ -478,6 +636,10 @@ class StreamingWindowDataset(IterableDataset):
         return
 
     def _iter_windows(self, worker_id: int, worker_indices: list[int]):
+        if not worker_indices:
+            # Workers beyond the shard count have nothing to do; returning
+            # (instead of looping) stops them from busy-spinning a CPU.
+            return
         rng = np.random.default_rng(
             None if self.config.seed is None else self.config.seed + worker_id
         )
@@ -490,9 +652,7 @@ class StreamingWindowDataset(IterableDataset):
             shard_iter = (
                 self._prefetched_shards(order)
                 if self.config.prefetch_shards > 0
-                else (
-                    (index, _load_game_segments(self.shards[index])) for index in order
-                )
+                else ((index, self._load_shard(index)) for index in order)
             )
             for _, games in shard_iter:
                 for segments in games:
@@ -530,7 +690,7 @@ class StreamingWindowDataset(IterableDataset):
         def producer() -> None:
             try:
                 for index in order:
-                    queue.put((index, _load_game_segments(self.shards[index])))
+                    queue.put((index, self._load_shard(index)))
                 queue.put(end)
             except Exception as error:  # surface producer failures to consumer
                 queue.put(error)

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from huggingface_hub import HfApi, snapshot_download
+from huggingface_hub import HfApi, hf_hub_download, snapshot_download
 
 
 def download_split(
@@ -49,8 +49,39 @@ def download_split(
         allow_patterns=allow_patterns,
         cache_dir=cache_dir,
     )
-    log(f"downloaded {repo_id} split={split} to {Path(snapshot) / split}")
-    return Path(snapshot) / split
+    snapshot_root = Path(snapshot)
+    if max_bytes is not None:
+        _prune_unselected_shards(snapshot_root, split, allow_patterns)
+    log(f"downloaded {repo_id} split={split} to {snapshot_root / split}")
+    return snapshot_root / split
+
+
+def _prune_unselected_shards(
+    snapshot_root: Path, split: str, selected: list[str]
+) -> None:
+    """Drop shards left by earlier downloads that are not in ``selected``.
+
+    ``snapshot_download`` keeps previously cached files, so a bounded run can
+    otherwise train on more shards than its budget selected. Only parquet
+    shards and their ``.meta.json`` sidecars inside the split are touched.
+    """
+    split_dir = snapshot_root / split
+    if not split_dir.is_dir():
+        return
+    allowed = set(selected)
+    for path in split_dir.rglob("*"):
+        if not path.is_file():
+            continue
+        relative = path.relative_to(snapshot_root).as_posix()
+        if relative.endswith(".parquet"):
+            keep = relative in allowed
+        elif relative.endswith(".meta.json"):
+            keep = relative.replace(".meta.json", ".parquet") in allowed
+        else:
+            continue
+        if not keep:
+            path.unlink(missing_ok=True)
+    return
 
 
 def select_shard_subset(shards: list[tuple[str, int]], max_bytes: int) -> list[str]:
@@ -75,13 +106,50 @@ def select_shard_subset(shards: list[tuple[str, int]], max_bytes: int) -> list[s
     return selected
 
 
-def _list_split_shards(repo_id: str, split: str) -> list[tuple[str, int]]:
-    """List the split's Parquet shards with their sizes, sorted by path."""
+def _list_split_shards(
+    repo_id: str, split: str, revision: str | None = None
+) -> list[tuple[str, int]]:
+    """List the split's Parquet shards with their sizes."""
     api = HfApi()
+    kwargs = {"repo_type": "dataset", "path_in_repo": split, "recursive": True}
+    if revision is not None:
+        kwargs["revision"] = revision
     shards = []
-    for entry in api.list_repo_tree(
-        repo_id, repo_type="dataset", path_in_repo=split, recursive=True
-    ):
+    for entry in api.list_repo_tree(repo_id, **kwargs):
         if entry.path.endswith(".parquet"):
             shards.append((entry.path, entry.size))
     return shards
+
+
+def list_split_shards(
+    repo_id: str, split: str, revision: str | None = None
+) -> list[tuple[str, int]]:
+    """Return the split's Parquet shards as sorted ``(path, size)`` pairs."""
+    return sorted(_list_split_shards(repo_id, split, revision=revision))
+
+
+def fetch_shard(
+    repo_id: str,
+    filename: str,
+    cache_dir: str | None = None,
+    revision: str | None = None,
+) -> Path:
+    """Download a single shard into ``cache_dir`` and return its local path.
+
+    ``local_dir`` mode stores the file directly under ``cache_dir`` (rather
+    than as a symlink into the global blob cache), so :func:`delete_shard`
+    actually frees the disk space.
+    """
+    kwargs = {"repo_type": "dataset", "local_dir": cache_dir}
+    if revision is not None:
+        kwargs["revision"] = revision
+    return Path(hf_hub_download(repo_id, filename, **kwargs))
+
+
+def delete_shard(path: str | Path) -> None:
+    """Remove a previously fetched shard, ignoring it if it is already gone."""
+    try:
+        Path(path).unlink()
+    except FileNotFoundError:
+        pass
+    return

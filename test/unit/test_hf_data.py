@@ -298,3 +298,128 @@ class TestDownloadSplitWithLimit:
         with then("the split-wide allow pattern is used, no shard listing happens"):
             assert hub_calls[0]["allow_patterns"] == ["train/**"]
         return
+
+
+class TestListSplitShards:
+    def test_returns_sorted_parquet_entries_only(self, monkeypatch):
+        with given("a repo listing with unordered parquet and sidecar files"):
+            files = [
+                FakeRepoFile("train/b.parquet", 2),
+                FakeRepoFile("train/a.parquet", 1),
+                FakeRepoFile("train/a.meta.json", 3),
+            ]
+            monkeypatch.setattr(hf_data, "HfApi", lambda **kwargs: FakeApi(files))
+
+        with when("the train shards are listed"):
+            shards = hf_data.list_split_shards("user/chesspos", "train")
+
+        with then("only parquet shards are returned, sorted by path"):
+            assert shards == [("train/a.parquet", 1), ("train/b.parquet", 2)]
+        return
+
+
+class TestFetchAndDeleteShard:
+    def test_fetch_forwards_local_dir_and_revision(self, monkeypatch, tmp_path):
+        with given("a stubbed hub downloader and a target shard file"):
+            seen: dict = {}
+            target = tmp_path / "shard.parquet"
+            target.touch()
+
+            def fake_download(
+                repo_id, filename, repo_type=None, local_dir=None, revision=None
+            ):
+                seen.update(
+                    {
+                        "repo_id": repo_id,
+                        "filename": filename,
+                        "repo_type": repo_type,
+                        "local_dir": local_dir,
+                        "revision": revision,
+                    }
+                )
+                return str(target)
+
+            monkeypatch.setattr(hf_data, "hf_hub_download", fake_download)
+
+        with when("a single shard is fetched"):
+            path = hf_data.fetch_shard(
+                "user/chesspos",
+                "train/a.parquet",
+                cache_dir=str(tmp_path / "cache"),
+                revision="v1",
+            )
+
+        with then("the download targets the dataset repo and the given local dir"):
+            assert path == target
+            assert seen == {
+                "repo_id": "user/chesspos",
+                "filename": "train/a.parquet",
+                "repo_type": "dataset",
+                "local_dir": str(tmp_path / "cache"),
+                "revision": "v1",
+            }
+        return
+
+    def test_delete_removes_file_and_ignores_missing(self, tmp_path):
+        with given("an existing shard file"):
+            shard = tmp_path / "a.parquet"
+            shard.touch()
+
+        with when("the shard is deleted twice"):
+            hf_data.delete_shard(shard)
+            hf_data.delete_shard(shard)
+
+        with then("the file is gone and the second delete is a no-op"):
+            assert not shard.exists()
+        return
+
+
+class TestBoundedDownloadPruning:
+    def test_bounded_download_prunes_stale_shards(self, monkeypatch, tmp_path):
+        with given("a snapshot cache holding extra shards from an earlier run"):
+            root = tmp_path / "snapshot"
+            train = root / "train"
+            train.mkdir(parents=True)
+            for name in ("a", "b", "c", "stale"):
+                (train / f"{name}.parquet").touch()
+                (train / f"{name}.meta.json").touch()
+            files = [
+                FakeRepoFile("train/a.parquet", 100),
+                FakeRepoFile("train/b.parquet", 100),
+                FakeRepoFile("train/c.parquet", 100),
+            ]
+            monkeypatch.setattr(hf_data, "HfApi", lambda **kwargs: FakeApi(files))
+            monkeypatch.setattr(
+                hf_data, "snapshot_download", lambda repo_id, **kwargs: str(root)
+            )
+
+        with when("the train split is downloaded with a two-shard budget"):
+            path = hf_data.download_split("user/chesspos", "train", max_bytes=200)
+
+        with then("only the selected shards and their sidecars remain"):
+            assert sorted(p.name for p in path.glob("*.parquet")) == [
+                "a.parquet",
+                "b.parquet",
+            ]
+            assert sorted(p.name for p in path.glob("*.meta.json")) == [
+                "a.meta.json",
+                "b.meta.json",
+            ]
+        return
+
+    def test_unbounded_download_does_not_prune(self, monkeypatch, tmp_path):
+        with given("a snapshot cache with extra shards and no byte budget"):
+            root = tmp_path / "snapshot"
+            train = root / "train"
+            train.mkdir(parents=True)
+            (train / "keep.parquet").touch()
+            monkeypatch.setattr(
+                hf_data, "snapshot_download", lambda repo_id, **kwargs: str(root)
+            )
+
+        with when("the unbounded train split is downloaded"):
+            path = hf_data.download_split("user/chesspos", "train")
+
+        with then("pre-existing shards are left untouched"):
+            assert (path / "keep.parquet").exists()
+        return

@@ -7,15 +7,11 @@ import torch.nn.functional as F
 
 from src.dataset.token_stream import (
     CLS,
-    N_SLOTS,
     PAD,
     SEP,
     SEGMENT_LEN,
-    TURN_BLACK,
-    TURN_WHITE,
 )
 from src.modeling.masking import IGNORE_INDEX
-from src.modeling.transformer import slot_indices
 from src.training.aux_heads import auxiliary_head_losses, segment_global_targets
 from src.training.contrastive import build_contrastive_masks, supcon_loss
 
@@ -60,9 +56,7 @@ class AuxiliaryLossConfig:
     warmup_steps: int = 200
     content_pooling: bool = False
     use_supcon: bool = False
-    turn_flip: bool = False
     temporal_radius: int = 3
-    ignore_opening_negatives: bool = False
     opening_ply_threshold: int = 30
     material_weight: float = 0.0
     piece_count_weight: float = 0.0
@@ -281,6 +275,87 @@ def select_target_segments_multi(
     return selected
 
 
+def select_clustered_target_segments(
+    segment_mask: torch.Tensor,
+    start_index: torch.Tensor,
+    count: int,
+    temporal_radius: int,
+    opening_ply_threshold: int = 0,
+    generator: torch.Generator | None = None,
+) -> list[list[int]]:
+    """Pick temporally clustered SupCon target segments per window.
+
+    Each row returns up to ``count`` distinct segment indices. Segments whose
+    global ply (``start_index + segment index``) is below
+    ``opening_ply_threshold`` are never eligible, so a window that lies fully
+    inside the opening yields no targets. Targets are grouped around random
+    anchors so every member of a group has a neighbour within
+    ``temporal_radius``; unpaired leftovers only fill the remaining quota when
+    the window does not contain enough clusterable segments.
+    """
+    if segment_mask.ndim != 2:
+        raise ValueError("segment_mask must be two-dimensional")
+    if start_index.shape != (segment_mask.shape[0],):
+        raise ValueError("start_index must match segment_mask rows")
+    if count < 0:
+        raise ValueError("count must be non-negative")
+    if temporal_radius < 0:
+        raise ValueError("temporal_radius must be non-negative")
+    if opening_ply_threshold < 0:
+        raise ValueError("opening_ply_threshold must be non-negative")
+    if count == 0:
+        return [[] for _ in range(segment_mask.shape[0])]
+
+    device = segment_mask.device
+    positions = torch.arange(segment_mask.shape[1], device=device)
+    plies = start_index.to(device)[:, None] + positions[None, :]
+    eligible = segment_mask.bool() & (plies >= opening_ply_threshold)
+    scores = torch.rand(segment_mask.shape, generator=generator, device=device)
+    scores = scores.masked_fill(~eligible, float("-inf"))
+    order = torch.argsort(scores, dim=1, descending=True).cpu()
+    eligible_cpu = eligible.cpu()
+
+    cluster_size = 2 * temporal_radius + 1
+    n_clusters = max(1, (count + cluster_size - 1) // cluster_size)
+    per_cluster = max(1, (count + n_clusters - 1) // n_clusters)
+
+    selected: list[list[int]] = []
+    for row in range(segment_mask.shape[0]):
+        order_row = [
+            int(index)
+            for index in order[row].tolist()
+            if bool(eligible_cpu[row, index])
+        ]
+        chosen: list[int] = []
+        chosen_set: set[int] = set()
+        for anchor in order_row:
+            if len(chosen) >= count:
+                break
+            if anchor in chosen_set:
+                continue
+            neighbours = [
+                index
+                for index in order_row
+                if index not in chosen_set
+                and index != anchor
+                and abs(index - anchor) <= temporal_radius
+            ]
+            if not neighbours:
+                continue
+            cluster = [anchor, *neighbours[: per_cluster - 1]]
+            chosen_set.update(cluster)
+            chosen.extend(cluster)
+        for anchor in order_row:
+            if len(chosen) >= count:
+                break
+            if anchor in chosen_set:
+                continue
+            chosen_set.add(anchor)
+            chosen.append(anchor)
+        selected.append(sorted(chosen[:count]))
+    return selected
+
+
 def restore_visible_tokens(tokens: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
     """Replace masked tokens with their original targets.
 
@@ -292,20 +367,6 @@ def restore_visible_tokens(tokens: torch.Tensor, targets: torch.Tensor) -> torch
     mask = targets.ne(IGNORE_INDEX)
     visible[mask] = targets[mask]
     return visible
-
-
-def flip_turn_tokens(
-    tokens: torch.Tensor,
-    segment_ids: torch.Tensor,
-) -> torch.Tensor:
-    """Flip the side-to-move token in every segment, leaving the rest intact."""
-    slots = slot_indices(tokens, segment_ids)
-    is_turn = (slots == N_SLOTS) & ((tokens == TURN_WHITE) | (tokens == TURN_BLACK))
-    flipped = tokens.clone()
-    flipped[is_turn] = torch.where(
-        tokens[is_turn] == TURN_WHITE, TURN_BLACK, TURN_WHITE
-    )
-    return flipped
 
 
 def extract_alone_views_multi(
@@ -438,7 +499,6 @@ def compute_training_loss(
         or config.nce_weight > 0
         or config.alone_var_weight > 0
         or config.alone_cov_weight > 0
-        or config.turn_flip
         or config.heads_enabled()
     )
     window_targets = None
@@ -451,11 +511,28 @@ def compute_training_loss(
     view_targets = None
     if needs_alone:
         visible_tokens = restore_visible_tokens(tokens, batch["targets"])
-        targets_per_row = select_target_segments_multi(
-            segment_mask,
-            count=config.alone_targets_per_window,
-            generator=generator,
-        )
+        if config.use_supcon:
+            start_index = batch.get("start_index")
+            if start_index is None:
+                start_index = torch.zeros(
+                    segment_mask.shape[0],
+                    dtype=torch.long,
+                    device=segment_mask.device,
+                )
+            targets_per_row = select_clustered_target_segments(
+                segment_mask,
+                start_index.to(segment_mask.device),
+                count=config.alone_targets_per_window,
+                temporal_radius=config.temporal_radius,
+                opening_ply_threshold=config.opening_ply_threshold,
+                generator=generator,
+            )
+        else:
+            targets_per_row = select_target_segments_multi(
+                segment_mask,
+                count=config.alone_targets_per_window,
+                generator=generator,
+            )
         (
             alone_tokens,
             alone_segments,
@@ -465,11 +542,10 @@ def compute_training_loss(
         ) = extract_alone_views_multi(
             visible_tokens, segment_ids, padding_mask, targets_per_row
         )
+        if alone_tokens.shape[0] == 0:
+            return config.mlm_weight * mlm_loss, {"mlm": mlm_loss.detach()}
         use_content_views = (
-            config.content_pooling
-            or config.use_supcon
-            or config.turn_flip
-            or config.heads_enabled()
+            config.content_pooling or config.use_supcon or config.heads_enabled()
         )
         if use_content_views:
             alone_content, alone_state, _ = encoder.encode_views(
@@ -513,47 +589,15 @@ def compute_training_loss(
         else:
             view_games = rows
             view_plies = targets
-        opening = None
-        if config.ignore_opening_negatives:
-            opening = [bool(ply < config.opening_ply_threshold) for ply in view_plies]
         positive, ignore = build_contrastive_masks(
             view_games,
             view_plies,
             temporal_radius=config.temporal_radius,
-            opening=opening,
         )
         positive = positive.to(alone_targets.device)
         ignore = ignore.to(alone_targets.device)
-        embeddings_for_supcon = alone_targets
-        if config.turn_flip:
-            flipped_tokens = flip_turn_tokens(alone_tokens, alone_segments)
-            flipped_content, _, _ = encoder.encode_views(
-                flipped_tokens, alone_segments, alone_padding
-            )
-            flipped_targets = flipped_content[:, 0]
-            embeddings_for_supcon = torch.cat([alone_targets, flipped_targets], dim=0)
-            eye = torch.eye(
-                alone_targets.shape[0],
-                dtype=torch.bool,
-                device=alone_targets.device,
-            )
-            cross = positive | eye
-            positive = torch.cat(
-                [
-                    torch.cat([positive, cross], dim=1),
-                    torch.cat([cross, positive], dim=1),
-                ],
-                dim=0,
-            )
-            ignore = torch.cat(
-                [
-                    torch.cat([ignore, ignore], dim=1),
-                    torch.cat([ignore, ignore], dim=1),
-                ],
-                dim=0,
-            )
         supcon = supcon_loss(
-            embeddings_for_supcon,
+            alone_targets,
             positive,
             ignore_mask=ignore,
             temperature=config.nce_temperature,

@@ -37,7 +37,6 @@ from src.training.hard_negatives import (
 from src.training.objectives import (
     AuxiliaryLossConfig,
     extract_alone_views_multi,
-    flip_turn_tokens,
 )
 from src.training.window_dataset import (
     WindowDataset,
@@ -79,6 +78,17 @@ def three_boards() -> list[chess.Board]:
         boards.append(board.copy())
         board.push(list(board.legal_moves)[0])
     return boards
+
+
+def flip_turn_tokens(tokens: torch.Tensor, segment_ids: torch.Tensor) -> torch.Tensor:
+    """Flip the side-to-move token in every segment (test helper)."""
+    slots = slot_indices(tokens, segment_ids)
+    is_turn = (slots == N_SLOTS) & ((tokens == TURN_WHITE) | (tokens == TURN_BLACK))
+    flipped = tokens.clone()
+    flipped[is_turn] = torch.where(
+        tokens[is_turn] == TURN_WHITE, TURN_BLACK, TURN_WHITE
+    )
+    return flipped
 
 
 class TestContentStatePooling:
@@ -159,26 +169,6 @@ class TestContentStatePooling:
         return
 
 
-class TestTurnFlip:
-    def test_flips_every_segment_turn_token_and_nothing_else(self):
-        with given("three packed boards with alternating turns"):
-            tokens, segment_ids, _ = packed_segments(three_boards())
-            slots = slot_indices(tokens, segment_ids)
-            turn_positions = (slots == N_SLOTS) & (
-                (tokens == TURN_WHITE) | (tokens == TURN_BLACK)
-            )
-
-        with when("the turn tokens are flipped"):
-            flipped = flip_turn_tokens(tokens, segment_ids)
-
-        with then("only the turn tokens change and flipping twice restores them"):
-            expected = torch.where(tokens == TURN_WHITE, TURN_BLACK, TURN_WHITE)
-            assert torch.equal(flipped[turn_positions], expected[turn_positions])
-            assert torch.equal(flipped[~turn_positions], tokens[~turn_positions])
-            assert torch.equal(flip_turn_tokens(flipped, segment_ids), tokens)
-        return
-
-
 class TestSupCon:
     def test_multi_positive_loss_matches_the_definition(self):
         with given("five embeddings, one anchor, two positives, one ignored"):
@@ -253,28 +243,6 @@ class TestContrastiveMasks:
             assert not ignore[0, 4]
             assert not positive[0, 0]
             assert not ignore[0, 0]
-        return
-
-    def test_opening_positions_are_excluded_from_negative_mining(self):
-        with given("two opening views and two non-opening views from other games"):
-            game_ids = ["a", "a", "b", "b", "c"]
-            plies = [10, 12, 10, 25, 25]
-            opening = [True, True, True, False, False]
-
-        with when("the contrastive masks are built with the opening heuristic"):
-            positive, ignore = build_contrastive_masks(
-                game_ids,
-                plies,
-                temporal_radius=3,
-                opening=opening,
-            )
-
-        with then("openings stay positive within a game but never become negatives"):
-            assert positive[0, 1]
-            assert ignore[0, 2]
-            assert ignore[2, 3]
-            assert not ignore[3, 4]
-            assert not positive[3, 4]
         return
 
 
@@ -389,7 +357,6 @@ class TestHardNegatives:
             config = AuxiliaryLossConfig(
                 content_pooling=True,
                 use_supcon=True,
-                ignore_opening_negatives=True,
                 opening_ply_threshold=20,
                 alone_targets_per_window=2,
                 nce_temperature=0.07,
@@ -502,7 +469,7 @@ class TestTrainingIntegration:
                 "targets": targets,
                 "weights": weights,
                 "game_id": torch.tensor([0]),
-                "start_index": torch.tensor([0]),
+                "start_index": torch.tensor([40]),
             }
             config = AuxiliaryLossConfig(
                 mlm_weight=1.0,
@@ -514,7 +481,6 @@ class TestTrainingIntegration:
                 alone_cov_weight=0.0,
                 warmup_steps=0,
                 use_supcon=True,
-                turn_flip=True,
                 temporal_radius=3,
                 material_weight=0.05,
                 piece_count_weight=0.05,

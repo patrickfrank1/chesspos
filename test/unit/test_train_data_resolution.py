@@ -1,6 +1,8 @@
 from argparse import Namespace
 from pathlib import Path
 
+import pytest
+
 from bdd import given, then, when
 from src.run import train_masked_transformer as train
 
@@ -12,6 +14,9 @@ def make_args(**overrides) -> Namespace:
         data_repo=None,
         data_cache=None,
         data_limit_gb=None,
+        streaming=False,
+        stream_shards=False,
+        stream_shard_cache="data/hf-shards",
     )
     defaults.update(overrides)
     return Namespace(**defaults)
@@ -138,4 +143,57 @@ class TestResolveDataDirs:
 
         with then("the cache directory is passed to both split downloads"):
             assert seen == [str(tmp_path / "c"), str(tmp_path / "c")]
+        return
+
+
+class TestResolveLazyShards:
+    def test_stream_shards_downloads_only_the_test_split(self, monkeypatch, tmp_path):
+        with given("lazy shard args pointing at a hub repo"):
+            args = make_args(
+                data_repo="user/chesspos",
+                streaming=True,
+                stream_shards=True,
+                stream_shard_cache=str(tmp_path / "remote"),
+            )
+            downloads: list[tuple] = []
+
+            def fake_download_split(
+                repo_id, split, cache_dir=None, max_bytes=None, log=None
+            ):
+                downloads.append((split, max_bytes))
+                path = tmp_path / "snapshot" / split
+                path.mkdir(parents=True, exist_ok=True)
+                return path
+
+            monkeypatch.setattr(train, "download_split", fake_download_split)
+
+        with when("the data directories are resolved"):
+            train_dir, val_dir = train.resolve_data_dirs(args)
+
+        with then("only the test split is downloaded and train points at the cache"):
+            assert downloads == [("test", None)]
+            assert train_dir == Path(tmp_path / "remote")
+            assert val_dir == tmp_path / "snapshot" / "test"
+        return
+
+    def test_stream_shards_requires_streaming(self):
+        with given("lazy shard args without --streaming"):
+            args = make_args(
+                data_repo="user/chesspos", streaming=False, stream_shards=True
+            )
+
+        with when("the data directories are resolved"):
+            with then("resolving fails fast"):
+                with pytest.raises(ValueError):
+                    train.resolve_data_dirs(args)
+        return
+
+    def test_stream_shards_requires_a_hub_repo(self):
+        with given("lazy shard args without a hub repo"):
+            args = make_args(data_repo=None, streaming=True, stream_shards=True)
+
+        with when("the data directories are resolved"):
+            with then("resolving fails fast"):
+                with pytest.raises(ValueError):
+                    train.resolve_data_dirs(args)
         return

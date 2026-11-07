@@ -22,6 +22,7 @@ from src.training.contrastive import build_contrastive_masks
 from src.training.objectives import (
     extract_alone_views_multi,
     restore_visible_tokens,
+    select_clustered_target_segments,
     select_target_segments_multi,
 )
 
@@ -63,9 +64,8 @@ def collect_hard_negatives(
     """Return the hardest SupCon negatives in one training batch.
 
     The returned rows are the top-``top_k`` anchors by per-anchor SupCon loss,
-    each paired with its hardest non-ignored negative. Opening views are
-    excluded from the negative set when ``config.ignore_opening_negatives`` is
-    enabled.
+    each paired with its hardest non-ignored negative. Views use the same
+    clustered, opening-excluded selection as SupCon training.
     """
     was_training = model.training
     model.eval()
@@ -82,11 +82,28 @@ def collect_hard_negatives(
             ),
         ):
             _, segment_mask = model.embed(tokens, segment_ids, padding)
-            targets_per_row = select_target_segments_multi(
-                segment_mask,
-                count=config.alone_targets_per_window,
-                generator=generator,
-            )
+            if config.use_supcon:
+                start_index = batch.get("start_index")
+                if start_index is None:
+                    start_index = torch.zeros(
+                        segment_mask.shape[0],
+                        dtype=torch.long,
+                        device=segment_mask.device,
+                    )
+                targets_per_row = select_clustered_target_segments(
+                    segment_mask,
+                    start_index.to(segment_mask.device),
+                    count=config.alone_targets_per_window,
+                    temporal_radius=config.temporal_radius,
+                    opening_ply_threshold=config.opening_ply_threshold,
+                    generator=generator,
+                )
+            else:
+                targets_per_row = select_target_segments_multi(
+                    segment_mask,
+                    count=config.alone_targets_per_window,
+                    generator=generator,
+                )
             visible = restore_visible_tokens(tokens, batch["targets"])
             (
                 alone_tokens,
@@ -97,6 +114,8 @@ def collect_hard_negatives(
             ) = extract_alone_views_multi(
                 visible, segment_ids, padding, targets_per_row
             )
+            if view_rows.numel() == 0:
+                return []
             content, _, _ = model.encode_views(
                 alone_tokens, alone_segments, alone_padding
             )
@@ -117,14 +136,11 @@ def collect_hard_negatives(
         view_games = rows
         view_plies = targets
 
-    opening = None
-    if config.ignore_opening_negatives:
-        opening = [bool(ply < config.opening_ply_threshold) for ply in view_plies]
+    opening = [bool(ply < config.opening_ply_threshold) for ply in view_plies]
     positive, ignore = build_contrastive_masks(
         view_games,
         view_plies,
         temporal_radius=config.temporal_radius,
-        opening=opening,
     )
     positive = positive.to(embeddings.device)
     ignore = ignore.to(embeddings.device)
