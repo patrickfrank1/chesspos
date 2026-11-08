@@ -23,6 +23,30 @@ class TestParseArgs:
             assert args.d_ff == 2048
         return
 
+    def test_content_pooling_is_enabled_by_default(self, monkeypatch):
+        with given("no content-pooling flag"):
+            monkeypatch.setattr("sys.argv", ["train_masked_transformer"])
+
+        with when("the arguments are parsed"):
+            args = parse_args()
+
+        with then("the strategic content pool is enabled"):
+            assert args.content_pooling is True
+        return
+
+    def test_content_pooling_can_be_disabled(self, monkeypatch):
+        with given("the --no-content-pooling flag"):
+            monkeypatch.setattr(
+                "sys.argv", ["train_masked_transformer", "--no-content-pooling"]
+            )
+
+        with when("the arguments are parsed"):
+            args = parse_args()
+
+        with then("mean pooling is selected"):
+            assert args.content_pooling is False
+        return
+
     def test_validation_pool_is_bounded_by_default(self, monkeypatch):
         with given("no CLI arguments"):
             monkeypatch.setattr("sys.argv", ["train_masked_transformer"])

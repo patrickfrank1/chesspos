@@ -85,7 +85,7 @@ class TransformerConfig:
     dropout: float = 0.1
     max_seq_len: int = 2048
     max_segments: int = 128
-    content_pooling: bool = False
+    content_pooling: bool = True
     aux_heads: bool = False
     phase_classes: int = 3
 

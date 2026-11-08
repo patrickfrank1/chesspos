@@ -54,7 +54,7 @@ class AuxiliaryLossConfig:
     vicreg_gamma: float = 1.0
     vicreg_eps: float = 1e-4
     warmup_steps: int = 200
-    content_pooling: bool = False
+    content_pooling: bool = True
     use_supcon: bool = False
     temporal_radius: int = 3
     opening_ply_threshold: int = 30
@@ -252,26 +252,42 @@ def select_target_segments_multi(
     segment_mask: torch.Tensor,
     count: int,
     generator: torch.Generator | None = None,
+    start_index: torch.Tensor | None = None,
+    opening_ply_threshold: int = 0,
 ) -> list[list[int]]:
-    """Pick up to ``count`` distinct valid segments per window.
+    """Pick up to ``count`` distinct non-opening segments per window.
 
     Returning several targets per window increases the effective number of
     InfoNCE negatives and makes the other targets from the same window hard
-    negatives for each other.
+    negatives for each other. When ``opening_ply_threshold`` is positive,
+    a segment is eligible only if ``start_index + segment_index`` reaches
+    the threshold. A row with no eligible segment yields an empty list.
     """
+    if opening_ply_threshold < 0:
+        raise ValueError("opening_ply_threshold must be non-negative")
+    eligible = segment_mask.bool()
+    if opening_ply_threshold > 0:
+        if start_index is None:
+            start_index = torch.zeros(
+                segment_mask.shape[0],
+                dtype=torch.long,
+                device=segment_mask.device,
+            )
+        if start_index.shape != (segment_mask.shape[0],):
+            raise ValueError("start_index must match segment_mask rows")
+        positions = torch.arange(segment_mask.shape[1], device=segment_mask.device)
+        plies = start_index.to(segment_mask.device)[:, None] + positions[None, :]
+        eligible = eligible & (plies >= opening_ply_threshold)
     scores = torch.rand(
         segment_mask.shape, generator=generator, device=segment_mask.device
-    ).masked_fill(~segment_mask, float("-inf"))
+    ).masked_fill(~eligible, float("-inf"))
     order = torch.argsort(scores, dim=1, descending=True)
-    counts = segment_mask.sum(dim=1).clamp_max(count)
+    counts = eligible.sum(dim=1).clamp_max(count)
     order_cpu = order.cpu()
     counts_cpu = counts.cpu().tolist()
     selected: list[list[int]] = []
     for row, take in enumerate(counts_cpu):
-        if take == 0:
-            selected.append([0])
-        else:
-            selected.append(order_cpu[row, :take].tolist())
+        selected.append(order_cpu[row, :take].tolist() if take > 0 else [])
     return selected
 
 
@@ -476,9 +492,9 @@ def compute_training_loss(
         return mlm_loss, {"mlm": mlm_loss.detach()}
 
     encoder = unwrap_model(model)
-    if config.content_pooling:
-        pooled, segment_mask = encoder.pool_content(
-            output["hidden_states"], tokens, segment_ids, padding_mask
+    if config.content_pooling or config.use_supcon:
+        pooled, _, segment_mask = encoder.encode_views(
+            tokens, segment_ids, padding_mask
         )
     else:
         pooled, segment_mask = encoder.pool_hidden(
@@ -511,20 +527,25 @@ def compute_training_loss(
     view_targets = None
     if needs_alone:
         visible_tokens = restore_visible_tokens(tokens, batch["targets"])
+        raw_start_index = batch.get("start_index")
+        start_index = raw_start_index
+        if start_index is None:
+            start_index = torch.zeros(
+                segment_mask.shape[0],
+                dtype=torch.long,
+                device=segment_mask.device,
+            )
+        start_index = start_index.to(segment_mask.device)
+        opening_ply_threshold = (
+            config.opening_ply_threshold if raw_start_index is not None else 0
+        )
         if config.use_supcon:
-            start_index = batch.get("start_index")
-            if start_index is None:
-                start_index = torch.zeros(
-                    segment_mask.shape[0],
-                    dtype=torch.long,
-                    device=segment_mask.device,
-                )
             targets_per_row = select_clustered_target_segments(
                 segment_mask,
-                start_index.to(segment_mask.device),
+                start_index,
                 count=config.alone_targets_per_window,
                 temporal_radius=config.temporal_radius,
-                opening_ply_threshold=config.opening_ply_threshold,
+                opening_ply_threshold=opening_ply_threshold,
                 generator=generator,
             )
         else:
@@ -532,6 +553,8 @@ def compute_training_loss(
                 segment_mask,
                 count=config.alone_targets_per_window,
                 generator=generator,
+                start_index=start_index,
+                opening_ply_threshold=opening_ply_threshold,
             )
         (
             alone_tokens,
@@ -612,7 +635,7 @@ def compute_training_loss(
             raise ValueError("auxiliary heads require alone views")
         aux_total, aux_components = auxiliary_head_losses(
             alone_targets,
-            alone_state,
+            alone_state.detach() if alone_state is not None else None,
             global_targets,
             encoder.aux_heads,
             config.head_weights(),

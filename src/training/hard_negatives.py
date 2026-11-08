@@ -82,20 +82,25 @@ def collect_hard_negatives(
             ),
         ):
             _, segment_mask = model.embed(tokens, segment_ids, padding)
+            raw_start_index = batch.get("start_index")
+            start_index = raw_start_index
+            if start_index is None:
+                start_index = torch.zeros(
+                    segment_mask.shape[0],
+                    dtype=torch.long,
+                    device=segment_mask.device,
+                )
+            start_index = start_index.to(segment_mask.device)
+            opening_ply_threshold = (
+                config.opening_ply_threshold if raw_start_index is not None else 0
+            )
             if config.use_supcon:
-                start_index = batch.get("start_index")
-                if start_index is None:
-                    start_index = torch.zeros(
-                        segment_mask.shape[0],
-                        dtype=torch.long,
-                        device=segment_mask.device,
-                    )
                 targets_per_row = select_clustered_target_segments(
                     segment_mask,
-                    start_index.to(segment_mask.device),
+                    start_index,
                     count=config.alone_targets_per_window,
                     temporal_radius=config.temporal_radius,
-                    opening_ply_threshold=config.opening_ply_threshold,
+                    opening_ply_threshold=opening_ply_threshold,
                     generator=generator,
                 )
             else:
@@ -103,6 +108,8 @@ def collect_hard_negatives(
                     segment_mask,
                     count=config.alone_targets_per_window,
                     generator=generator,
+                    start_index=start_index,
+                    opening_ply_threshold=opening_ply_threshold,
                 )
             visible = restore_visible_tokens(tokens, batch["targets"])
             (

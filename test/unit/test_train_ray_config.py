@@ -30,6 +30,18 @@ class TestParseArgs:
             assert args.config is None
         return
 
+    def test_content_pooling_cli_override(self):
+        with given("the --no-content-pooling flag"):
+            args = parse_args(["--no-content-pooling"])
+
+        with when("the config is resolved"):
+            config = resolve_config(args)
+
+        with then("content pooling can be disabled explicitly"):
+            assert args.content_pooling is False
+            assert config.content_pooling is False
+        return
+
 
 class TestResolveConfig:
     def test_defaults(self, monkeypatch):
@@ -53,6 +65,7 @@ class TestResolveConfig:
             assert config.dropout == 0.1
             assert config.max_seq_len == 2048
             assert config.max_segments == 128
+            assert config.content_pooling is True
             assert config.p_rect == 0.8
             assert config.p_random == 0.0
             assert config.p_board == 0.0
@@ -109,6 +122,7 @@ class TestResolveConfig:
             assert losses.alone_cov_weight == 0.1
             assert losses.alone_targets_per_window == 4
             assert losses.warmup_steps == 200
+            assert losses.content_pooling is True
         return
 
     def test_skip_gram_flag_disables_rect(self):

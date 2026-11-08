@@ -87,6 +87,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--dropout", type=float, default=None)
     parser.add_argument("--max-seq-len", dest="max_seq_len", type=int, default=None)
     parser.add_argument("--max-segments", dest="max_segments", type=int, default=None)
+    parser.add_argument(
+        "--content-pooling",
+        dest="content_pooling",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Pool square tokens only for the strategic embedding (default: enabled)",
+    )
     parser.add_argument("--p-random", dest="p_random", type=float, default=None)
     parser.add_argument("--p-board", dest="p_board", type=float, default=None)
     parser.add_argument("--p-span", dest="p_span", type=float, default=None)

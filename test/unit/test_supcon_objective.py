@@ -249,7 +249,7 @@ class TestSupConTrainingIntegration:
             assert torch.isfinite(total)
         return
 
-    def test_supcon_encodes_each_alone_view_once(self):
+    def test_supcon_uses_isolated_window_and_alone_views(self):
         with given("a non-opening batch window"):
             model = tiny_model()
             batch = three_segment_batch(start_index=40)
@@ -266,9 +266,9 @@ class TestSupConTrainingIntegration:
         with when("the training loss is computed"):
             total, components = compute_training_loss(model, batch, config)
 
-        with then("SupCon is present and the flip view is gone"):
+        with then("the window and alone views each use content isolation"):
             assert "supcon" in components
-            assert len(calls) == 1
+            assert len(calls) == 2
             assert torch.isfinite(total)
         return
 
