@@ -219,6 +219,62 @@ class TestContextViews:
                 assert all(mask[row, target] for target in selected)
         return
 
+    def test_selects_only_non_opening_targets_when_threshold_given(self):
+        with given("a long window starting at ply zero"):
+            mask = torch.ones(1, 60, dtype=torch.bool)
+            start = torch.tensor([0])
+
+        with when("eight targets are selected with a 30-ply threshold"):
+            targets = select_target_segments_multi(
+                mask,
+                count=8,
+                generator=torch.Generator().manual_seed(0),
+                start_index=start,
+                opening_ply_threshold=30,
+            )
+
+        with then("every selected segment is past the opening"):
+            assert targets[0]
+            assert all(target >= 30 for target in targets[0])
+        return
+
+    def test_start_index_is_used_for_the_opening_filter(self):
+        with given("a window starting at ply ten"):
+            mask = torch.ones(1, 60, dtype=torch.bool)
+            start = torch.tensor([10])
+
+        with when("eight targets are selected with a 30-ply threshold"):
+            targets = select_target_segments_multi(
+                mask,
+                count=8,
+                generator=torch.Generator().manual_seed(0),
+                start_index=start,
+                opening_ply_threshold=30,
+            )
+
+        with then("the filter uses start_index plus the segment index"):
+            assert targets[0]
+            assert all(start.item() + target >= 30 for target in targets[0])
+        return
+
+    def test_all_opening_window_selects_no_targets(self):
+        with given("a 20-segment window entirely inside the opening"):
+            mask = torch.ones(1, 20, dtype=torch.bool)
+            start = torch.tensor([0])
+
+        with when("targets are selected with a 30-ply threshold"):
+            targets = select_target_segments_multi(
+                mask,
+                count=8,
+                generator=torch.Generator().manual_seed(0),
+                start_index=start,
+                opening_ply_threshold=30,
+            )
+
+        with then("the window contributes no targets"):
+            assert targets == [[]]
+        return
+
     def test_extracts_multiple_alone_views_with_mapping(self):
         with given("a packed window with three segments and two targets in row 0"):
             segments = [np.arange(3) + 10, np.arange(4) + 20, np.arange(5) + 30]

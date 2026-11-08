@@ -19,6 +19,7 @@ from src.dataset.token_stream import (
     TokenStreamEncoder,
     pack_stream,
 )
+from src.modeling.masking import IGNORE_INDEX
 from src.modeling.transformer import (
     MaskedStreamTransformer,
     TransformerConfig,
@@ -36,6 +37,7 @@ from src.training.hard_negatives import (
 )
 from src.training.objectives import (
     AuxiliaryLossConfig,
+    compute_training_loss,
     extract_alone_views_multi,
 )
 from src.training.window_dataset import (
@@ -554,4 +556,133 @@ class TestTurnStateIsolation:
 
         with then("the content embedding changes"):
             assert not torch.allclose(content, changed_content, atol=1e-6)
+        return
+
+
+class TestTrainingContentIsolation:
+    def test_info_nce_window_embedding_is_turn_invariant_with_content_pooling(self):
+        with given("the same training window with white and black to move"):
+            model = tiny_model()
+            tokens, segment_ids, padding = packed_segments(three_boards())
+            flipped = flip_turn_tokens(tokens, segment_ids)
+            targets = torch.full_like(tokens, IGNORE_INDEX)
+            weights = torch.zeros_like(tokens, dtype=torch.float)
+            batch = {
+                "tokens": tokens,
+                "segment_ids": segment_ids,
+                "padding_mask": padding,
+                "targets": targets,
+                "weights": weights,
+                "game_id": torch.tensor([0]),
+                "start_index": torch.tensor([40]),
+            }
+            flipped_batch = {
+                **batch,
+                "tokens": flipped,
+            }
+            config = AuxiliaryLossConfig(
+                mlm_weight=0.0,
+                inv_weight=0.0,
+                var_weight=0.0,
+                cov_weight=0.0,
+                nce_weight=1.0,
+                alone_var_weight=0.0,
+                alone_cov_weight=0.0,
+                warmup_steps=0,
+                content_pooling=True,
+                use_supcon=False,
+                alone_targets_per_window=3,
+            )
+
+        with when("the InfoNCE loss is computed for both turn states"):
+            first, first_components = compute_training_loss(
+                model,
+                batch,
+                config,
+                generator=torch.Generator().manual_seed(0),
+            )
+            second, second_components = compute_training_loss(
+                model,
+                flipped_batch,
+                config,
+                generator=torch.Generator().manual_seed(0),
+            )
+
+        with then("the content-isolated window embedding makes the loss invariant"):
+            assert "nce" in first_components
+            assert torch.allclose(first, second, atol=1e-8, rtol=0.0)
+        return
+
+
+class TestInfoNCEOpeningExclusion:
+    def test_opening_window_has_no_info_nce_component(self):
+        with given("a training window entirely inside the opening"):
+            model = tiny_model()
+            tokens, segment_ids, padding = packed_segments(three_boards())
+            batch = {
+                "tokens": tokens,
+                "segment_ids": segment_ids,
+                "padding_mask": padding,
+                "targets": torch.full_like(tokens, IGNORE_INDEX),
+                "weights": torch.zeros_like(tokens, dtype=torch.float),
+                "game_id": torch.tensor([0]),
+                "start_index": torch.tensor([0]),
+            }
+            config = AuxiliaryLossConfig(
+                mlm_weight=0.0,
+                inv_weight=0.0,
+                var_weight=0.0,
+                cov_weight=0.0,
+                nce_weight=1.0,
+                alone_var_weight=0.0,
+                alone_cov_weight=0.0,
+                warmup_steps=0,
+                content_pooling=True,
+                use_supcon=False,
+                opening_ply_threshold=30,
+                alone_targets_per_window=3,
+            )
+
+        with when("the training loss is computed"):
+            total, components = compute_training_loss(model, batch, config)
+
+        with then("the opening views are excluded from InfoNCE"):
+            assert "nce" not in components
+            assert torch.isfinite(total)
+        return
+
+    def test_late_window_keeps_info_nce_component(self):
+        with given("a training window entirely past the opening"):
+            model = tiny_model()
+            tokens, segment_ids, padding = packed_segments(three_boards())
+            batch = {
+                "tokens": tokens,
+                "segment_ids": segment_ids,
+                "padding_mask": padding,
+                "targets": torch.full_like(tokens, IGNORE_INDEX),
+                "weights": torch.zeros_like(tokens, dtype=torch.float),
+                "game_id": torch.tensor([0]),
+                "start_index": torch.tensor([40]),
+            }
+            config = AuxiliaryLossConfig(
+                mlm_weight=0.0,
+                inv_weight=0.0,
+                var_weight=0.0,
+                cov_weight=0.0,
+                nce_weight=1.0,
+                alone_var_weight=0.0,
+                alone_cov_weight=0.0,
+                warmup_steps=0,
+                content_pooling=True,
+                use_supcon=False,
+                opening_ply_threshold=30,
+                alone_targets_per_window=3,
+            )
+
+        with when("the training loss is computed"):
+            total, components = compute_training_loss(model, batch, config)
+
+        with then("the non-opening views still contribute InfoNCE"):
+            assert "nce" in components
+            assert torch.isfinite(total)
         return
