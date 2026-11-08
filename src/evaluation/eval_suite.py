@@ -15,12 +15,10 @@ from src.dataset.token_stream import (
     VOCAB_SIZE,
     TokenStreamEncoder,
 )
+from src.evaluation.core.embeddings import embed_tokens
 from src.modeling.masking import IGNORE_INDEX, MaskingConfig
 from src.modeling.transformer import MaskedStreamTransformer
 from src.training.window_dataset import (
-    CLS,
-    PAD,
-    SEP,
     WindowDataset,
     WindowDatasetConfig,
     collate_windows,
@@ -156,23 +154,6 @@ def sample_segments(
     return segments
 
 
-def collate_segments(segments: list[np.ndarray]) -> dict[str, torch.Tensor]:
-    lengths = [len(s) + 2 for s in segments]
-    max_len = max(lengths)
-    tokens = np.full((len(segments), max_len), PAD, dtype=np.int64)
-    for i, segment in enumerate(segments):
-        tokens[i, 0] = CLS
-        tokens[i, 1 : 1 + len(segment)] = segment
-        tokens[i, 1 + len(segment)] = SEP
-    segment_ids = np.cumsum(tokens == SEP, axis=1)
-    return {
-        "tokens": torch.from_numpy(tokens),
-        "segment_ids": torch.from_numpy(segment_ids),
-        "padding_mask": torch.from_numpy(tokens != PAD),
-    }
-
-
-@torch.no_grad()
 def embed_segments(
     model: MaskedStreamTransformer,
     segments: list[np.ndarray],
@@ -180,22 +161,13 @@ def embed_segments(
     batch_size: int = 256,
     bf16: bool | None = None,
 ) -> torch.Tensor:
-    enabled = (device.type == "cuda") if bf16 is None else bf16
-    vectors = []
-    for start in range(0, len(segments), batch_size):
-        chunk = segments[start : start + batch_size]
-        batch = {k: v.to(device) for k, v in collate_segments(chunk).items()}
-        with torch.autocast(
-            device_type=device.type, dtype=torch.bfloat16, enabled=enabled
-        ):
-            pooled, _ = model.embed(
-                batch["tokens"],
-                batch["segment_ids"],
-                padding_mask=batch["padding_mask"],
-            )
-        vectors.append(pooled[:, 0, :].float().cpu())
-    vectors = torch.cat(vectors)
-    return torch.nn.functional.normalize(vectors, dim=-1)
+    return embed_tokens(
+        model,
+        segments,
+        device,
+        batch_size=batch_size,
+        bf16=bf16,
+    )
 
 
 def board_metadata(

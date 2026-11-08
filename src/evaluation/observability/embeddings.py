@@ -9,7 +9,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import torch
 
-from src.evaluation.eval_suite import embed_segments
+from src.evaluation.core.embeddings import embed_tokens
 from src.evaluation.observability.samples import PositionSample
 from src.modeling.transformer import MaskedStreamTransformer
 
@@ -27,8 +27,8 @@ def embed_samples(
     segments = [np.asarray(sample.tokens, dtype=np.int16) for sample in samples]
     if not segments:
         return np.zeros((0, 0), dtype=np.float32)
-    vectors = embed_segments(model, segments, device, batch_size=batch_size, bf16=bf16)
-    return vectors.cpu().numpy().astype(np.float32)
+    vectors = embed_tokens(model, segments, device, batch_size=batch_size, bf16=bf16)
+    return vectors.numpy().astype(np.float32)
 
 
 def save_samples(path: str | Path, samples: Sequence[PositionSample]) -> Path:

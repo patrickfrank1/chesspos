@@ -6,6 +6,7 @@ from typing import Sequence
 
 import numpy as np
 
+from src.evaluation.core.ranking import chance_metrics, normalize, ranking_metrics
 from src.evaluation.observability.samples import PositionSample, surrogate_matrix
 from src.evaluation.observability.surrogates import (
     SURROGATE_TASKS,
@@ -46,14 +47,6 @@ class RankingCase:
     positive_position: int
 
 
-def chance_metrics(k: int) -> dict[str, float]:
-    return {
-        "chance_top1": 1.0 / k,
-        "chance_mrr": sum(1.0 / rank for rank in range(1, k + 1)) / k,
-        "chance_mean_rank": (k + 1) / 2.0,
-    }
-
-
 def evaluate_ranking(
     embeddings: np.ndarray, cases: Sequence[RankingCase]
 ) -> dict[str, float]:
@@ -66,29 +59,20 @@ def evaluate_ranking(
             "n_queries": 0,
             **chance_metrics(5),
         }
-    values = np.asarray(embeddings, dtype=np.float64)
-    norms = np.linalg.norm(values, axis=1, keepdims=True)
-    values = values / np.clip(norms, 1e-12, None)
-    top1 = []
-    reciprocal = []
-    ranks = []
-    k = len(cases[0].candidates)
+    values = normalize(embeddings)
+    scores = []
+    relevance = []
     for case in cases:
         candidates = np.asarray(case.candidates, dtype=np.int64)
-        scores = values[candidates] @ values[case.query]
-        positive_score = scores[case.positive_position]
-        rank = 1.0 + float(np.sum(scores > positive_score))
-        ties = float(np.sum(scores == positive_score)) - 1.0
-        rank += 0.5 * max(0.0, ties)
-        ranks.append(rank)
-        top1.append(1.0 if rank <= 1.0 else 0.0)
-        reciprocal.append(1.0 / rank)
+        scores.append(values[candidates] @ values[case.query])
+        relevance.append({case.positive_position: 0})
+    metrics = ranking_metrics(np.vstack(scores), relevance, ks=())
     return {
-        "top1": float(np.mean(top1)),
-        "mrr": float(np.mean(reciprocal)),
-        "mean_rank": float(np.mean(ranks)),
-        "n_queries": len(cases),
-        **chance_metrics(k),
+        "top1": metrics["top1"],
+        "mrr": metrics["mrr"],
+        "mean_rank": metrics["mean_rank"],
+        "n_queries": metrics["n_queries"],
+        **chance_metrics(len(cases[0].candidates)),
     }
 
 
@@ -329,12 +313,6 @@ def temporal_ranking_metrics(
     return result
 
 
-def _normalized(embeddings: np.ndarray) -> np.ndarray:
-    values = np.asarray(embeddings, dtype=np.float64)
-    norms = np.linalg.norm(values, axis=1, keepdims=True)
-    return values / np.clip(norms, 1e-12, None)
-
-
 def _candidate_ranks(scores: np.ndarray) -> np.ndarray:
     ranks = np.empty(scores.shape[0], dtype=np.float64)
     for index, score in enumerate(scores):
@@ -448,7 +426,7 @@ def theme_ranking_examples(
     max_per_bucket: int = 3,
 ) -> list[dict]:
     surrogate_z = standardize_columns(surrogate_matrix(samples))
-    values = _normalized(embeddings)
+    values = normalize(embeddings)
     examples = []
     for theme in themes:
         cases = build_theme_ranking_cases(
@@ -503,7 +481,7 @@ def temporal_ranking_examples(
         seed=seed,
         max_ply_distance=max_ply_distance,
     )
-    values = _normalized(embeddings)
+    values = normalize(embeddings)
     rng = np.random.default_rng([seed, int(matched), 23])
     return [
         _case_payload(
@@ -653,7 +631,7 @@ def surrogate_ranking_examples(
     max_per_bucket: int = 3,
 ) -> dict[str, dict[str, dict[str, dict[str, list[dict]]]]]:
     full_z = standardize_columns(surrogate_matrix(samples))
-    values = _normalized(embeddings)
+    values = normalize(embeddings)
     result: dict[str, dict[str, dict[str, list[dict]]]] = {}
     for task in tasks:
         labels = surrogate_class_labels(samples, task)
