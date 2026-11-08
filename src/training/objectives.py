@@ -7,9 +7,12 @@ import torch.nn.functional as F
 
 from src.dataset.token_stream import (
     CLS,
+    EMPTY,
+    N_SLOTS,
     PAD,
     SEP,
     SEGMENT_LEN,
+    TURN_WHITE,
 )
 from src.modeling.masking import IGNORE_INDEX
 from src.training.aux_heads import auxiliary_head_losses, segment_global_targets
@@ -51,6 +54,7 @@ class AuxiliaryLossConfig:
     alone_var_weight: float = 1.0
     alone_cov_weight: float = 0.1
     alone_targets_per_window: int = 4
+    min_visible_content: int = 16
     vicreg_gamma: float = 1.0
     vicreg_eps: float = 1e-4
     warmup_steps: int = 200
@@ -79,6 +83,8 @@ class AuxiliaryLossConfig:
             raise ValueError("warmup_steps must be non-negative")
         if self.alone_targets_per_window < 1:
             raise ValueError("alone_targets_per_window must be at least 1")
+        if not 0 <= self.min_visible_content <= N_SLOTS:
+            raise ValueError("min_visible_content must be between 0 and N_SLOTS")
         if self.temporal_radius < 0:
             raise ValueError("temporal_radius must be non-negative")
         if self.opening_ply_threshold < 0:
@@ -246,6 +252,39 @@ def select_target_segments(
         weights = weights.clone()
         weights[empty, 0] = 1.0
     return torch.multinomial(weights, 1, generator=generator).squeeze(1)
+
+
+def visible_content_segment_mask(
+    tokens: torch.Tensor,
+    segment_ids: torch.Tensor,
+    padding_mask: torch.Tensor,
+    targets: torch.Tensor,
+    n_segments: int,
+    min_content: int,
+) -> torch.Tensor:
+    """Return segments whose content is visible enough to form a valid pair.
+
+    A content token is visible only when it was not selected as an MLM target.
+    Segments below ``min_content`` visible squares are unrecoverable under
+    content isolation and must not be used as contrastive targets.
+    """
+    if min_content < 0:
+        raise ValueError("min_content must be non-negative")
+    valid = (
+        padding_mask.bool()
+        & (tokens >= EMPTY)
+        & (tokens < TURN_WHITE)
+        & targets.eq(IGNORE_INDEX)
+    )
+    valid = valid & segment_ids.lt(n_segments)
+    counts = torch.zeros(
+        (tokens.shape[0], n_segments),
+        device=tokens.device,
+        dtype=torch.float32,
+    )
+    index = segment_ids.clamp(0, n_segments - 1)
+    counts.scatter_add_(1, index, valid.to(counts.dtype))
+    return counts >= min_content
 
 
 def select_target_segments_multi(
@@ -475,6 +514,8 @@ def compute_training_loss(
     config: AuxiliaryLossConfig,
     step: int = 0,
     generator: torch.Generator | None = None,
+    encode_views_fn=None,
+    encode_views_alone_fn=None,
 ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
     """Run the model and return the weighted total loss plus components."""
     tokens = batch["tokens"]
@@ -492,10 +533,10 @@ def compute_training_loss(
         return mlm_loss, {"mlm": mlm_loss.detach()}
 
     encoder = unwrap_model(model)
+    encode_views = encode_views_fn or encoder.encode_views
+    encode_views_alone = encode_views_alone_fn or encode_views
     if config.content_pooling or config.use_supcon:
-        pooled, _, segment_mask = encoder.encode_views(
-            tokens, segment_ids, padding_mask
-        )
+        pooled, _, segment_mask = encode_views(tokens, segment_ids, padding_mask)
     else:
         pooled, segment_mask = encoder.pool_hidden(
             output["hidden_states"], tokens, segment_ids, padding_mask
@@ -539,9 +580,17 @@ def compute_training_loss(
         opening_ply_threshold = (
             config.opening_ply_threshold if raw_start_index is not None else 0
         )
+        eligible_mask = visible_content_segment_mask(
+            visible_tokens,
+            segment_ids,
+            padding_mask,
+            batch["targets"],
+            pooled.shape[1],
+            config.min_visible_content,
+        )
         if config.use_supcon:
             targets_per_row = select_clustered_target_segments(
-                segment_mask,
+                eligible_mask,
                 start_index,
                 count=config.alone_targets_per_window,
                 temporal_radius=config.temporal_radius,
@@ -550,7 +599,7 @@ def compute_training_loss(
             )
         else:
             targets_per_row = select_target_segments_multi(
-                segment_mask,
+                eligible_mask,
                 count=config.alone_targets_per_window,
                 generator=generator,
                 start_index=start_index,
@@ -571,7 +620,7 @@ def compute_training_loss(
             config.content_pooling or config.use_supcon or config.heads_enabled()
         )
         if use_content_views:
-            alone_content, alone_state, _ = encoder.encode_views(
+            alone_content, alone_state, _ = encode_views_alone(
                 alone_tokens, alone_segments, alone_padding
             )
             alone_targets = alone_content[:, 0]

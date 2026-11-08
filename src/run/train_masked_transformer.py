@@ -516,6 +516,12 @@ def main() -> None:
     model = MaskedStreamTransformer(model_config).to(device)
     raw_model = model
     model = apply_compile(model, args.compile)
+    encode_views_fn = (
+        torch.compile(raw_model.encode_views, dynamic=True)
+        if args.compile
+        else raw_model.encode_views
+    )
+    encode_views_alone_fn = raw_model.encode_views
     n_params = sum(p.numel() for p in model.parameters())
     log(
         f"device={device} params={n_params / 1e6:.2f}M bf16={bf16} compile={args.compile}"
@@ -775,6 +781,8 @@ def main() -> None:
                 loss_config,
                 step=step,
                 generator=target_generator,
+                encode_views_fn=encode_views_fn,
+                encode_views_alone_fn=encode_views_alone_fn,
             )
         optimizer.zero_grad()
         loss.backward()

@@ -10,6 +10,7 @@ from src.dataset.token_stream import (
     CLS,
     EMPTY,
     MASK,
+    N_SLOTS,
     PAD,
     SEGMENT_LEN,
     SEP,
@@ -20,6 +21,7 @@ from src.modeling.masking import IGNORE_INDEX
 from src.modeling.varlen import (
     cu_seqlens,
     flatten_valid,
+    group_cu_seqlens,
     scatter_valid,
     varlen_attention,
 )
@@ -133,10 +135,10 @@ class TransformerBlock(nn.Module):
         padding_mask: torch.Tensor,
         attn_mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        """Run the block over equal-length padded rows in one SDPA call.
+        """Run the block with a dense attention mask (reference path).
 
-        This is used for the many short alone views, where launching a
-        separate variable-length attention kernel per view is launch-bound.
+        This materializes ``[batch, heads, seq, seq]`` attention scores, so it
+        is used only to validate the flash-compatible varlen implementation.
         ``attn_mask`` may additionally restrict which keys each query sees.
         """
         batch, seq_len, d_model = x.shape
@@ -153,6 +155,74 @@ class TransformerBlock(nn.Module):
             dropout_p=self.dropout if self.training else 0.0,
         )
         attended = attended.transpose(1, 2).reshape(batch, seq_len, d_model)
+        x = x + self.attn_out(attended)
+        x = x + self.fc_out(F.gelu(self.fc_in(self.ln_ffn(x))))
+        return x
+
+    def forward_isolated(
+        self,
+        x: torch.Tensor,
+        content_mask: torch.Tensor,
+        state_mask: torch.Tensor,
+        cu_content: torch.Tensor,
+        max_content: int,
+        cu_full: torch.Tensor,
+        max_full: int,
+        cu_state: torch.Tensor,
+        max_state: int,
+    ) -> torch.Tensor:
+        """Run one layer on valid tokens with flash-compatible isolation.
+
+        ``x`` is the flattened valid-token stream. Content queries attend only
+        content keys from the same segment; state, CLS and SEP queries attend
+        the whole segment. Both groups use variable-length attention, so no
+        dense S x S mask is materialized.
+        """
+        tokens, d_model = x.shape
+        head_dim = d_model // self.n_heads
+        h = self.ln_attn(x)
+        qkv = self.qkv(h).view(tokens, 3, self.n_heads, head_dim)
+        q, k, v = qkv.permute(1, 0, 2, 3).unbind(0)
+
+        content_index = content_mask.unsqueeze(-1).unsqueeze(-1)
+        content_q = torch.masked_select(q, content_index).view(
+            -1, self.n_heads, head_dim
+        )
+        content_k = torch.masked_select(k, content_index).view(
+            -1, self.n_heads, head_dim
+        )
+        content_v = torch.masked_select(v, content_index).view(
+            -1, self.n_heads, head_dim
+        )
+        content = varlen_attention(
+            content_q,
+            content_k,
+            content_v,
+            cu_content,
+            max_content,
+            dropout_p=self.dropout if self.training else 0.0,
+        )
+
+        state_index = state_mask.unsqueeze(-1).unsqueeze(-1)
+        state_q = torch.masked_select(q, state_index).view(-1, self.n_heads, head_dim)
+        state = varlen_attention(
+            state_q,
+            k,
+            v,
+            cu_state,
+            max_state,
+            dropout_p=self.dropout if self.training else 0.0,
+            cu_seqlens_k=cu_full,
+            max_seqlen_k=max_full,
+        )
+
+        attended = content.new_zeros((tokens, d_model))
+        attended = attended.masked_scatter(
+            content_mask.unsqueeze(-1), content.reshape(-1, d_model)
+        )
+        attended = attended.masked_scatter(
+            state_mask.unsqueeze(-1), state.reshape(-1, d_model)
+        )
         x = x + self.attn_out(attended)
         x = x + self.fc_out(F.gelu(self.fc_in(self.ln_ffn(x))))
         return x
@@ -212,28 +282,62 @@ class MaskedStreamTransformer(nn.Module):
             flat = block(flat, cu, max_seqlen)
         return scatter_valid(self.ln_final(flat), padding_mask)
 
-    def _trunk_padded(
+    def _trunk_isolated(
         self,
         tokens: torch.Tensor,
         segment_ids: torch.Tensor,
         padding_mask: torch.Tensor,
-        *,
-        isolate_content: bool = False,
     ) -> torch.Tensor:
-        """Trunk for equal-length padded rows (one SDPA call per layer)."""
+        """Content-isolated trunk using segment-grouped varlen attention.
+
+        Only valid tokens enter the transformer blocks; padding is scattered
+        back after the final layer for the pooling helpers.
+        """
+        valid = padding_mask.bool()
         x = (
             self.token_embedding(tokens)
             + self.segment_embedding(segment_ids)
             + self.slot_embedding(slot_indices(tokens, segment_ids))
         )
-        attn_mask = (
-            content_isolation_mask(tokens, segment_ids, padding_mask)
-            if isolate_content
-            else None
+        x = flatten_valid(x, valid)
+        content_mask = valid & (tokens >= EMPTY) & (tokens < TURN_WHITE)
+        state_mask = valid & ~content_mask
+        num_groups = self.config.max_segments + 1
+        max_content = N_SLOTS
+        max_full = SEGMENT_LEN + 1
+        cu_content, max_content = group_cu_seqlens(
+            content_mask,
+            segment_ids,
+            num_groups,
+            max_len_hint=max_content,
         )
+        cu_state, max_state = group_cu_seqlens(
+            state_mask,
+            segment_ids,
+            num_groups,
+            max_len_hint=max_full,
+        )
+        cu_full, max_full = group_cu_seqlens(
+            valid,
+            segment_ids,
+            num_groups,
+            max_len_hint=max_full,
+        )
+        content_flat = torch.masked_select(content_mask, valid)
+        state_flat = torch.masked_select(state_mask, valid)
         for block in self.blocks:
-            x = block.forward_padded(x, padding_mask, attn_mask)
-        return self.ln_final(x)
+            x = block.forward_isolated(
+                x,
+                content_flat,
+                state_flat,
+                cu_content,
+                max_content,
+                cu_full,
+                max_full,
+                cu_state,
+                max_state,
+            )
+        return scatter_valid(self.ln_final(x), valid)
 
     def _loss(
         self,
@@ -281,9 +385,7 @@ class MaskedStreamTransformer(nn.Module):
         """Pool only square tokens (empty squares and pieces)."""
         if padding_mask is None:
             padding_mask = tokens.ne(0)
-        hidden = self._trunk_padded(
-            tokens, segment_ids, padding_mask, isolate_content=True
-        )
+        hidden = self._trunk_isolated(tokens, segment_ids, padding_mask)
         return self.pool_content(hidden, tokens, segment_ids, padding_mask)
 
     def encode_state(
@@ -301,9 +403,7 @@ class MaskedStreamTransformer(nn.Module):
         """
         if padding_mask is None:
             padding_mask = tokens.ne(0)
-        hidden = self._trunk_padded(
-            tokens, segment_ids, padding_mask, isolate_content=True
-        )
+        hidden = self._trunk_isolated(tokens, segment_ids, padding_mask)
         return self.pool_state(hidden, tokens, segment_ids, padding_mask)
 
     def encode_views(
@@ -315,9 +415,7 @@ class MaskedStreamTransformer(nn.Module):
         """Compute content and state pools from a single trunk pass."""
         if padding_mask is None:
             padding_mask = tokens.ne(0)
-        hidden = self._trunk_padded(
-            tokens, segment_ids, padding_mask, isolate_content=True
-        )
+        hidden = self._trunk_isolated(tokens, segment_ids, padding_mask)
         content, segment_mask = self.pool_content(
             hidden, tokens, segment_ids, padding_mask
         )
@@ -347,7 +445,7 @@ class MaskedStreamTransformer(nn.Module):
         valid = padding_mask & (tokens >= EMPTY) & (tokens < TURN_WHITE)
         valid = valid & segment_ids.lt(self.config.max_segments)
         batch = tokens.shape[0]
-        n_segments = int(segment_ids[valid].max().item()) + 1 if valid.any() else 1
+        n_segments = self.config.max_segments
         counts = torch.zeros(
             batch, n_segments, device=tokens.device, dtype=torch.float32
         )
@@ -373,7 +471,7 @@ class MaskedStreamTransformer(nn.Module):
         valid = valid & segment_ids.lt(self.config.max_segments)
 
         batch, _, d_model = hidden.shape
-        n_segments = int(segment_ids[valid].max().item()) + 1 if valid.any() else 1
+        n_segments = self.config.max_segments
         sums = torch.zeros(batch, n_segments, d_model, device=hidden.device)
         counts = torch.zeros(batch, n_segments, device=hidden.device)
         index = segment_ids.clamp(0, n_segments - 1)

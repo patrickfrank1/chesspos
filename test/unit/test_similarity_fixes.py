@@ -10,6 +10,7 @@ import torch.nn.functional as F
 from bdd import given, then, when
 from src.dataset.token_stream import (
     EMPTY,
+    MASK,
     N_SLOTS,
     SEGMENT_LEN,
     SEP,
@@ -23,6 +24,7 @@ from src.modeling.masking import IGNORE_INDEX
 from src.modeling.transformer import (
     MaskedStreamTransformer,
     TransformerConfig,
+    content_isolation_mask,
     slot_indices,
 )
 from src.training.aux_heads import (
@@ -114,8 +116,8 @@ class TestContentStatePooling:
             state_positions = (tokens[0] >= TURN_WHITE) & (tokens[0] < VOCAB_SIZE)
             expected_content = hidden[0][content_positions].mean(dim=0)
             expected_state = hidden[0][state_positions].mean(dim=0)
-            assert torch.allclose(content[0], expected_content, atol=1e-6)
-            assert torch.allclose(state[0], expected_state, atol=1e-6)
+            assert torch.allclose(content[0, 0], expected_content, atol=1e-6)
+            assert torch.allclose(state[0, 0], expected_state, atol=1e-6)
             assert content_mask[0, 0]
             assert state_mask[0, 0]
         return
@@ -147,8 +149,147 @@ class TestContentStatePooling:
 
         with then("each padded view matches its independent encoding"):
             for index, (content, state) in enumerate(individual):
-                assert torch.allclose(batched_content[index], content, atol=1e-5)
-                assert torch.allclose(batched_state[index], state, atol=1e-5)
+                assert torch.allclose(batched_content[index, 0], content, atol=1e-5)
+                assert torch.allclose(batched_state[index, 0], state, atol=1e-5)
+        return
+
+    def test_varlen_isolation_matches_materialized_mask_reference(self):
+        with given("a packed batch of boards and a tiny model"):
+            tokens, segment_ids, padding = packed_segments(three_boards())
+            model = tiny_model().eval()
+
+        with when("the isolated trunk is compared with the dense-mask reference"):
+            with torch.no_grad():
+                hidden = (
+                    model.token_embedding(tokens)
+                    + model.segment_embedding(segment_ids)
+                    + model.slot_embedding(slot_indices(tokens, segment_ids))
+                )
+                attn_mask = content_isolation_mask(tokens, segment_ids, padding)
+                for block in model.blocks:
+                    hidden = block.forward_padded(hidden, padding, attn_mask)
+                reference = model.ln_final(hidden)
+                expected_content, _ = model.pool_content(
+                    reference, tokens, segment_ids, padding
+                )
+                expected_state, _ = model.pool_state(
+                    reference, tokens, segment_ids, padding
+                )
+                content, state, _ = model.encode_views(tokens, segment_ids, padding)
+
+        with then("content and state pools match the reference implementation"):
+            assert torch.allclose(content, expected_content, atol=1e-5)
+            assert torch.allclose(state, expected_state, atol=1e-5)
+        return
+
+    def test_varlen_isolation_matches_reference_with_holes_and_padding(self):
+        with given("two window rows with different lengths and masked squares"):
+            encoder = TokenStreamEncoder()
+
+            def encode_row(boards):
+                segments = [encoder.encode(board) for board in boards]
+                packed = pack_stream(segments)
+                tokens = torch.from_numpy(packed.astype(np.int64))
+                segment_ids = torch.from_numpy(
+                    np.cumsum(packed == SEP).astype(np.int64)
+                )
+                return tokens, segment_ids
+
+            row_a, segments_a = encode_row(three_boards())
+            row_b, segments_b = encode_row(three_boards()[:2])
+            row_a[5] = MASK
+            row_a[80] = MASK
+            max_len = max(row_a.shape[0], row_b.shape[0])
+            tokens = torch.zeros(2, max_len, dtype=torch.long)
+            segment_ids = torch.zeros(2, max_len, dtype=torch.long)
+            padding = torch.zeros(2, max_len, dtype=torch.bool)
+            tokens[0, : row_a.shape[0]] = row_a
+            segment_ids[0, : row_a.shape[0]] = segments_a
+            padding[0, : row_a.shape[0]] = True
+            tokens[1, : row_b.shape[0]] = row_b
+            segment_ids[1, : row_b.shape[0]] = segments_b
+            padding[1, : row_b.shape[0]] = True
+            model = tiny_model().eval()
+
+        with when("the varlen and dense-mask trunks are compared"):
+            with torch.no_grad():
+                hidden = (
+                    model.token_embedding(tokens)
+                    + model.segment_embedding(segment_ids)
+                    + model.slot_embedding(slot_indices(tokens, segment_ids))
+                )
+                attn_mask = content_isolation_mask(tokens, segment_ids, padding)
+                for block in model.blocks:
+                    hidden = block.forward_padded(hidden, padding, attn_mask)
+                reference = model.ln_final(hidden)
+                expected_content, _ = model.pool_content(
+                    reference, tokens, segment_ids, padding
+                )
+                expected_state, _ = model.pool_state(
+                    reference, tokens, segment_ids, padding
+                )
+                content, state, _ = model.encode_views(tokens, segment_ids, padding)
+
+        with then("the pools match despite holes and tail padding"):
+            assert torch.allclose(content, expected_content, atol=1e-5)
+            assert torch.allclose(state, expected_state, atol=1e-5)
+        return
+
+    def test_isolated_trunk_processes_only_valid_tokens(self):
+        with given("two padded window rows and a spy on the isolated block"):
+            encoder = TokenStreamEncoder()
+
+            def encode_row(boards):
+                segments = [encoder.encode(board) for board in boards]
+                packed = pack_stream(segments)
+                tokens = torch.from_numpy(packed.astype(np.int64))
+                segment_ids = torch.from_numpy(
+                    np.cumsum(packed == SEP).astype(np.int64)
+                )
+                return tokens, segment_ids
+
+            row_a, segments_a = encode_row(three_boards())
+            row_b, segments_b = encode_row(three_boards()[:2])
+            max_len = max(row_a.shape[0], row_b.shape[0])
+            tokens = torch.zeros(2, max_len, dtype=torch.long)
+            segment_ids = torch.zeros(2, max_len, dtype=torch.long)
+            padding = torch.zeros(2, max_len, dtype=torch.bool)
+            tokens[0, : row_a.shape[0]] = row_a
+            segment_ids[0, : row_a.shape[0]] = segments_a
+            padding[0, : row_a.shape[0]] = True
+            tokens[1, : row_b.shape[0]] = row_b
+            segment_ids[1, : row_b.shape[0]] = segments_b
+            padding[1, : row_b.shape[0]] = True
+            model = tiny_model().eval()
+            seen_rows: list[int] = []
+            original = model.blocks[0].forward_isolated
+
+            def spy(x, *args, **kwargs):
+                seen_rows.append(x.shape[0])
+                return original(x, *args, **kwargs)
+
+            model.blocks[0].forward_isolated = spy
+
+        with when("the combined views are encoded"):
+            model.encode_views(tokens, segment_ids, padding)
+
+        with then("the block receives only the valid tokens"):
+            assert seen_rows == [int(padding.sum())]
+        return
+
+    def test_pool_outputs_have_static_segment_width(self):
+        with given("a board packed into a model with eight possible segments"):
+            tokens, segment_ids, padding = packed_segments([chess.Board()])
+            hidden = torch.randn(1, tokens.shape[1], 8)
+            model = tiny_model()
+
+        with when("content and state pools are computed"):
+            content, _ = model.pool_content(hidden, tokens, segment_ids, padding)
+            state, _ = model.pool_state(hidden, tokens, segment_ids, padding)
+
+        with then("their width is the configured maximum, not a dynamic count"):
+            assert content.shape[1] == model.config.max_segments
+            assert state.shape[1] == model.config.max_segments
         return
 
     def test_content_pool_is_insensitive_to_the_turn_hidden_state(self):

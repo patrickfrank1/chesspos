@@ -8,9 +8,11 @@ import torch
 from bdd import given, then, when
 from src.dataset.token_stream import (
     CLS,
+    EMPTY,
     MASK,
     PAD,
     SEP,
+    TURN_WHITE,
     TokenStreamEncoder,
     pack_stream,
 )
@@ -28,6 +30,7 @@ from src.training.objectives import (
     select_target_segments,
     select_target_segments_multi,
     vicreg_terms,
+    visible_content_segment_mask,
 )
 
 
@@ -44,6 +47,35 @@ def tiny_model() -> MaskedStreamTransformer:
             max_segments=8,
         )
     )
+
+
+def fully_masked_batch() -> dict[str, torch.Tensor]:
+    encoder = TokenStreamEncoder()
+    board = chess.Board()
+    segments = []
+    for _ in range(3):
+        segments.append(encoder.encode(board))
+        board.push(list(board.legal_moves)[0])
+    original = torch.from_numpy(pack_stream(segments).astype(np.int64))[None]
+    segment_ids = torch.from_numpy(
+        np.cumsum(original[0].numpy() == SEP).astype(np.int64)
+    )[None]
+    padding = torch.ones_like(original, dtype=torch.bool)
+    content = (original >= EMPTY) & (original < TURN_WHITE)
+    tokens = original.clone()
+    tokens[content] = MASK
+    targets = torch.full_like(original, IGNORE_INDEX)
+    targets[content] = original[content]
+    for segment in range(len(segments)):
+        positions = ((segment_ids[0] == segment) & content[0]).nonzero(as_tuple=False)
+        tokens[0, positions[0, 0]] = EMPTY
+    return {
+        "tokens": tokens,
+        "segment_ids": segment_ids,
+        "padding_mask": padding,
+        "targets": targets,
+        "weights": content.to(torch.float32),
+    }
 
 
 def tiny_batch() -> dict[str, torch.Tensor]:
@@ -494,6 +526,85 @@ class TestComputeTrainingLoss:
             assert set(components) == {"mlm"}
         return
 
+    def test_injected_encode_views_function_is_used_for_window_and_alone(self):
+        with given("a model, batch, and a spy on the content encoder"):
+            model = tiny_model()
+            batch = tiny_batch()
+            config = AuxiliaryLossConfig(
+                mlm_weight=1.0,
+                inv_weight=0.1,
+                var_weight=0.0,
+                cov_weight=0.0,
+                nce_weight=0.0,
+                alone_var_weight=0.0,
+                alone_cov_weight=0.0,
+                warmup_steps=0,
+                content_pooling=True,
+            )
+            calls: list[tuple[int, ...]] = []
+            original_encode_views = model.encode_views
+
+            def spy(tokens, segment_ids, padding_mask=None):
+                calls.append(tuple(tokens.shape))
+                return original_encode_views(tokens, segment_ids, padding_mask)
+
+        with when("the training loss is computed with the injected encoder"):
+            compute_training_loss(
+                model,
+                batch,
+                config,
+                generator=torch.Generator().manual_seed(0),
+                encode_views_fn=spy,
+            )
+
+        with then("the window and alone views both use the injected function"):
+            assert len(calls) >= 2
+            assert calls[0] == tuple(batch["tokens"].shape)
+        return
+
+    def test_separate_alone_encoder_override_is_used(self):
+        with given("window and alone encoder spies"):
+            model = tiny_model()
+            batch = tiny_batch()
+            config = AuxiliaryLossConfig(
+                mlm_weight=1.0,
+                inv_weight=0.1,
+                var_weight=0.0,
+                cov_weight=0.0,
+                nce_weight=0.0,
+                alone_var_weight=0.0,
+                alone_cov_weight=0.0,
+                warmup_steps=0,
+                content_pooling=True,
+            )
+            window_calls: list[int] = []
+            alone_calls: list[int] = []
+            original_encode_views = model.encode_views
+
+            def window_spy(tokens, segment_ids, padding_mask=None):
+                window_calls.append(tokens.shape[0])
+                return original_encode_views(tokens, segment_ids, padding_mask)
+
+            def alone_spy(tokens, segment_ids, padding_mask=None):
+                alone_calls.append(tokens.shape[0])
+                return original_encode_views(tokens, segment_ids, padding_mask)
+
+        with when("the training loss is computed with separate encoders"):
+            compute_training_loss(
+                model,
+                batch,
+                config,
+                generator=torch.Generator().manual_seed(0),
+                encode_views_fn=window_spy,
+                encode_views_alone_fn=alone_spy,
+            )
+
+        with then("each encoder handles only its own views"):
+            assert window_calls
+            assert alone_calls
+            assert window_calls[0] == batch["tokens"].shape[0]
+        return
+
     def test_context_views_and_vicreg_terms_are_added(self):
         with given("a tiny model, batch, and geometry weights"):
             model = tiny_model()
@@ -591,4 +702,65 @@ class TestComputeTrainingLoss:
         with then("the NCE component is included"):
             assert "nce" in components
             assert total.requires_grad
+        return
+
+
+class TestInfoNCERecoverableTargets:
+    def test_fully_masked_boards_do_not_contribute_info_nce(self):
+        with given("a window where every content token is an MLM target"):
+            model = tiny_model()
+            batch = fully_masked_batch()
+            config = AuxiliaryLossConfig(
+                mlm_weight=0.0,
+                inv_weight=0.0,
+                var_weight=0.0,
+                cov_weight=0.0,
+                nce_weight=1.0,
+                alone_var_weight=0.0,
+                alone_cov_weight=0.0,
+                warmup_steps=0,
+                content_pooling=True,
+                opening_ply_threshold=0,
+                alone_targets_per_window=1,
+            )
+
+        with when("the training loss is computed"):
+            total, components = compute_training_loss(
+                model,
+                batch,
+                config,
+                generator=torch.Generator().manual_seed(0),
+            )
+
+        with then("unrecoverable boards are excluded from InfoNCE"):
+            assert "nce" not in components
+            assert total.item() == pytest.approx(0.0)
+        return
+
+    def test_visible_content_mask_requires_enough_uncorrupted_squares(self):
+        with given("one fully corrupted window and one rectangle-masked window"):
+            corrupted = fully_masked_batch()
+            rectangle = tiny_batch()
+
+        with when("visible content eligibility is computed"):
+            corrupted_mask = visible_content_segment_mask(
+                corrupted["tokens"],
+                corrupted["segment_ids"],
+                corrupted["padding_mask"],
+                corrupted["targets"],
+                n_segments=8,
+                min_content=16,
+            )
+            rectangle_mask = visible_content_segment_mask(
+                rectangle["tokens"],
+                rectangle["segment_ids"],
+                rectangle["padding_mask"],
+                rectangle["targets"],
+                n_segments=8,
+                min_content=16,
+            )
+
+        with then("only the rectangle-masked boards remain eligible"):
+            assert not corrupted_mask.any()
+            assert rectangle_mask[0, :3].all()
         return
