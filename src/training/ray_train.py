@@ -90,6 +90,7 @@ class RayTrainingConfig:
     dropout: float = 0.1
     max_seq_len: int = 2048
     max_segments: int = 128
+    content_pooling: bool = True
     p_random: float = 0.0
     p_board: float = 0.0
     p_span: float = 0.0
@@ -176,6 +177,7 @@ class RayTrainingConfig:
             vicreg_gamma=self.vicreg_gamma,
             vicreg_eps=self.vicreg_eps,
             warmup_steps=self.aux_warmup,
+            content_pooling=self.content_pooling,
         )
 
     @property
@@ -189,6 +191,7 @@ class RayTrainingConfig:
             dropout=self.dropout,
             max_seq_len=self.max_seq_len,
             max_segments=self.max_segments,
+            content_pooling=self.content_pooling,
         )
 
 

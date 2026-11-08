@@ -330,6 +330,7 @@ class TestAuxiliaryLosses:
             assert config.alone_cov_weight == 0.1
             assert config.alone_targets_per_window == 4
             assert config.warmup_steps == 200
+            assert config.content_pooling is True
             assert config.auxiliary_enabled() is True
         return
 
@@ -541,6 +542,7 @@ class TestComputeTrainingLoss:
                 alone_var_weight=0.0,
                 alone_cov_weight=0.0,
                 warmup_steps=0,
+                content_pooling=False,
             )
             captured: dict[str, torch.Tensor] = {}
             original_encode = model.encode

@@ -297,8 +297,10 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--content-pooling",
-        action="store_true",
-        help="Use square-token (content) pooling for retrieval and contrastive losses",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Use square-token (content) pooling for retrieval and contrastive losses "
+        "(default: enabled; disable with --no-content-pooling)",
     )
     parser.add_argument(
         "--supcon",

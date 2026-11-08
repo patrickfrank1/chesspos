@@ -339,10 +339,19 @@ TINY_CONFIG = TransformerConfig(
     dropout=0.0,
     max_seq_len=512,
     max_segments=16,
+    content_pooling=False,
 )
 
 
 class TestTransformerConfig:
+    def test_content_pooling_is_the_default(self):
+        with given("a transformer config with no explicit pooling choice"):
+            config = TransformerConfig()
+
+        with then("strategic content pooling is enabled"):
+            assert config.content_pooling is True
+        return
+
     def test_default_architecture_is_scaled_up(self):
         with given("a transformer config with no explicit dimensions"):
             config = TransformerConfig()

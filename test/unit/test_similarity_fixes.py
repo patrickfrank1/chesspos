@@ -47,7 +47,9 @@ from src.training.window_dataset import (
 )
 
 
-def tiny_model(*, aux_heads: bool = False) -> MaskedStreamTransformer:
+def tiny_model(
+    *, aux_heads: bool = False, content_pooling: bool = False
+) -> MaskedStreamTransformer:
     return MaskedStreamTransformer(
         TransformerConfig(
             vocab_size=52,
@@ -59,6 +61,7 @@ def tiny_model(*, aux_heads: bool = False) -> MaskedStreamTransformer:
             max_seq_len=256,
             max_segments=8,
             aux_heads=aux_heads,
+            content_pooling=content_pooling,
         )
     )
 
@@ -390,6 +393,45 @@ class TestHardNegatives:
             )
         return
 
+    def test_opening_windows_produce_no_hard_negatives(self):
+        with given("two opening windows and a non-SupCon objective"):
+            tokens_a, _, _ = packed_segments(three_boards())
+            tokens_b, _, _ = packed_segments(three_boards())
+            samples = []
+            for game_id, tokens in enumerate((tokens_a, tokens_b)):
+                tokens_np = tokens[0].numpy()
+                samples.append(
+                    {
+                        "tokens": tokens_np,
+                        "targets": np.full(tokens_np.shape, -100, dtype=np.int16),
+                        "weights": np.zeros(tokens_np.shape, dtype=np.float32),
+                        "game_id": game_id,
+                        "start_index": 0,
+                    }
+                )
+            batch = collate_windows(samples)
+            model = tiny_model(content_pooling=True)
+            config = AuxiliaryLossConfig(
+                content_pooling=True,
+                use_supcon=False,
+                opening_ply_threshold=20,
+                alone_targets_per_window=2,
+            )
+
+        with when("hard negatives are collected"):
+            records = collect_hard_negatives(
+                model,
+                batch,
+                config,
+                step=7,
+                top_k=4,
+                generator=torch.Generator().manual_seed(0),
+            )
+
+        with then("opening views contribute nothing"):
+            assert records == []
+        return
+
 
 class TestWindowMetadata:
     def test_window_carries_game_id_and_start_index(self):
@@ -685,4 +727,45 @@ class TestInfoNCEOpeningExclusion:
         with then("the non-opening views still contribute InfoNCE"):
             assert "nce" in components
             assert torch.isfinite(total)
+        return
+
+
+class TestStateHeadIsolation:
+    def test_state_head_gradients_do_not_reach_the_shared_trunk(self):
+        with given("a model with state heads and a non-opening window"):
+            model = tiny_model(aux_heads=True)
+            tokens, segment_ids, padding = packed_segments(three_boards())
+            batch = {
+                "tokens": tokens,
+                "segment_ids": segment_ids,
+                "padding_mask": padding,
+                "targets": torch.full_like(tokens, IGNORE_INDEX),
+                "weights": torch.zeros_like(tokens, dtype=torch.float),
+                "game_id": torch.tensor([0]),
+                "start_index": torch.tensor([40]),
+            }
+            config = AuxiliaryLossConfig(
+                mlm_weight=0.0,
+                inv_weight=0.0,
+                var_weight=0.0,
+                cov_weight=0.0,
+                nce_weight=0.0,
+                alone_var_weight=0.0,
+                alone_cov_weight=0.0,
+                warmup_steps=0,
+                content_pooling=True,
+                turn_weight=1.0,
+            )
+
+        with when("only the detached state head is trained"):
+            total, components = compute_training_loss(model, batch, config)
+            total.backward()
+
+        with then("the state head learns without changing the trunk"):
+            assert "aux_turn" in components
+            trunk_grad = model.token_embedding.weight.grad
+            assert trunk_grad is None or not bool(trunk_grad.abs().sum() > 0)
+            head_grad = model.aux_heads.state["turn"].weight.grad
+            assert head_grad is not None
+            assert bool(head_grad.abs().sum() > 0)
         return

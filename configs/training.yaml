@@ -25,6 +25,7 @@ training:
 
   # Harder MLM: rectangle masking over 30-50% of squares, synchronized across
   # the window's segments so adjacent positions cannot reveal masked squares.
+  content_pooling: true
   p_rect: 0.8
   p_random: 0.0
   p_board: 0.0
