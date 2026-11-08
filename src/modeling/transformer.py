@@ -221,8 +221,32 @@ class MaskedStreamTransformer(nn.Module):
         isolate_content: bool = False,
     ) -> torch.Tensor:
         """Trunk for equal-length padded rows (one SDPA call per layer)."""
+        x = self.token_embedding(tokens)
+        return self._trunk_padded_from_embeddings(
+            x,
+            tokens,
+            segment_ids,
+            padding_mask,
+            isolate_content=isolate_content,
+        )
+
+    def _trunk_padded_from_embeddings(
+        self,
+        input_embeddings: torch.Tensor,
+        tokens: torch.Tensor,
+        segment_ids: torch.Tensor,
+        padding_mask: torch.Tensor,
+        *,
+        isolate_content: bool = False,
+    ) -> torch.Tensor:
+        """Padded trunk starting from pre-computed token embeddings.
+
+        Structural tokens are still read from ``tokens`` for slot and
+        attention-mask construction, so a differentiable one-hot input can be
+        projected through ``token_embedding.weight`` and then passed here.
+        """
         x = (
-            self.token_embedding(tokens)
+            input_embeddings
             + self.segment_embedding(segment_ids)
             + self.slot_embedding(slot_indices(tokens, segment_ids))
         )

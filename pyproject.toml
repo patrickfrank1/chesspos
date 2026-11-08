@@ -19,7 +19,6 @@ dependencies = [
 [project.optional-dependencies]
 cpu = ["torch>=2.14.1"]
 gpu = ["torch>=2.14.1", "flash-attn>=2.6.3"]
-
 [dependency-groups]
 dev = [
     "ipywidgets>=8.1.8",
@@ -27,7 +26,6 @@ dev = [
     "pytest>=9.1.1",
     "pytest-xdist>=3.8.0",
     "ruff>=0.15.22",
-    "umap-learn>=0.5.11",
 ]
 
 [tool.uv]

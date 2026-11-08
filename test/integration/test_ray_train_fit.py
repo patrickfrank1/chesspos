@@ -53,7 +53,7 @@ class TestRayTrainFit:
                 n_layers=1,
                 n_heads=2,
                 d_ff=32,
-                max_seq_len=64,
+                max_seq_len=128,
                 max_segments=8,
                 dataloader_workers=0,
                 log_every=1,
