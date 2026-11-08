@@ -14,6 +14,13 @@ from huggingface_hub import CommitInfo, HfApi, snapshot_download
 
 from src.dataset.puzzle_variants import _split_stream, split_for_puzzle
 from src.dataset.token_stream import TokenStreamEncoder
+from src.evaluation.core.embeddings import embed_tokens
+from src.evaluation.core.ranking import (
+    cosine_scores,
+    normalize,
+    ranking_metrics,
+    recall_hits,
+)
 
 POSITIONS_FILE = "positions.parquet"
 NEAR_QUERIES_FILE = "near_queries.parquet"
@@ -466,12 +473,6 @@ def load_benchmark(
     )
 
 
-def _normalize(embeddings: np.ndarray) -> np.ndarray:
-    embeddings = np.asarray(embeddings, dtype=np.float64)
-    norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
-    return embeddings / np.clip(norms, 1e-12, None)
-
-
 def retrieval_scores(
     embeddings: np.ndarray,
     query_ids: np.ndarray,
@@ -479,8 +480,7 @@ def retrieval_scores(
     puzzle_ids: Sequence[str],
 ) -> np.ndarray:
     """Cosine scores for queries against a gallery, masking same-puzzle items."""
-    normalized = _normalize(embeddings)
-    scores = normalized[np.asarray(query_ids)] @ normalized[np.asarray(gallery_ids)].T
+    scores = cosine_scores(embeddings, query_ids, gallery_ids)
     puzzles = np.asarray(puzzle_ids)
     masked = (
         puzzles[np.asarray(gallery_ids)][None, :]
@@ -489,64 +489,6 @@ def retrieval_scores(
     scores = np.array(scores, dtype=np.float64, copy=True)
     scores[masked] = -np.inf
     return scores
-
-
-def _recall_hits(scores: np.ndarray, relevance: Sequence[dict], k: int) -> np.ndarray:
-    hits = []
-    for row, relevant in enumerate(relevance):
-        if not relevant:
-            continue
-        order = np.argsort(-scores[row])[:k]
-        hits.append(1.0 if any(int(index) in relevant for index in order) else 0.0)
-    return np.asarray(hits, dtype=np.float64)
-
-
-def ranking_metrics(
-    scores: np.ndarray, relevance: Sequence[dict], ks: Sequence[int] = DEFAULT_KS
-) -> dict[str, float]:
-    scores = np.asarray(scores, dtype=np.float64)
-    covered = [row for row, relevant in enumerate(relevance) if relevant]
-    coverage = len(covered) / len(relevance) if relevance else 0.0
-    metrics: dict[str, float] = {"coverage": float(coverage)}
-    if not covered:
-        for k in ks:
-            metrics[f"recall@{k}"] = 0.0
-            metrics[f"ndcg@{k}"] = 0.0
-        metrics["map"] = 0.0
-        return metrics
-
-    for k in ks:
-        metrics[f"recall@{k}"] = float(_recall_hits(scores, relevance, k).mean())
-
-    average_precisions = []
-    ndcgs = {k: [] for k in ks}
-    for row in covered:
-        relevant = relevance[row]
-        order = np.argsort(-scores[row])
-        hits = 0
-        precision_sum = 0.0
-        for rank, index in enumerate(order, start=1):
-            if int(index) in relevant:
-                hits += 1
-                precision_sum += hits / rank
-        average_precisions.append(precision_sum / len(relevant))
-
-        gains = {int(index): 1.0 / (1.0 + grade) for index, grade in relevant.items()}
-        ideal = sorted(gains.values(), reverse=True)
-        for k in ks:
-            dcg = sum(
-                gains.get(int(index), 0.0) / np.log2(rank + 1)
-                for rank, index in enumerate(order[:k], start=1)
-            )
-            idcg = sum(
-                gain / np.log2(rank + 1) for rank, gain in enumerate(ideal[:k], start=1)
-            )
-            ndcgs[k].append(dcg / idcg if idcg > 0 else 0.0)
-
-    metrics["map"] = float(np.mean(average_precisions))
-    for k in ks:
-        metrics[f"ndcg@{k}"] = float(np.mean(ndcgs[k]))
-    return metrics
 
 
 def bootstrap_ci(
@@ -581,7 +523,7 @@ def alignment_uniformity(
     positive_pairs: Sequence[tuple[int, int]],
     seed: int = 0,
 ) -> dict[str, float]:
-    normalized = _normalize(embeddings)
+    normalized = normalize(embeddings)
     if positive_pairs:
         left = normalized[[pair[0] for pair in positive_pairs]]
         right = normalized[[pair[1] for pair in positive_pairs]]
@@ -620,7 +562,7 @@ def evaluate_near(
     metrics = ranking_metrics(scores, relevance, ks=ks)
     seed = int(benchmark.manifest.get("seed", 0))
     for k in ks:
-        low, high = bootstrap_ci(_recall_hits(scores, relevance, k), seed=seed)
+        low, high = bootstrap_ci(recall_hits(scores, relevance, k), seed=seed)
         metrics[f"recall@{k}_ci_low"] = low
         metrics[f"recall@{k}_ci_high"] = high
     return metrics
@@ -690,7 +632,7 @@ def strategic_theme_metrics(
     ks: Sequence[int] = DEFAULT_KS,
 ) -> dict[str, dict[str, float]]:
     """Per-theme retrieval metrics over balanced same-theme pools."""
-    normalized = _normalize(embeddings)
+    normalized = normalize(embeddings)
     theme_metrics: dict[str, dict[str, float]] = {}
     for theme, query_ids in sorted(benchmark.strategic_queries.items()):
         per_query: list[dict[str, float]] = []
@@ -718,7 +660,8 @@ def _aggregate_strategic_metrics(
     per_theme: dict[str, dict[str, float]], ks: Sequence[int]
 ) -> dict[str, float]:
     if not per_theme:
-        metrics = {f"recall@{k}": 0.0 for k in ks}
+        metrics = {"top1": 0.0, "mrr": 0.0, "mean_rank": 0.0}
+        metrics.update({f"recall@{k}": 0.0 for k in ks})
         metrics.update({f"ndcg@{k}": 0.0 for k in ks})
         metrics["map"] = 0.0
         metrics["coverage"] = 0.0
@@ -751,38 +694,9 @@ def embed_positions(
     device: torch.device,
     batch_size: int = 128,
 ) -> np.ndarray:
-    from src.dataset.puzzle_variants import pack_segments
-
-    was_training = encoder.training
-    encoder.eval()
-    rows: list[np.ndarray] = []
-    try:
-        with (
-            torch.no_grad(),
-            torch.autocast(
-                device_type=device.type,
-                dtype=torch.bfloat16,
-                enabled=device.type == "cuda",
-            ),
-        ):
-            for start in range(0, len(tokens), batch_size):
-                batch = tokens[start : start + batch_size]
-                packed = [
-                    pack_segments([np.asarray(row, dtype=np.int16)]) for row in batch
-                ]
-                token_tensor = torch.from_numpy(
-                    np.stack([item[0] for item in packed])
-                ).long()
-                segment_tensor = torch.from_numpy(
-                    np.stack([item[1] for item in packed])
-                ).long()
-                embeddings, _ = encoder.embed(
-                    token_tensor.to(device), segment_tensor.to(device)
-                )
-                rows.append(embeddings[:, 0].float().cpu().numpy())
-    finally:
-        encoder.train(was_training)
-    return np.concatenate(rows) if rows else np.zeros((0, 0))
+    segments = [np.asarray(row, dtype=np.int16) for row in tokens]
+    vectors = embed_tokens(encoder, segments, device, batch_size=batch_size)
+    return vectors.numpy()
 
 
 def evaluate_retrieval(
