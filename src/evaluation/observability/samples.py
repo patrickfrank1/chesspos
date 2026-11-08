@@ -311,6 +311,7 @@ class _Reservoir:
         self.rng = rng
         self.items: list = []
         self.seen = 0
+        return
 
     def add(self, item) -> None:
         self.seen += 1

@@ -211,10 +211,6 @@ def classify_surrogates(surrogates: dict[str, float | int]) -> dict[str, str]:
     }
 
 
-def sample_surrogate_classes(sample: PositionSample) -> dict[str, str]:
-    return classify_surrogates(sample.surrogates)
-
-
 def surrogate_class_labels(
     samples: Sequence[PositionSample], task: SurrogateTask
 ) -> np.ndarray:

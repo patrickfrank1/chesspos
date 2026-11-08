@@ -41,7 +41,3 @@ def load_checkpoint(
         "aux_heads": bool(getattr(config, "aux_heads", False)),
     }
     return model, info
-
-
-def load_encoder(path: str, device: torch.device | str) -> MaskedStreamTransformer:
-    return load_checkpoint(path, device)[0]

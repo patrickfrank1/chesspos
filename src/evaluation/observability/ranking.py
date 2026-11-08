@@ -344,8 +344,7 @@ def _candidate_ranks(scores: np.ndarray) -> np.ndarray:
     return ranks
 
 
-def _case_performance(embeddings: np.ndarray, case: RankingCase) -> tuple[float, float]:
-    values = _normalized(embeddings)
+def _case_performance(values: np.ndarray, case: RankingCase) -> tuple[float, float]:
     scores = values[list(case.candidates)] @ values[case.query]
     ranks = _candidate_ranks(scores)
     positive_score = scores[case.positive_position]
@@ -357,7 +356,7 @@ def _case_performance(embeddings: np.ndarray, case: RankingCase) -> tuple[float,
 
 
 def _select_case_buckets(
-    embeddings: np.ndarray,
+    values: np.ndarray,
     cases: Sequence[RankingCase],
     *,
     max_per_bucket: int,
@@ -365,7 +364,7 @@ def _select_case_buckets(
 ) -> list[tuple[str, RankingCase]]:
     if not cases or max_per_bucket <= 0:
         return []
-    performance = [(_case_performance(embeddings, case), case) for case in cases]
+    performance = [(_case_performance(values, case), case) for case in cases]
     performance.sort(key=lambda item: (item[0][0], -item[0][1]))
     ordered = [case for _, case in performance]
     count = min(max_per_bucket, len(ordered))
@@ -388,7 +387,7 @@ def _select_case_buckets(
 
 
 def _case_payload(
-    embeddings: np.ndarray,
+    values: np.ndarray,
     samples: Sequence[PositionSample],
     case: RankingCase,
     *,
@@ -399,7 +398,6 @@ def _case_payload(
     class_label: str | None = None,
     bucket: str | None = None,
 ) -> dict:
-    values = _normalized(embeddings)
     candidates = list(case.candidates)
     scores = values[candidates] @ values[case.query]
     ranks = _candidate_ranks(scores)
@@ -450,6 +448,7 @@ def theme_ranking_examples(
     max_per_bucket: int = 3,
 ) -> list[dict]:
     surrogate_z = standardize_columns(surrogate_matrix(samples))
+    values = _normalized(embeddings)
     examples = []
     for theme in themes:
         cases = build_theme_ranking_cases(
@@ -465,11 +464,11 @@ def theme_ranking_examples(
             [seed, zlib.crc32(theme.encode("utf-8")), int(matched), 17]
         )
         for bucket, case in _select_case_buckets(
-            embeddings, cases, max_per_bucket=max_per_bucket, rng=rng
+            values, cases, max_per_bucket=max_per_bucket, rng=rng
         ):
             examples.append(
                 _case_payload(
-                    embeddings,
+                    values,
                     samples,
                     case,
                     group=theme,
@@ -504,10 +503,11 @@ def temporal_ranking_examples(
         seed=seed,
         max_ply_distance=max_ply_distance,
     )
+    values = _normalized(embeddings)
     rng = np.random.default_rng([seed, int(matched), 23])
     return [
         _case_payload(
-            embeddings,
+            values,
             samples,
             case,
             group="temporal",
@@ -518,7 +518,7 @@ def temporal_ranking_examples(
             bucket=bucket,
         )
         for bucket, case in _select_case_buckets(
-            embeddings, cases, max_per_bucket=max_per_bucket, rng=rng
+            values, cases, max_per_bucket=max_per_bucket, rng=rng
         )
     ]
 
@@ -653,6 +653,7 @@ def surrogate_ranking_examples(
     max_per_bucket: int = 3,
 ) -> dict[str, dict[str, dict[str, dict[str, list[dict]]]]]:
     full_z = standardize_columns(surrogate_matrix(samples))
+    values = _normalized(embeddings)
     result: dict[str, dict[str, dict[str, list[dict]]]] = {}
     for task in tasks:
         labels = surrogate_class_labels(samples, task)
@@ -683,7 +684,7 @@ def surrogate_ranking_examples(
                     ]
                 )
                 selected = _select_case_buckets(
-                    embeddings,
+                    values,
                     cases,
                     max_per_bucket=max_per_bucket,
                     rng=rng,
@@ -692,7 +693,7 @@ def surrogate_ranking_examples(
                 for bucket, case in selected:
                     buckets[bucket].append(
                         _case_payload(
-                            embeddings,
+                            values,
                             samples,
                             case,
                             group=class_label,

@@ -108,12 +108,14 @@ def _add_ranking(metrics: dict, base: str, row: dict, *, suffix: str = "") -> No
         "chance_mean_rank",
     ):
         metrics[f"{base}{key}{suffix}"] = row[key]
+    return
 
 
 def _flatten_temporal(metrics: dict, result: dict, k: int) -> None:
     base = f"test_temporal_rank{k}_"
     _add_ranking(metrics, base, result["random"])
     _add_ranking(metrics, base, result["matched"], suffix="_matched")
+    return
 
 
 def _flatten_themes(metrics: dict, result: dict, themes: Sequence[str], k: int) -> None:
@@ -130,6 +132,7 @@ def _flatten_themes(metrics: dict, result: dict, themes: Sequence[str], k: int) 
             result["per_theme"][theme]["matched"],
             suffix=f"_matched_{theme}",
         )
+    return
 
 
 def _flatten_surrogates(metrics: dict, result: dict, k: int) -> None:
@@ -150,6 +153,7 @@ def _flatten_surrogates(metrics: dict, result: dict, k: int) -> None:
                 row["matched"],
                 suffix=f"_matched_{task_name}_{class_label}",
             )
+    return
 
 
 def _collect_theme_examples(
