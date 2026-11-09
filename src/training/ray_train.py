@@ -28,8 +28,10 @@ from torch.utils.data import DataLoader
 
 from src.evaluation.eval_suite import full_eval
 from src.evaluation.retrieval import evaluate_retrieval, load_benchmark
+from src.modeling.factory import build_model
 from src.modeling.masking import MaskingConfig
-from src.modeling.transformer import MaskedStreamTransformer, TransformerConfig
+from src.modeling.perceiver.config import PerceiverIOConfig
+from src.modeling.transformer import TransformerConfig
 from src.training.checkpoint_hub import (
     build_metadata,
     collect_data_provenance,
@@ -90,6 +92,14 @@ class RayTrainingConfig:
     dropout: float = 0.1
     max_seq_len: int = 2048
     max_segments: int = 128
+    model_arch: str = "transformer"
+    n_content_latents: int = 16
+    n_state_latents: int = 1
+    n_local_latent_layers: int = 2
+    n_cross_segment_layers: int = 2
+    n_decoder_layers: int = 2
+    content_readout: str = "attention"
+    decoder_reconstruction_weight: float = 0.0
     content_pooling: bool = True
     p_random: float = 0.0
     p_board: float = 0.0
@@ -181,8 +191,26 @@ class RayTrainingConfig:
         )
 
     @property
-    def model_config(self) -> TransformerConfig:
+    def model_config(self) -> TransformerConfig | PerceiverIOConfig:
         """Build the model architecture config from the hyperparameters."""
+        if self.model_arch == "perceiver_io":
+            return PerceiverIOConfig(
+                d_model=self.d_model,
+                n_layers=self.n_layers,
+                n_heads=self.n_heads,
+                d_ff=self.d_ff,
+                dropout=self.dropout,
+                max_seq_len=self.max_seq_len,
+                max_segments=self.max_segments,
+                n_content_latents=self.n_content_latents,
+                n_state_latents=self.n_state_latents,
+                n_local_latent_layers=self.n_local_latent_layers,
+                n_cross_segment_layers=self.n_cross_segment_layers,
+                n_decoder_layers=self.n_decoder_layers,
+                content_readout=self.content_readout,
+                decoder_reconstruction_weight=self.decoder_reconstruction_weight,
+                content_pooling=self.content_pooling,
+            )
         return TransformerConfig(
             d_model=self.d_model,
             n_layers=self.n_layers,
@@ -384,7 +412,7 @@ def train_loop_per_worker(config: dict) -> None:
         )
 
     model_config = cfg.model_config
-    model = MaskedStreamTransformer(model_config).to(device)
+    model = build_model(model_config).to(device)
     raw_model = model
     if cfg.compile:
         model = torch.compile(model)

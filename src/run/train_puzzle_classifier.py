@@ -24,7 +24,7 @@ from src.modeling.puzzle_classifier import (
     PoolingClassifier,
     PoolingClassifierConfig,
 )
-from src.modeling.transformer import MaskedStreamTransformer, TransformerConfig
+from src.modeling.factory import build_model, model_config_from_dict
 from src.training.losses import (
     FocalLossConfig,
     focal_loss_with_logits,
@@ -79,10 +79,10 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def load_frozen_encoder(path: str, device: torch.device) -> MaskedStreamTransformer:
+def load_frozen_encoder(path: str, device: torch.device) -> nn.Module:
     checkpoint = torch.load(path, map_location="cpu", weights_only=False)
-    config = TransformerConfig(**checkpoint["model_config"])
-    encoder = MaskedStreamTransformer(config)
+    config = model_config_from_dict(checkpoint["model_config"])
+    encoder = build_model(config)
     encoder.load_state_dict(checkpoint["model_state"])
     encoder.to(device).eval()
     for parameter in encoder.parameters():

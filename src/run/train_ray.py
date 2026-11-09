@@ -88,6 +88,45 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--max-seq-len", dest="max_seq_len", type=int, default=None)
     parser.add_argument("--max-segments", dest="max_segments", type=int, default=None)
     parser.add_argument(
+        "--model-arch",
+        dest="model_arch",
+        choices=("transformer", "perceiver_io"),
+        default=None,
+    )
+    parser.add_argument(
+        "--n-content-latents", dest="n_content_latents", type=int, default=None
+    )
+    parser.add_argument(
+        "--n-state-latents", dest="n_state_latents", type=int, default=None
+    )
+    parser.add_argument(
+        "--n-local-latent-layers",
+        dest="n_local_latent_layers",
+        type=int,
+        default=None,
+    )
+    parser.add_argument(
+        "--n-cross-segment-layers",
+        dest="n_cross_segment_layers",
+        type=int,
+        default=None,
+    )
+    parser.add_argument(
+        "--n-decoder-layers", dest="n_decoder_layers", type=int, default=None
+    )
+    parser.add_argument(
+        "--content-readout",
+        dest="content_readout",
+        choices=("attention", "first_latent"),
+        default=None,
+    )
+    parser.add_argument(
+        "--decoder-reconstruction-weight",
+        dest="decoder_reconstruction_weight",
+        type=float,
+        default=None,
+    )
+    parser.add_argument(
         "--content-pooling",
         dest="content_pooling",
         action=argparse.BooleanOptionalAction,

@@ -15,7 +15,7 @@ from src.modeling.puzzle_classifier import (
     PoolingClassifier,
     PoolingClassifierConfig,
 )
-from src.modeling.transformer import MaskedStreamTransformer, TransformerConfig
+from src.modeling.factory import build_model, model_config_from_dict
 
 
 def parse_args() -> argparse.Namespace:
@@ -40,7 +40,7 @@ def parse_args() -> argparse.Namespace:
 
 def load_classifier(path: str, device: torch.device) -> FrozenEncoderClassifier:
     checkpoint = torch.load(path, map_location="cpu", weights_only=False)
-    encoder = MaskedStreamTransformer(TransformerConfig(**checkpoint["encoder_config"]))
+    encoder = build_model(model_config_from_dict(checkpoint["encoder_config"]))
     encoder.load_state_dict(checkpoint["encoder_state"])
     head = PoolingClassifier(PoolingClassifierConfig(**checkpoint["head_config"]))
     head.load_state_dict(checkpoint["head_state"])

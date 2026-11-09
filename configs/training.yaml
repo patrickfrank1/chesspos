@@ -23,8 +23,19 @@ training:
   use_gpu: null             # null = auto-detect CUDA
   storage_path: null        # Ray results/checkpoint path (shared FS for multi-node)
 
+  # Model architecture: "transformer" (legacy) or "perceiver_io".
+  model_arch: "transformer"
+  # Perceiver IO settings (ignored for the legacy transformer).
+  n_content_latents: 16
+  n_state_latents: 1
+  n_local_latent_layers: 2
+  n_cross_segment_layers: 2
+  n_decoder_layers: 2
+  content_readout: "attention"   # attention | first_latent
+  decoder_reconstruction_weight: 0.0
+
   # Harder MLM: rectangle masking over 30-50% of squares, synchronized across
-  # the window's segments so adjacent positions cannot reveal masked squares.
+  # the window's segments so adjacent squares cannot reveal masked squares.
   content_pooling: true
   p_rect: 0.8
   p_random: 0.0

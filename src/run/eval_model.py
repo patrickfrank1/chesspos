@@ -21,7 +21,7 @@ from src.evaluation.eval_suite import (
     side_to_move_probe,
     write_neighbor_examples,
 )
-from src.modeling.transformer import MaskedStreamTransformer, TransformerConfig
+from src.modeling.factory import build_model, model_config_from_dict
 from src.training.window_dataset import _load_game_segments
 
 
@@ -42,9 +42,9 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def load_model(path: str, device: torch.device) -> MaskedStreamTransformer:
+def load_model(path: str, device: torch.device):
     checkpoint = torch.load(path, map_location="cpu", weights_only=False)
-    model = MaskedStreamTransformer(TransformerConfig(**checkpoint["model_config"]))
+    model = build_model(model_config_from_dict(checkpoint["model_config"]))
     model.load_state_dict(checkpoint["model_state"])
     return model.to(device).eval()
 

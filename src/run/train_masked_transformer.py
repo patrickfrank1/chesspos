@@ -11,8 +11,10 @@ from torch.utils.data import DataLoader
 
 from src.evaluation.eval_suite import full_eval
 from src.evaluation.retrieval import evaluate_retrieval, load_benchmark
+from src.modeling.factory import build_model, model_config_from_dict
 from src.modeling.masking import MaskingConfig
-from src.modeling.transformer import MaskedStreamTransformer, TransformerConfig
+from src.modeling.perceiver.config import PerceiverIOConfig
+from src.modeling.transformer import TransformerConfig
 from src.training.checkpoint_hub import (
     build_metadata,
     collect_data_provenance,
@@ -125,6 +127,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--weight-decay", type=float, default=0.01)
     parser.add_argument("--warmup", type=int, default=500)
     parser.add_argument("--grad-clip", type=float, default=1.0)
+    parser.add_argument(
+        "--model-arch",
+        choices=("transformer", "perceiver_io"),
+        default="transformer",
+        help="Foundation model architecture (default: transformer)",
+    )
     parser.add_argument("--d-model", type=int, default=512)
     parser.add_argument("--n-layers", type=int, default=8)
     parser.add_argument("--n-heads", type=int, default=16)
@@ -132,6 +140,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dropout", type=float, default=0.1)
     parser.add_argument("--max-seq-len", type=int, default=2048)
     parser.add_argument("--max-segments", type=int, default=128)
+    parser.add_argument("--n-content-latents", type=int, default=16)
+    parser.add_argument("--n-state-latents", type=int, default=1)
+    parser.add_argument("--n-local-latent-layers", type=int, default=2)
+    parser.add_argument("--n-cross-segment-layers", type=int, default=2)
+    parser.add_argument("--n-decoder-layers", type=int, default=2)
+    parser.add_argument(
+        "--content-readout",
+        choices=("attention", "first_latent"),
+        default="attention",
+    )
+    parser.add_argument("--decoder-reconstruction-weight", type=float, default=0.0)
     parser.add_argument("--num-workers", type=int, default=4)
     parser.add_argument("--log-every", type=int, default=20)
     parser.add_argument("--eval-every", type=int, default=1_000)
@@ -481,14 +500,44 @@ def main() -> None:
 
     start_step = 0
     best_val_loss = float("inf")
+    aux_heads = any(
+        weight > 0
+        for weight in (
+            args.aux_material_weight,
+            args.aux_piece_count_weight,
+            args.aux_phase_weight,
+            args.aux_turn_weight,
+            args.aux_castle_weight,
+            args.aux_ep_weight,
+        )
+    )
     if args.resume:
         checkpoint = torch.load(args.resume, map_location="cpu", weights_only=False)
-        model_config = TransformerConfig(**checkpoint["model_config"])
+        model_config = model_config_from_dict(checkpoint["model_config"])
         start_step = checkpoint["step"]
         best_val_loss = checkpoint.get("best_val_loss", float("inf"))
         log(
             f"resuming from {args.resume} step={start_step} "
             f"best_val_loss={best_val_loss:.4f}"
+        )
+    elif args.model_arch == "perceiver_io":
+        model_config = PerceiverIOConfig(
+            d_model=args.d_model,
+            n_layers=args.n_layers,
+            n_heads=args.n_heads,
+            d_ff=args.d_ff,
+            dropout=args.dropout,
+            max_seq_len=args.max_seq_len,
+            max_segments=args.max_segments,
+            n_content_latents=args.n_content_latents,
+            n_state_latents=args.n_state_latents,
+            n_local_latent_layers=args.n_local_latent_layers,
+            n_cross_segment_layers=args.n_cross_segment_layers,
+            n_decoder_layers=args.n_decoder_layers,
+            content_readout=args.content_readout,
+            decoder_reconstruction_weight=args.decoder_reconstruction_weight,
+            content_pooling=args.content_pooling,
+            aux_heads=aux_heads,
         )
     else:
         model_config = TransformerConfig(
@@ -500,20 +549,10 @@ def main() -> None:
             max_seq_len=args.max_seq_len,
             max_segments=args.max_segments,
             content_pooling=args.content_pooling,
-            aux_heads=any(
-                weight > 0
-                for weight in (
-                    args.aux_material_weight,
-                    args.aux_piece_count_weight,
-                    args.aux_phase_weight,
-                    args.aux_turn_weight,
-                    args.aux_castle_weight,
-                    args.aux_ep_weight,
-                )
-            ),
+            aux_heads=aux_heads,
         )
 
-    model = MaskedStreamTransformer(model_config).to(device)
+    model = build_model(model_config).to(device)
     raw_model = model
     model = apply_compile(model, args.compile)
     encode_views_fn = (
