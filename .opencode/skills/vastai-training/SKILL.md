@@ -162,7 +162,7 @@ skip-gram masking (`--p-skip-gram 0.2`), which leaves only
 visible and masks every token of the rest. Strong geometry, invariance and
 InfoNCE are on by default (`--inv-weight 0.5 --var-weight 1.0 --cov-weight
 0.1 --nce-weight 0.1 --aux-warmup 200`), following the 2026-10-25 objective
-sweep (see `docs/experiment_objective_sweep_2026-10-25.md`). VICReg is also
+sweep (see `docs/experiments/experiment_objective_sweep_2026-10-25.md`). VICReg is also
 applied to the fully visible alone position embeddings
 (`--alone-var-weight 1.0 --alone-cov-weight 0.1`); the alone view is restored
 without mask tokens so it matches retrieval, and

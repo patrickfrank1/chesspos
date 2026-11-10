@@ -4,7 +4,7 @@
 - **Date:** 2026-11-08
 - **Checkpoint:** `data/models/run_d512l8_p1p3_v1_20261026/last.pt`
   (step 102000, val_loss 0.4355, 512-dimensional content-pooled embeddings)
-- **Script:** [`scripts/analysis/umap_embedding_structure.py`](../scripts/analysis/umap_embedding_structure.py)
+- **Script:** [`scripts/analysis/umap_embedding_structure.py`](../../scripts/analysis/umap_embedding_structure.py)
 - **Artifacts:** `data/eval/similarity/umap_experiments_20261108/`
   (git-ignored)
 
