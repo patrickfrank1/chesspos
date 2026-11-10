@@ -1,0 +1,134 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="1000" viewBox="0 0 1400 1000" role="img" aria-labelledby="title desc">
+  <title id="title">Practical alternative: visible-content identity supervision</title>
+  <desc id="desc">The existing MaskedStreamTransformer keeps its MLM trunk and content-isolated trunk. A new auxiliary loss predicts each visible content token from its isolated hidden state using the shared vocabulary head. Retrieval still uses mean-pooled content states; there is no unpooling.</desc>
+
+  <defs>
+    <marker id="arrow-blue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#2563eb"/>
+    </marker>
+    <marker id="arrow-orange" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#ea580c"/>
+    </marker>
+    <marker id="arrow-slate" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#64748b"/>
+    </marker>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="3" stdDeviation="5" flood-color="#0f172a" flood-opacity="0.08"/>
+    </filter>
+  </defs>
+
+  <rect x="0" y="0" width="1400" height="1000" fill="#f8fafc"/>
+
+  <!-- Title -->
+  <text x="700" y="46" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="30" font-weight="700" fill="#0f172a">Practical Alternative: Visible-Content Identity Supervision</text>
+  <text x="700" y="78" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="16" fill="#475569">Same MaskedStreamTransformer; new training-time per-token objective. Retrieval still uses pooled content states; no unpooling.</text>
+
+  <!-- Input -->
+  <rect x="390" y="110" width="620" height="82" rx="14" fill="#eef2ff" stroke="#6366f1" stroke-width="2" filter="url(#shadow)"/>
+  <text x="700" y="138" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="17" font-weight="600" fill="#1e1b4b">Packed window: [CLS | board 0 | SEP | board 1 | SEP | ...]</text>
+  <text x="700" y="164" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="14" fill="#475569">token + segment + slot embeddings</text>
+
+  <!-- Input branch arrows -->
+  <path d="M 560 192 C 500 208, 420 218, 330 260" fill="none" stroke="#64748b" stroke-width="2.5" stroke-linecap="round" marker-end="url(#arrow-slate)"/>
+  <path d="M 840 192 C 900 208, 980 218, 1070 260" fill="none" stroke="#64748b" stroke-width="2.5" stroke-linecap="round" marker-end="url(#arrow-slate)"/>
+
+  <!-- Shared weights pill -->
+  <rect x="550" y="220" width="300" height="48" rx="12" fill="#f1f5f9" stroke="#94a3b8" stroke-width="1.5" stroke-dasharray="6 5"/>
+  <text x="700" y="240" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="13" font-weight="600" fill="#334155">same transformer blocks / weights</text>
+  <text x="700" y="258" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="13" fill="#475569">different attention masks</text>
+
+  <!-- MLM trunk -->
+  <rect x="120" y="260" width="420" height="110" rx="16" fill="#dbeafe" stroke="#2563eb" stroke-width="2" filter="url(#shadow)"/>
+  <text x="330" y="294" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="20" font-weight="700" fill="#1e3a8a">MLM trunk</text>
+  <text x="330" y="320" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="14" fill="#334155">row-level attention</text>
+  <text x="330" y="342" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="13" fill="#475569">masked + visible tokens</text>
+
+  <!-- Content-isolated trunk -->
+  <rect x="860" y="260" width="420" height="110" rx="16" fill="#dbeafe" stroke="#2563eb" stroke-width="2" filter="url(#shadow)"/>
+  <text x="1070" y="294" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="20" font-weight="700" fill="#1e3a8a">Content-isolated trunk</text>
+  <text x="1070" y="320" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="14" fill="#334155">per-segment content attention</text>
+  <text x="1070" y="342" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="13" fill="#475569">state tokens see whole segment</text>
+
+  <!-- Trunk down arrows -->
+  <path d="M 330 370 L 330 430" fill="none" stroke="#2563eb" stroke-width="2.5" stroke-linecap="round" marker-end="url(#arrow-blue)"/>
+  <path d="M 1070 370 L 1070 430" fill="none" stroke="#2563eb" stroke-width="2.5" stroke-linecap="round" marker-end="url(#arrow-blue)"/>
+
+  <!-- Masked positions -->
+  <rect x="180" y="430" width="300" height="90" rx="14" fill="#ffffff" stroke="#60a5fa" stroke-width="2"/>
+  <text x="330" y="462" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="17" font-weight="600" fill="#1e3a8a">Masked token positions</text>
+  <text x="330" y="486" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="13" fill="#475569">cross-entropy targets</text>
+
+  <!-- Isolated hidden states -->
+  <rect x="890" y="430" width="360" height="90" rx="14" fill="#ffffff" stroke="#60a5fa" stroke-width="2"/>
+  <text x="1070" y="462" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="17" font-weight="600" fill="#1e3a8a">Per-token isolated states h_i</text>
+  <text x="1070" y="486" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="13" fill="#475569">one vector per valid content token</text>
+
+  <!-- Masked path down -->
+  <path d="M 330 520 L 330 570" fill="none" stroke="#2563eb" stroke-width="2.5" stroke-linecap="round" marker-end="url(#arrow-blue)"/>
+
+  <!-- Vocabulary head (MLM) -->
+  <rect x="180" y="570" width="300" height="80" rx="14" fill="#ffffff" stroke="#60a5fa" stroke-width="2"/>
+  <text x="330" y="603" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="17" font-weight="600" fill="#1e3a8a">Existing vocabulary head</text>
+  <text x="330" y="626" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="13" fill="#475569">shared with identity path</text>
+
+  <!-- MLM loss path -->
+  <path d="M 330 650 L 330 700" fill="none" stroke="#2563eb" stroke-width="2.5" stroke-linecap="round" marker-end="url(#arrow-blue)"/>
+
+  <!-- MLM loss -->
+  <rect x="180" y="700" width="300" height="70" rx="14" fill="#dbeafe" stroke="#2563eb" stroke-width="2"/>
+  <text x="330" y="728" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="17" font-weight="700" fill="#1e3a8a">L_MLM</text>
+  <text x="330" y="750" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="13" fill="#475569">masked-token supervision</text>
+
+  <!-- Hidden split arrows -->
+  <path d="M 980 520 C 930 552, 860 562, 800 590" fill="none" stroke="#2563eb" stroke-width="2.5" stroke-linecap="round" marker-end="url(#arrow-blue)"/>
+  <path d="M 1160 520 C 1188 552, 1204 562, 1220 590" fill="none" stroke="#ea580c" stroke-width="3" stroke-linecap="round" marker-end="url(#arrow-orange)"/>
+
+  <!-- Pooling -->
+  <rect x="650" y="590" width="300" height="90" rx="14" fill="#ffffff" stroke="#60a5fa" stroke-width="2"/>
+  <text x="800" y="622" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="17" font-weight="600" fill="#1e3a8a">Mean-pool visible content</text>
+  <text x="800" y="646" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="13" fill="#475569">empty + piece tokens</text>
+
+  <!-- Retrieval output -->
+  <path d="M 800 680 L 800 720" fill="none" stroke="#2563eb" stroke-width="2.5" stroke-linecap="round" marker-end="url(#arrow-blue)"/>
+  <rect x="650" y="720" width="300" height="70" rx="14" fill="#eff6ff" stroke="#60a5fa" stroke-width="2"/>
+  <text x="800" y="748" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="17" font-weight="700" fill="#1e3a8a">Retrieval vector</text>
+  <text x="800" y="770" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="13" fill="#475569">used for retrieval, not a loss</text>
+
+  <!-- Identity head -->
+  <rect x="1070" y="590" width="300" height="90" rx="14" fill="#fff7ed" stroke="#f97316" stroke-width="2.5"/>
+  <text x="1220" y="622" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="17" font-weight="600" fill="#9a3412">Existing vocab head</text>
+  <text x="1220" y="646" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="13" fill="#7c2d12">at each visible content token</text>
+
+  <!-- Identity loss path -->
+  <path d="M 1220 680 L 1220 720" fill="none" stroke="#ea580c" stroke-width="3" stroke-linecap="round" marker-end="url(#arrow-orange)"/>
+
+  <!-- Identity loss -->
+  <rect x="1070" y="720" width="300" height="70" rx="14" fill="#ffedd5" stroke="#f97316" stroke-width="2.5"/>
+  <text x="1220" y="748" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="17" font-weight="700" fill="#9a3412">L_visible_identity</text>
+  <text x="1220" y="770" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="13" fill="#7c2d12">CE(head(h_i), token_i)</text>
+
+  <!-- New badge -->
+  <rect x="1300" y="688" width="54" height="24" rx="12" fill="#ea580c"/>
+  <text x="1327" y="705" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="12" font-weight="700" fill="#ffffff">NEW</text>
+
+  <!-- Total loss arrows -->
+  <path d="M 330 770 C 340 805, 360 825, 380 850" fill="none" stroke="#64748b" stroke-width="2" stroke-dasharray="5 5" marker-end="url(#arrow-slate)"/>
+  <path d="M 1220 790 C 1150 816, 1080 832, 1020 850" fill="none" stroke="#64748b" stroke-width="2" stroke-dasharray="5 5" marker-end="url(#arrow-slate)"/>
+
+  <!-- Total loss -->
+  <rect x="380" y="810" width="640" height="80" rx="14" fill="#ffffff" stroke="#334155" stroke-width="2" filter="url(#shadow)"/>
+  <text x="700" y="835" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="16" font-weight="700" fill="#0f172a">Total training loss</text>
+  <text x="700" y="861" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="14" fill="#334155">L_total = L_MLM + λ_vis · warmup · L_visible_identity + existing auxiliary terms</text>
+
+  <!-- Footnote -->
+  <text x="700" y="915" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="13" fill="#64748b">Visible content = valid, unmasked square token (empty or piece). State, CLS/SEP, and padding are excluded. λ_vis = 0 restores the original behaviour.</text>
+
+  <!-- Legend -->
+  <line x1="330" y1="950" x2="370" y2="950" stroke="#2563eb" stroke-width="3"/>
+  <text x="380" y="955" font-family="Inter, Arial, sans-serif" font-size="13" fill="#475569">existing path</text>
+  <line x1="540" y1="950" x2="580" y2="950" stroke="#ea580c" stroke-width="3"/>
+  <text x="590" y="955" font-family="Inter, Arial, sans-serif" font-size="13" fill="#475569">new identity path</text>
+  <line x1="760" y1="950" x2="800" y2="950" stroke="#94a3b8" stroke-width="2" stroke-dasharray="5 5"/>
+  <text x="810" y="955" font-family="Inter, Arial, sans-serif" font-size="13" fill="#475569">shared weights / different masks</text>
+</svg>

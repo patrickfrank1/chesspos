@@ -59,6 +59,23 @@ class TestParseArgs:
         return
 
 
+class TestLossWeights:
+    def test_visible_identity_weight_is_carried_to_loss_config(self, monkeypatch):
+        with given("a visible-identity CLI weight"):
+            monkeypatch.setattr(
+                "sys.argv",
+                ["train_masked_transformer", "--visible-identity-weight", "0.25"],
+            )
+            args = parse_args()
+
+        with when("the auxiliary loss config is built"):
+            config = auxiliary_config(args)
+
+        with then("the weight reaches the objective"):
+            assert config.visible_identity_weight == 0.25
+        return
+
+
 class TestStreamingFlag:
     def test_streaming_defaults_to_off(self, monkeypatch):
         with given("no CLI arguments"):

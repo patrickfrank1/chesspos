@@ -344,6 +344,22 @@ class MaskedStreamTransformer(nn.Module):
             )
         return scatter_valid(self.ln_final(x), valid)
 
+    def content_hidden_states(
+        self,
+        tokens: torch.Tensor,
+        segment_ids: torch.Tensor,
+        padding_mask: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        """Return final hidden states from the content-isolated trunk.
+
+        This is the per-token representation used by the retrieval content
+        pool. Applying the vocabulary head to these states at visible content
+        positions gives the practical-alternative identity loss.
+        """
+        if padding_mask is None:
+            padding_mask = tokens.ne(0)
+        return self._trunk_isolated(tokens, segment_ids, padding_mask)
+
     def _loss(
         self,
         hidden: torch.Tensor,

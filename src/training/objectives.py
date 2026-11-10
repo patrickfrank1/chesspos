@@ -20,6 +20,7 @@ from src.training.contrastive import build_contrastive_masks, supcon_loss
 
 _WEIGHT_NAMES = (
     "mlm_weight",
+    "visible_identity_weight",
     "inv_weight",
     "var_weight",
     "cov_weight",
@@ -46,6 +47,7 @@ class AuxiliaryLossConfig:
     """
 
     mlm_weight: float = 1.0
+    visible_identity_weight: float = 0.0
     inv_weight: float = 0.5
     var_weight: float = 1.0
     cov_weight: float = 0.1
@@ -95,6 +97,7 @@ class AuxiliaryLossConfig:
         return any(
             weight > 0
             for weight in (
+                self.visible_identity_weight,
                 self.inv_weight,
                 self.var_weight,
                 self.cov_weight,
@@ -162,6 +165,31 @@ def alignment_loss(anchors: torch.Tensor, positives: torch.Tensor) -> torch.Tens
         anchors.float(), positives.float(), dim=-1, eps=1e-8
     )
     return (1.0 - similarity).mean()
+
+
+def visible_content_identity_loss(
+    hidden: torch.Tensor,
+    tokens: torch.Tensor,
+    targets: torch.Tensor,
+    padding_mask: torch.Tensor,
+    head: torch.nn.Module,
+) -> torch.Tensor:
+    """Predict each visible content token from its own isolated hidden state.
+
+    Masked positions, state tokens, CLS/SEP, and padding are ignored. This is
+    the per-token supervision missing from the pooled retrieval path in the
+    practical alternative.
+    """
+    visible = (
+        padding_mask.bool()
+        & (tokens >= EMPTY)
+        & (tokens < TURN_WHITE)
+        & targets.eq(IGNORE_INDEX)
+    )
+    if not visible.any():
+        return hidden.new_zeros(())
+    logits = head(hidden[visible])
+    return F.cross_entropy(logits, tokens[visible])
 
 
 def info_nce_loss(
@@ -516,6 +544,7 @@ def compute_training_loss(
     generator: torch.Generator | None = None,
     encode_views_fn=None,
     encode_views_alone_fn=None,
+    content_hidden_fn=None,
 ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
     """Run the model and return the weighted total loss plus components."""
     tokens = batch["tokens"]
@@ -533,6 +562,23 @@ def compute_training_loss(
         return mlm_loss, {"mlm": mlm_loss.detach()}
 
     encoder = unwrap_model(model)
+    scale = config.auxiliary_scale(step)
+    visible_identity = None
+    content_hidden = None
+    if config.visible_identity_weight > 0:
+        if content_hidden_fn is not None:
+            content_hidden = content_hidden_fn(tokens, segment_ids, padding_mask)
+        else:
+            content_hidden = encoder.content_hidden_states(
+                tokens, segment_ids, padding_mask
+            )
+        visible_identity = visible_content_identity_loss(
+            content_hidden,
+            tokens,
+            batch["targets"],
+            padding_mask,
+            encoder.head,
+        )
     encode_views = encode_views_fn or encoder.encode_views
     if encode_views_alone_fn is not None:
         encode_views_alone = encode_views_alone_fn
@@ -540,10 +586,18 @@ def compute_training_loss(
         encode_views_alone = getattr(encoder, "encode_views_alone", encode_views)
     if config.content_pooling or config.use_supcon:
         views = output.get("views")
-        if views is not None:
+        if content_hidden is not None:
+            pooled, segment_mask = encoder.pool_content(
+                content_hidden, tokens, segment_ids, padding_mask
+            )
+        elif views is not None:
             pooled, _, segment_mask = views
         else:
             pooled, _, segment_mask = encode_views(tokens, segment_ids, padding_mask)
+    elif content_hidden is not None:
+        pooled, segment_mask = encoder.pool_hidden(
+            content_hidden, tokens, segment_ids, padding_mask
+        )
     else:
         pooled, segment_mask = encoder.pool_hidden(
             output["hidden_states"], tokens, segment_ids, padding_mask
@@ -622,7 +676,14 @@ def compute_training_loss(
             visible_tokens, segment_ids, padding_mask, targets_per_row
         )
         if alone_tokens.shape[0] == 0:
-            return config.mlm_weight * mlm_loss, {"mlm": mlm_loss.detach()}
+            total = config.mlm_weight * mlm_loss
+            components = {"mlm": mlm_loss.detach()}
+            if visible_identity is not None:
+                total = (
+                    total + config.visible_identity_weight * scale * visible_identity
+                )
+                components["visible_identity"] = visible_identity.detach()
+            return total, components
         use_content_views = (
             config.content_pooling or config.use_supcon or config.heads_enabled()
         )
@@ -649,7 +710,9 @@ def compute_training_loss(
         config,
         step=step,
     )
-    scale = config.auxiliary_scale(step)
+    if visible_identity is not None:
+        components["visible_identity"] = visible_identity
+        total = total + config.visible_identity_weight * scale * visible_identity
 
     if config.use_supcon and config.nce_weight > 0:
         if alone_targets is None or alone_tokens is None:
