@@ -64,7 +64,7 @@ class TestResolveConfig:
             assert config.d_ff == 2048
             assert config.dropout == 0.1
             assert config.max_seq_len == 2048
-            assert config.max_segments == 128
+            assert config.max_segments == 30
             assert config.content_pooling is True
             assert config.p_rect == 0.8
             assert config.p_random == 0.0

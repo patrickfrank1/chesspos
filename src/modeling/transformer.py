@@ -16,6 +16,7 @@ from src.dataset.token_stream import (
     SEP,
     TURN_WHITE,
     VOCAB_SIZE,
+    resolve_max_segments,
 )
 from src.modeling.masking import IGNORE_INDEX
 from src.modeling.varlen import (
@@ -86,10 +87,14 @@ class TransformerConfig:
     d_ff: int = 2048
     dropout: float = 0.1
     max_seq_len: int = 2048
-    max_segments: int = 128
+    max_segments: int | None = None
     content_pooling: bool = True
     aux_heads: bool = False
     phase_classes: int = 3
+
+    def __post_init__(self) -> None:
+        self.max_segments = resolve_max_segments(self.max_seq_len, self.max_segments)
+        return
 
 
 class TransformerBlock(nn.Module):

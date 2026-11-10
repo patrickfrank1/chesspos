@@ -14,7 +14,13 @@ import pyarrow.parquet as pq
 import torch
 from torch.utils.data import Dataset, IterableDataset
 
-from src.dataset.token_stream import CLS, PAD, SEP, VOCAB_SIZE
+from src.dataset.token_stream import (
+    CLS,
+    PAD,
+    SEP,
+    VOCAB_SIZE,
+    resolve_max_segments,
+)
 from src.modeling.masking import IGNORE_INDEX, MaskingConfig, mask_stream
 
 
@@ -23,7 +29,7 @@ class WindowDatasetConfig:
     data_dir: str = ""
     games: list[list[np.ndarray]] | None = None
     max_seq_len: int = 2048
-    max_segments: int = 128
+    max_segments: int | None = None
     p_single: float = 0.15
     p_few: float = 0.25
     few_min: int = 2
@@ -44,6 +50,10 @@ class WindowDatasetConfig:
     remote_revision: str | None = None
     remote_cache_dir: str = "data/hf-shards"
     remote_delete: bool = True
+
+    def __post_init__(self) -> None:
+        self.max_segments = resolve_max_segments(self.max_seq_len, self.max_segments)
+        return
 
 
 def worker_skip_windows(

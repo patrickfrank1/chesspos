@@ -9,6 +9,7 @@ from pathlib import Path
 import torch
 from torch.utils.data import DataLoader
 
+from src.dataset.token_stream import resolve_max_segments
 from src.evaluation.eval_suite import full_eval
 from src.evaluation.retrieval import evaluate_retrieval, load_benchmark
 from src.modeling.factory import build_model, model_config_from_dict
@@ -139,7 +140,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--d-ff", type=int, default=2048)
     parser.add_argument("--dropout", type=float, default=0.1)
     parser.add_argument("--max-seq-len", type=int, default=2048)
-    parser.add_argument("--max-segments", type=int, default=128)
+    parser.add_argument(
+        "--max-segments",
+        type=int,
+        default=None,
+        help="Segment capacity; defaults to the maximum that fits in "
+        "--max-seq-len and is clamped to that bound",
+    )
     parser.add_argument("--n-content-latents", type=int, default=16)
     parser.add_argument("--n-state-latents", type=int, default=1)
     parser.add_argument("--n-local-latent-layers", type=int, default=2)
@@ -491,6 +498,9 @@ def resolve_data_dirs(args: argparse.Namespace, log=None) -> tuple[Path, Path]:
 def main() -> None:
     args = parse_args()
     check_dependencies()
+    args.max_segments = resolve_max_segments(
+        args.max_seq_len, args.max_segments, clamp=True
+    )
     log = make_logger(args.log_file)
     torch.manual_seed(args.seed)
     if torch.cuda.is_available():

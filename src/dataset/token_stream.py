@@ -183,3 +183,36 @@ def pack_stream(segments: list[np.ndarray], add_cls: bool = True) -> np.ndarray:
         tokens.extend(int(token) for token in segment)
         tokens.append(SEP)
     return np.array(tokens, dtype=np.int16)
+
+
+def resolve_max_segments(
+    max_seq_len: int,
+    max_segments: int | None = None,
+    segment_len: int = SEGMENT_LEN,
+    *,
+    clamp: bool = False,
+) -> int:
+    """Resolve a segment capacity for a packed token stream.
+
+    Packing is ``CLS + (segment + SEP) * N``, so the number of fixed-length
+    segments that fit in ``max_seq_len`` is
+    ``(max_seq_len - 1) // (segment_len + 1)``. With ``max_segments=None`` the
+    full capacity is returned. An explicit value is returned unchanged unless
+    ``clamp`` is set, in which case it is capped at the capacity.
+    """
+    if max_seq_len <= 1:
+        raise ValueError("max_seq_len must be greater than 1")
+    if segment_len <= 0:
+        raise ValueError("segment_len must be positive")
+    capacity = (max_seq_len - 1) // (segment_len + 1)
+    if max_segments is None:
+        if capacity <= 0:
+            raise ValueError("max_seq_len is too small to fit a single segment")
+        return capacity
+    if max_segments <= 0:
+        raise ValueError("max_segments must be positive")
+    if not clamp:
+        return max_segments
+    if capacity <= 0:
+        raise ValueError("max_seq_len is too small to fit a single segment")
+    return min(max_segments, capacity)

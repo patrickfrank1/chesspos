@@ -17,6 +17,7 @@ from src.dataset.token_stream import (
     VOCAB_SIZE,
     TokenStreamEncoder,
     pack_stream,
+    resolve_max_segments,
 )
 from src.modeling.factory import build_model, model_config_from_dict
 from src.modeling.masking import MaskingConfig, mask_stream
@@ -270,6 +271,26 @@ class TestPerceiverLoss:
 
 
 class TestPerceiverIntegration:
+    def test_max_segments_are_derived_from_seq_len(self):
+        with given("a 2048-token sequence budget"):
+            expected = (2048 - 1) // (67 + 1)
+
+        with when("the segment capacity is resolved"):
+            resolved = resolve_max_segments(2048)
+            config = PerceiverIOConfig(
+                d_model=16,
+                n_heads=2,
+                n_layers=1,
+                d_ff=32,
+                max_seq_len=2048,
+            )
+
+        with then("both use the true segment capacity and not an over-allocation"):
+            assert expected == 30
+            assert resolved == expected
+            assert config.max_segments == expected
+        return
+
     def test_config_validation(self):
         with given("invalid Perceiver configurations"):
             invalid = (

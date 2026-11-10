@@ -26,6 +26,7 @@ from ray.train import Checkpoint, CheckpointConfig, RunConfig, ScalingConfig
 from ray.train.torch import TorchTrainer
 from torch.utils.data import DataLoader
 
+from src.dataset.token_stream import resolve_max_segments
 from src.evaluation.eval_suite import full_eval
 from src.evaluation.retrieval import evaluate_retrieval, load_benchmark
 from src.modeling.factory import build_model
@@ -91,7 +92,7 @@ class RayTrainingConfig:
     d_ff: int = 2048
     dropout: float = 0.1
     max_seq_len: int = 2048
-    max_segments: int = 128
+    max_segments: int | None = None
     model_arch: str = "transformer"
     n_content_latents: int = 16
     n_state_latents: int = 1
@@ -145,6 +146,10 @@ class RayTrainingConfig:
     use_gpu: bool = False
     storage_path: str | None = None
     checkpoints_to_keep: int = 1
+
+    def __post_init__(self) -> None:
+        self.max_segments = resolve_max_segments(self.max_seq_len, self.max_segments)
+        return
 
     @classmethod
     def from_dict(cls, values: dict) -> RayTrainingConfig:
