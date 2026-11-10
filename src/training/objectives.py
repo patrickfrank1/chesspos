@@ -534,9 +534,16 @@ def compute_training_loss(
 
     encoder = unwrap_model(model)
     encode_views = encode_views_fn or encoder.encode_views
-    encode_views_alone = encode_views_alone_fn or encode_views
+    if encode_views_alone_fn is not None:
+        encode_views_alone = encode_views_alone_fn
+    else:
+        encode_views_alone = getattr(encoder, "encode_views_alone", encode_views)
     if config.content_pooling or config.use_supcon:
-        pooled, _, segment_mask = encode_views(tokens, segment_ids, padding_mask)
+        views = output.get("views")
+        if views is not None:
+            pooled, _, segment_mask = views
+        else:
+            pooled, _, segment_mask = encode_views(tokens, segment_ids, padding_mask)
     else:
         pooled, segment_mask = encoder.pool_hidden(
             output["hidden_states"], tokens, segment_ids, padding_mask

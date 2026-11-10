@@ -61,6 +61,7 @@ class LatentBottleneck(nn.Module):
             for _ in range(config.n_cross_segment_layers)
         )
         self.segment_embedding = nn.Embedding(config.max_segments, config.d_model)
+        nn.init.normal_(self.segment_embedding.weight, mean=0.0, std=0.02)
         return
 
     def _local(
@@ -141,3 +142,20 @@ class LatentReadout(nn.Module):
         query = self.query[None, None, :, :].expand(batch, n_segments, 1, d_model)
         pooled = self.cross(query, latents, segment_valid)
         return pooled[:, :, 0, :] * segment_valid.unsqueeze(-1)
+
+
+class SlotAttentionPool(nn.Module):
+    """Learned attention pooling over decoded content or state slots."""
+
+    def __init__(self, d_model: int) -> None:
+        super().__init__()
+        self.query = _init_latents(1, d_model)
+        return
+
+    def forward(self, slots: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+        scores = (slots * self.query[None, None, :, :]).sum(dim=-1)
+        scores = scores / (slots.shape[-1] ** 0.5)
+        scores = scores.masked_fill(~mask, -1e4)
+        weights = torch.softmax(scores, dim=-1)
+        weights = weights * mask.any(dim=-1, keepdim=True).to(weights.dtype)
+        return (weights.unsqueeze(-1) * slots).sum(dim=-2)

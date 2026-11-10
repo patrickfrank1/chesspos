@@ -570,7 +570,9 @@ def main() -> None:
         if args.compile
         else raw_model.encode_views
     )
-    encode_views_alone_fn = raw_model.encode_views
+    encode_views_alone_fn = getattr(
+        raw_model, "encode_views_alone", raw_model.encode_views
+    )
     n_params = sum(p.numel() for p in model.parameters())
     log(
         f"device={device} params={n_params / 1e6:.2f}M bf16={bf16} compile={args.compile}"

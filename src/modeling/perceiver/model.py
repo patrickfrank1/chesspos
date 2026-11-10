@@ -7,12 +7,12 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-from src.dataset.token_stream import PAD
+from src.dataset.token_stream import EMPTY, N_SLOTS, PAD, TURN_WHITE, VOCAB_SIZE
 from src.modeling.encoder.token_encoder import SegmentTokenEncoder
 from src.modeling.masking import IGNORE_INDEX
 from src.modeling.perceiver.config import PerceiverIOConfig
 from src.modeling.perceiver.decoder import PerceiverDecoder
-from src.modeling.perceiver.latent import LatentBottleneck, LatentReadout
+from src.modeling.perceiver.latent import LatentBottleneck, SlotAttentionPool
 from src.modeling.shared.masks import (
     build_segment_tables,
     scatter_to_segment_table,
@@ -41,12 +41,8 @@ class PerceiverIOModel(nn.Module):
         self.encoder = SegmentTokenEncoder(config)
         self.bottleneck = LatentBottleneck(config)
         self.decoder = PerceiverDecoder(config, self.encoder.slot_embedding)
-        self.content_readout = LatentReadout(
-            config.d_model, config.n_heads, config.dropout
-        )
-        self.state_readout = LatentReadout(
-            config.d_model, config.n_heads, config.dropout
-        )
+        self.content_readout = SlotAttentionPool(config.d_model)
+        self.state_readout = SlotAttentionPool(config.d_model)
         self.head = nn.Linear(config.d_model, config.vocab_size)
         self.aux_heads = (
             AuxiliaryHeads(config.d_model, config.phase_classes)
@@ -59,11 +55,19 @@ class PerceiverIOModel(nn.Module):
     def model_config(self) -> PerceiverIOConfig:
         return self.config
 
+    def _segment_capacity(self, segment_capacity: int | None) -> int:
+        if segment_capacity is None:
+            return self.config.max_segments
+        if segment_capacity <= 0:
+            raise ValueError("segment_capacity must be positive")
+        return min(segment_capacity, self.config.max_segments)
+
     def _encode(
         self,
         tokens: torch.Tensor,
         segment_ids: torch.Tensor,
         padding_mask: torch.Tensor | None,
+        segment_capacity: int | None = None,
     ) -> tuple[
         torch.Tensor,
         torch.Tensor,
@@ -75,16 +79,15 @@ class PerceiverIOModel(nn.Module):
     ]:
         if padding_mask is None:
             padding_mask = tokens.ne(PAD)
+        capacity = self._segment_capacity(segment_capacity)
         (
             token_table,
             token_valid,
             segment_valid,
             flat_index,
             board_valid,
-        ) = build_segment_tables(
-            tokens, segment_ids, padding_mask, self.config.max_segments
-        )
-        segment_positions = torch.arange(self.config.max_segments, device=tokens.device)
+        ) = build_segment_tables(tokens, segment_ids, padding_mask, capacity)
+        segment_positions = torch.arange(capacity, device=tokens.device)
         segment_grid = segment_positions[None, :].expand(tokens.shape[0], -1)
         encoded = self.encoder(token_table, token_valid, segment_grid)
         content_latents, state_latents = self.bottleneck(
@@ -100,12 +103,27 @@ class PerceiverIOModel(nn.Module):
             board_valid,
         )
 
-    def _content(
-        self, content_latents: torch.Tensor, segment_valid: torch.Tensor
-    ) -> torch.Tensor:
-        if self.config.content_readout == "first_latent":
-            return content_latents[:, :, 0, :] * segment_valid.unsqueeze(-1)
-        return self.content_readout(content_latents, segment_valid)
+    def _views_from_decoded(
+        self,
+        decoded_table: torch.Tensor,
+        token_table: torch.Tensor,
+        token_valid: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        content_tokens = token_table[:, :, :N_SLOTS]
+        state_tokens = token_table[:, :, N_SLOTS:]
+        content_mask = (
+            token_valid[:, :, :N_SLOTS]
+            & (content_tokens >= EMPTY)
+            & (content_tokens < TURN_WHITE)
+        )
+        state_mask = (
+            token_valid[:, :, N_SLOTS:]
+            & (state_tokens >= TURN_WHITE)
+            & (state_tokens < VOCAB_SIZE)
+        )
+        content = self.content_readout(decoded_table[:, :, :N_SLOTS], content_mask)
+        state = self.state_readout(decoded_table[:, :, N_SLOTS:], state_mask)
+        return content, state, content_mask.any(dim=-1)
 
     def _decode_table(
         self,
@@ -133,7 +151,9 @@ class PerceiverIOModel(nn.Module):
         padding_mask: torch.Tensor | None = None,
         targets: torch.Tensor | None = None,
         weights: torch.Tensor | None = None,
-    ) -> dict[str, torch.Tensor]:
+        segment_capacity: int | None = None,
+    ) -> dict[str, object]:
+        capacity = self._segment_capacity(segment_capacity)
         (
             content_latents,
             state_latents,
@@ -142,22 +162,27 @@ class PerceiverIOModel(nn.Module):
             segment_valid,
             flat_index,
             board_valid,
-        ) = self._encode(tokens, segment_ids, padding_mask)
+        ) = self._encode(tokens, segment_ids, padding_mask, segment_capacity=capacity)
         decoded_table = self._decode_table(
             content_latents, state_latents, token_valid, segment_valid
         )
         hidden = self._gather_hidden(decoded_table, flat_index, board_valid)
+        views = self._views_from_decoded(decoded_table, token_table, token_valid)
         if targets is None:
-            return {"logits": self.head(hidden), "hidden_states": hidden}
+            return {
+                "logits": self.head(hidden),
+                "hidden_states": hidden,
+                "views": views,
+            }
 
         loss = masked_loss(hidden, targets, self.head, weights)
-        output = {"loss": loss, "hidden_states": hidden}
+        output = {"loss": loss, "hidden_states": hidden, "views": views}
         if self.config.decoder_reconstruction_weight > 0:
             restored = tokens.clone()
             supervised = targets.ne(IGNORE_INDEX)
             restored[supervised] = targets[supervised]
             restored_table = scatter_to_segment_table(
-                restored, flat_index, board_valid, self.config.max_segments
+                restored, flat_index, board_valid, capacity
             )
             recon_logits = self.head(decoded_table[token_valid])
             recon_targets = restored_table[token_valid]
@@ -172,35 +197,62 @@ class PerceiverIOModel(nn.Module):
         tokens: torch.Tensor,
         segment_ids: torch.Tensor,
         padding_mask: torch.Tensor | None = None,
+        segment_capacity: int | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         (
             content_latents,
             state_latents,
-            _,
-            _,
+            token_table,
+            token_valid,
             segment_valid,
             _,
             _,
-        ) = self._encode(tokens, segment_ids, padding_mask)
-        content = self._content(content_latents, segment_valid)
-        state = self.state_readout(state_latents, segment_valid)
-        return content, state, segment_valid
+        ) = self._encode(
+            tokens, segment_ids, padding_mask, segment_capacity=segment_capacity
+        )
+        decoded_table = self._decode_table(
+            content_latents, state_latents, token_valid, segment_valid
+        )
+        return self._views_from_decoded(decoded_table, token_table, token_valid)
 
     def encode_views(
         self,
         tokens: torch.Tensor,
         segment_ids: torch.Tensor,
         padding_mask: torch.Tensor | None = None,
+        *,
+        segment_capacity: int | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        return self._read_views(tokens, segment_ids, padding_mask)
+        return self._read_views(
+            tokens,
+            segment_ids,
+            padding_mask,
+            segment_capacity=segment_capacity,
+        )
+
+    def encode_views_alone(
+        self,
+        tokens: torch.Tensor,
+        segment_ids: torch.Tensor,
+        padding_mask: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Encode single-segment views without allocating empty segment slots."""
+        return self._read_views(tokens, segment_ids, padding_mask, segment_capacity=1)
 
     def encode_content(
         self,
         tokens: torch.Tensor,
         segment_ids: torch.Tensor,
         padding_mask: torch.Tensor | None = None,
+        *,
+        segment_capacity: int | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        content, _, segment_mask = self._read_views(tokens, segment_ids, padding_mask)
+        content, _, segment_mask = self._read_views(
+            tokens,
+            segment_ids,
+            padding_mask,
+            segment_capacity=segment_capacity,
+        )
         return content, segment_mask
 
     def encode_state(
@@ -208,8 +260,15 @@ class PerceiverIOModel(nn.Module):
         tokens: torch.Tensor,
         segment_ids: torch.Tensor,
         padding_mask: torch.Tensor | None = None,
+        *,
+        segment_capacity: int | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        _, state, segment_mask = self._read_views(tokens, segment_ids, padding_mask)
+        _, state, segment_mask = self._read_views(
+            tokens,
+            segment_ids,
+            padding_mask,
+            segment_capacity=segment_capacity,
+        )
         return state, segment_mask
 
     def encode(
@@ -217,8 +276,15 @@ class PerceiverIOModel(nn.Module):
         tokens: torch.Tensor,
         segment_ids: torch.Tensor,
         padding_mask: torch.Tensor | None = None,
+        *,
+        segment_capacity: int | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        return self.encode_content(tokens, segment_ids, padding_mask)
+        return self.encode_content(
+            tokens,
+            segment_ids,
+            padding_mask,
+            segment_capacity=segment_capacity,
+        )
 
     @torch.no_grad()
     def embed(
@@ -226,8 +292,15 @@ class PerceiverIOModel(nn.Module):
         tokens: torch.Tensor,
         segment_ids: torch.Tensor,
         padding_mask: torch.Tensor | None = None,
+        *,
+        segment_capacity: int | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        return self.encode_content(tokens, segment_ids, padding_mask)
+        return self.encode_content(
+            tokens,
+            segment_ids,
+            padding_mask,
+            segment_capacity=segment_capacity,
+        )
 
     def content_segment_mask(
         self,
