@@ -130,6 +130,27 @@ class TestStreamingFlag:
             assert config.resume_step == 0
         return
 
+    def test_streaming_train_config_can_disable_resume_skip(self, monkeypatch):
+        with given("streaming args with resume data skipping disabled"):
+            monkeypatch.setattr(
+                "sys.argv",
+                [
+                    "train_masked_transformer",
+                    "--streaming",
+                    "--no-resume-data-skip",
+                ],
+            )
+            args = parse_args()
+
+        with when("the streaming train config is built for a resumed run"):
+            config = streaming_train_config(
+                args, data_dir="data/train", start_step=5000
+            )
+
+        with then("the data stream starts from the beginning"):
+            assert config.resume_step == 0
+        return
+
     def test_masking_probability_flags_exist_with_defaults(self, monkeypatch):
         with given("no masking flags"):
             monkeypatch.setattr("sys.argv", ["train_masked_transformer"])

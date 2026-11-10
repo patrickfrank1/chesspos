@@ -149,6 +149,59 @@ def lr_lambda(step: int, warmup: int, total: int):
     return 0.5 * (1.0 + math.cos(math.pi * min(progress, 1.0)))
 
 
+def scheduler_start_epoch(start_step: int, has_scheduler_state: bool) -> int:
+    """Return the LambdaLR ``last_epoch`` argument for a resumed run.
+
+    LambdaLR increments ``last_epoch`` once during construction, so a resume
+    without scheduler state must start one step early to evaluate the schedule
+    at ``start_step``.
+    """
+    if start_step > 0 and not has_scheduler_state:
+        return start_step - 1
+    return -1
+
+
+class NceCollapseGuard:
+    """Detect a sustained NCE increase after NCE has been healthy.
+
+    The guard only arms once NCE falls below ``arm_below``. Early training has
+    high NCE by construction, so this prevents false trips during warmup.
+    """
+
+    def __init__(
+        self,
+        *,
+        threshold: float,
+        patience: int = 2,
+        arm_below: float = 1.0,
+    ) -> None:
+        if patience < 1:
+            raise ValueError("patience must be at least 1")
+        if arm_below >= threshold:
+            raise ValueError("arm_below must be less than threshold")
+        self.threshold = threshold
+        self.patience = patience
+        self.arm_below = arm_below
+        self.armed = False
+        self.bad_intervals = 0
+        self.tripped = False
+
+    def update(self, nce_loss: float) -> bool:
+        if self.tripped:
+            return True
+        if not self.armed:
+            if nce_loss < self.arm_below:
+                self.armed = True
+            return False
+        if nce_loss > self.threshold:
+            self.bad_intervals += 1
+        else:
+            self.bad_intervals = 0
+        if self.bad_intervals >= self.patience:
+            self.tripped = True
+        return self.tripped
+
+
 class PeriodicCheckpointPlan(NamedTuple):
     """Which periodic checkpoint/evaluation hooks run at a training step."""
 

@@ -25,6 +25,7 @@ from src.training.checkpoint_hub import (
 )
 from src.training.hf_data import download_split
 from src.training.loop import (
+    NceCollapseGuard,
     apply_compile,
     evaluate,
     format_system_snapshot,
@@ -33,6 +34,7 @@ from src.training.loop import (
     make_logger,
     periodic_checkpoint_plan,
     save_checkpoint,
+    scheduler_start_epoch,
     system_snapshot,
     token_effective_rank,
     use_fused_adamw,
@@ -122,12 +124,37 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--checkpoint-dir", default="data/models")
     parser.add_argument("--resume", default=None)
+    parser.add_argument(
+        "--no-resume-data-skip",
+        action="store_true",
+        help="On resume, start the data stream from the beginning instead of "
+        "fast-forwarding it to the checkpoint step; useful when fast-forwarding "
+        "would be expensive",
+    )
     parser.add_argument("--steps", type=int, default=10_000)
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--lr", type=float, default=3e-4)
     parser.add_argument("--weight-decay", type=float, default=0.01)
     parser.add_argument("--warmup", type=int, default=500)
     parser.add_argument("--grad-clip", type=float, default=1.0)
+    parser.add_argument(
+        "--nce-guard-threshold",
+        type=float,
+        default=0.0,
+        help="Stop when NCE exceeds this after a healthy period; 0 disables",
+    )
+    parser.add_argument(
+        "--nce-guard-patience",
+        type=int,
+        default=2,
+        help="Consecutive logged intervals above the NCE threshold before stopping",
+    )
+    parser.add_argument(
+        "--nce-guard-arm-below",
+        type=float,
+        default=1.0,
+        help="NCE must fall below this value before the collapse guard arms",
+    )
     parser.add_argument(
         "--model-arch",
         choices=("transformer", "perceiver_io"),
@@ -437,6 +464,8 @@ def streaming_train_config(
     With ``start_step > 0`` each DataLoader worker fast-forwards its
     deterministic stream to the position the checkpoint left off, so a
     resumed run continues on fresh data instead of replaying from the start.
+    ``--no-resume-data-skip`` disables the fast-forward and replays from the
+    start.
 
     In lazy shard mode (``--stream-shards``) the train shards are listed from
     the Hub and fetched/deleted one at a time instead of being downloaded up
@@ -451,7 +480,7 @@ def streaming_train_config(
         seed=args.seed,
         shuffle_buffer=args.shuffle_buffer,
         prefetch_shards=args.prefetch_shards,
-        resume_step=start_step,
+        resume_step=0 if args.no_resume_data_skip else start_step,
         batch_size=args.batch_size,
         num_workers=args.num_workers,
         remote_repo=args.data_repo if lazy else None,
@@ -525,7 +554,9 @@ def main() -> None:
         checkpoint = torch.load(args.resume, map_location="cpu", weights_only=False)
         model_config = model_config_from_dict(checkpoint["model_config"])
         start_step = checkpoint["step"]
-        best_val_loss = checkpoint.get("best_val_loss", float("inf"))
+        best_val_loss = checkpoint.get(
+            "best_val_loss", checkpoint.get("val_loss", float("inf"))
+        )
         log(
             f"resuming from {args.resume} step={start_step} "
             f"best_val_loss={best_val_loss:.4f}"
@@ -748,17 +779,25 @@ def main() -> None:
         weight_decay=args.weight_decay,
         fused=use_fused_adamw(device),
     )
+    has_scheduler_state = bool(args.resume and "scheduler_state" in checkpoint)
+    for group in optimizer.param_groups:
+        group.setdefault("initial_lr", args.lr)
     scheduler = torch.optim.lr_scheduler.LambdaLR(
         optimizer,
         lambda step: lr_lambda(step, args.warmup, args.steps),
+        last_epoch=scheduler_start_epoch(start_step, has_scheduler_state),
     )
 
     if args.resume:
         raw_model.load_state_dict(checkpoint["model_state"])
         if "optimizer_state" in checkpoint:
             optimizer.load_state_dict(checkpoint["optimizer_state"])
-        if "scheduler_state" in checkpoint:
+        if has_scheduler_state:
             scheduler.load_state_dict(checkpoint["scheduler_state"])
+        log(
+            f"lr schedule: peak={args.lr:.2e} total_steps={args.steps} "
+            f"start_step={start_step}"
+        )
 
     checkpoint_dir = Path(args.checkpoint_dir)
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
@@ -816,6 +855,18 @@ def main() -> None:
     )
     if loss_config.nce_weight == 0:
         log("InfoNCE disabled (nce_weight=0)")
+    nce_guard = None
+    if args.nce_guard_threshold > 0:
+        nce_guard = NceCollapseGuard(
+            threshold=args.nce_guard_threshold,
+            patience=args.nce_guard_patience,
+            arm_below=args.nce_guard_arm_below,
+        )
+        log(
+            f"NCE collapse guard enabled: threshold={args.nce_guard_threshold} "
+            f"patience={args.nce_guard_patience} "
+            f"arm_below={args.nce_guard_arm_below}"
+        )
 
     for step in range(start_step + 1, args.steps + 1):
         try:
@@ -874,6 +925,43 @@ def main() -> None:
                 },
                 step=step,
             )
+            if nce_guard is not None and "nce_loss" in component_means:
+                nce_value = component_means["nce_loss"]
+                if nce_guard.update(nce_value):
+                    log(
+                        f"step={step} NCE collapse guard tripped: "
+                        f"nce_loss={nce_value:.4f} "
+                        f"threshold={args.nce_guard_threshold} "
+                        f"patience={args.nce_guard_patience}; stopping"
+                    )
+                    sentinel = checkpoint_dir / "NCE_COLLAPSE"
+                    sentinel.write_text(
+                        json.dumps(
+                            {
+                                "step": step,
+                                "nce_loss": nce_value,
+                                "threshold": args.nce_guard_threshold,
+                                "patience": args.nce_guard_patience,
+                            }
+                        )
+                        + "\n",
+                        encoding="utf-8",
+                    )
+                    emergency = checkpoint_dir / "nce_guard.pt"
+                    save_checkpoint(
+                        emergency,
+                        raw_model,
+                        model_config,
+                        step,
+                        {
+                            "optimizer_state": optimizer.state_dict(),
+                            "scheduler_state": scheduler.state_dict(),
+                            "best_val_loss": best_val_loss,
+                        },
+                    )
+                    log(f"saved NCE guard checkpoint to {emergency}")
+                    tracker.end()
+                    return
             running_loss = 0.0
             running_count = 0
             running_components = {}

@@ -1,14 +1,18 @@
 import pytest
 import torch
 from torch import nn
+from torch.optim.lr_scheduler import LambdaLR
 
 from bdd import given, then, when
 from src.modeling.masking import IGNORE_INDEX
 from src.training.loop import (
+    NceCollapseGuard,
     apply_compile,
     effective_rank_from_hidden,
     evaluate,
+    lr_lambda,
     periodic_checkpoint_plan,
+    scheduler_start_epoch,
     use_fused_adamw,
 )
 
@@ -96,6 +100,105 @@ class TestApplyCompile:
         with then("torch.compile wraps the model with dynamic shapes enabled"):
             assert result == ("compiled", model)
             assert calls.get("dynamic") is True
+        return
+
+
+class TestNceCollapseGuard:
+    def test_high_initial_nce_does_not_trip_before_arming(self):
+        with given("a guard that requires NCE to be healthy before it arms"):
+            guard = NceCollapseGuard(threshold=1.5, patience=2, arm_below=1.0)
+
+        with when("NCE is above threshold from initialization"):
+            tripped = [guard.update(6.0) for _ in range(5)]
+
+        with then("the guard never trips"):
+            assert not any(tripped)
+        return
+
+    def test_sustained_nce_above_threshold_trips_after_patience(self):
+        with given("an armed guard with patience two"):
+            guard = NceCollapseGuard(threshold=1.5, patience=2, arm_below=1.0)
+            guard.update(0.8)
+
+        with when("NCE stays above threshold for two logged intervals"):
+            first = guard.update(1.6)
+            second = guard.update(1.6)
+
+        with then("only the second interval trips the guard"):
+            assert first is False
+            assert second is True
+        return
+
+    def test_healthy_interval_resets_patience(self):
+        with given("an armed guard that has seen one high-NCE interval"):
+            guard = NceCollapseGuard(threshold=1.5, patience=2, arm_below=1.0)
+            guard.update(0.8)
+            guard.update(1.6)
+
+        with when("a healthy interval is followed by another high interval"):
+            guard.update(0.9)
+            tripped = guard.update(1.6)
+
+        with then("the high interval count restarted"):
+            assert tripped is False
+        return
+
+
+class TestSchedulerStartEpoch:
+    def test_resume_without_scheduler_state_starts_at_checkpoint_step(self):
+        with given("a resume from step twenty thousand with no scheduler state"):
+            start_step = 20_000
+            has_scheduler_state = False
+
+        with when("the LambdaLR start epoch is computed"):
+            last_epoch = scheduler_start_epoch(start_step, has_scheduler_state)
+
+        with then("the scheduler is initialized one step before the checkpoint"):
+            assert last_epoch == 19_999
+        return
+
+    def test_resume_with_scheduler_state_uses_default(self):
+        with given("a resume with saved scheduler state"):
+            start_step = 20_000
+            has_scheduler_state = True
+
+        with when("the LambdaLR start epoch is computed"):
+            last_epoch = scheduler_start_epoch(start_step, has_scheduler_state)
+
+        with then("the saved scheduler state is allowed to take over"):
+            assert last_epoch == -1
+        return
+
+    def test_fresh_run_uses_default(self):
+        with given("a fresh run at step zero"):
+            start_step = 0
+            has_scheduler_state = False
+
+        with when("the LambdaLR start epoch is computed"):
+            last_epoch = scheduler_start_epoch(start_step, has_scheduler_state)
+
+        with then("the scheduler starts normally"):
+            assert last_epoch == -1
+        return
+
+    def test_scheduler_resumes_at_checkpoint_learning_rate(self):
+        with given("an optimizer resuming at step twenty thousand"):
+            parameter = nn.Parameter(torch.zeros(1))
+            optimizer = torch.optim.AdamW([parameter], lr=2e-4)
+            for group in optimizer.param_groups:
+                group.setdefault("initial_lr", 2e-4)
+
+        with when("a two-hundred-thousand-step cosine scheduler is constructed"):
+            scheduler = LambdaLR(
+                optimizer,
+                lambda step: lr_lambda(step, 500, 200_000),
+                last_epoch=scheduler_start_epoch(20_000, False),
+            )
+            learning_rate = scheduler.get_last_lr()[0]
+
+        with then("the schedule continues near the peak instead of restarting warmup"):
+            assert scheduler.last_epoch == 20_000
+            assert 1.9e-4 < learning_rate < 2e-4
         return
 
 
