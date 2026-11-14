@@ -6,15 +6,18 @@ runbooks stay in `docs/`.
 ## Current status
 
 The Perceiver 6M line is **paused**, not because the forward pass is broken but
-because the content embedding does not learn material. The next useful work is
-content-preservation supervision, not simply more training steps. See
-[perceiver_6m_lr2e4_2026-11-10.md](perceiver_6m_lr2e4_2026-11-10.md).
+because the content embedding does not learn material. A visible-content identity
+loss is now implemented on the transformer path, but the recommended next step is
+a simpler single-tower contrastive baseline with validated hard negatives. See
+[text_embedding_survey_and_simplification_2026-11-10.md](text_embedding_survey_and_simplification_2026-11-10.md)
+for the full analysis and plan.
 
 ## Experiment reports
 
 | Date | Report | Topic | Outcome |
 |---|---|---|---|
 | 2026-11-10 | [Perceiver 6M: LR schedule collapse and validation drift](perceiver_6m_lr2e4_2026-11-10.md) | Segment-aware Perceiver IO, LR-schedule extension, NCE guard, resume data replay | First run exploded at ~33.4k; resume run stayed stable but val drifted and material R² stayed negative. Stopped at 41.5k. |
+| 2026-11-10 | [Text embedding survey and simplified chess embedding plan](text_embedding_survey_and_simplification_2026-11-10.md) | MTEB/embedding-model patterns, chesspos mapping, hard-negative validation | Recommends a single-tower contrastive baseline, validated hard negatives, large batches, and staged training. |
 | 2026-11-09 | [Perceiver content-embedding collapse](analysis_perceiver_content_collapse_2026-11-09.md) | Shared latent readout and large segment embedding | Root-caused a constant-direction collapse; fixed with small segment-embedding init and decoded-slot attention pooling. |
 | 2026-11-09 | [run_6m_isolated plateau](analysis_run_6m_isolated_plateau_2026-11-09.md) | Transformer baseline, content-isolated InfoNCE | Lost material in deeper layers because visible content positions lack identity supervision. |
 | 2026-10-25 | [Tiny objective sweep](experiment_objective_sweep_2026-10-25.md) | VICReg, invariance, InfoNCE, masking | Selected the current auxiliary objective mix. |
@@ -53,13 +56,17 @@ Relevant Perceiver 6M prefixes:
 4. **Material is missing from the pooled content vector.**
    - Per-token information can exist while the pooled retrieval embedding lacks
      a usable material axis.
-   - Add explicit content-preservation supervision before scaling steps further.
+   - This is a lossy-embedding property, not a requirement for full
+     reconstruction. Store FEN/metadata and use filters/heads for material-aware
+     tasks; add reconstruction only for generation/editing.
 
 ## Next experiment checklist
 
-- [ ] Add visible-content identity loss or a non-zero content reconstruction
-      weight.
-- [ ] Add a material auxiliary head on the content embedding.
+- [x] Add visible-content identity loss (implemented in `e0941d8`; not trained yet).
+- [ ] Build a one-board pair dataset with positives and candidate hard negatives.
+- [ ] Add a hard-negative validation/filtering layer.
+- [ ] Train a single-tower CLS-pooled contrastive baseline.
+- [ ] Add material auxiliary head on the pooled content embedding.
 - [ ] Run short 10k–20k comparisons with eval every 1k–2k.
 - [ ] Add a validation-loss / material-R² early-stop guard.
 - [ ] Implement fast resume-data skipping for streaming shards.
