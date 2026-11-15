@@ -218,6 +218,11 @@ and only run if the primary grid leaves the question open.
   split was never seen by either checkpoint.
 - Hyperparameter search is limited to a small LR/dropout grid on one seed for
   the primary recipe only; the rest use the fixed defaults.
+- **Training length: one epoch with a chance guard.** Validation metrics are
+  flat after the first epoch (20m: R² 0.0317 → 0.0317, AUC 0.5983 → 0.5985;
+  6m: R² 0.0063, AUC 0.5791 with a slight drift down), so later runs train one
+  epoch. `--abort-if-chance` stops any run whose AUC upper confidence bound
+  (Hanley–McNeil, 95% one-sided) does not clear 0.5.
 
 ### Compute
 

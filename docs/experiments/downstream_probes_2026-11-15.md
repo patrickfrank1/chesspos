@@ -51,8 +51,12 @@ That is why the full-trunk recipe (recipe A) is run as an alternative.
   sampled uniformly per epoch; validation and test score every position.
 - Head: mean pool → `Linear(d, 256) → GELU → Dropout(0) → Linear(256, 1) →
   tanh`, small final-layer init.
-- Loss: MSE. Optimizer: AdamW, LR 1e-3, weight decay 0.01, batch 256, 3
-  epochs, bf16 autocast with the flash-attn varlen kernel. Encoder frozen.
+- Loss: MSE. Optimizer: AdamW, LR 1e-3, weight decay 0.01, batch 256, bf16
+  autocast with the flash-attn varlen kernel. Encoder frozen.
+- Epochs: 3 for the first runs, then 1 once the validation curves showed epoch
+  2–3 add nothing (20m: R² 0.0317 → 0.0317, AUC 0.5983 → 0.5985; 6m: flat to
+  slightly worse). Runs can additionally stop themselves when the decisive AUC
+  is not significantly above 0.5 (`--abort-if-chance`, Hanley–McNeil error).
 - Metrics: MSE/MAE/R², decisive-game AUC, Pearson/Spearman, calibration bins.
 
 ### Sacrifice classification
