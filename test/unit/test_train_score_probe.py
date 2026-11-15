@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import asdict
 from pathlib import Path
 
@@ -24,6 +25,8 @@ from src.modeling.score_head import (
     ScoreHeadConfig,
 )
 from src.modeling.transformer import MaskedStreamTransformer, TransformerConfig
+from src.run.eval_score_probe import load_score_probe
+from src.run.eval_score_probe import main as eval_main
 from src.run.train_score_probe import (
     build_score_loader,
     evaluate,
@@ -102,9 +105,9 @@ def make_score_parquet(path: Path, n_games: int) -> None:
     return
 
 
-def make_model(feature: str = "native") -> FrozenEncoderScore:
+def make_model(feature: str = "native", state_features: int = 0) -> FrozenEncoderScore:
     encoder = MaskedStreamTransformer(tiny_config()).eval()
-    head = ScoreHead(ScoreHeadConfig(d_model=1))
+    head = ScoreHead(ScoreHeadConfig(d_model=1, state_features=state_features))
     return FrozenEncoderScore(encoder, head, feature=feature)
 
 
@@ -260,6 +263,8 @@ class TestCheckpoint:
                 feature="full",
                 unfreeze_last_block=False,
                 metrics={"mse": 0.25},
+                window=3,
+                include_state_features=True,
             )
 
         with then("the checkpoint holds both states and the recipe"):
@@ -267,6 +272,8 @@ class TestCheckpoint:
             assert checkpoint["feature"] == "full"
             assert checkpoint["epoch"] == 2
             assert checkpoint["metrics"] == {"mse": 0.25}
+            assert checkpoint["window"] == 3
+            assert checkpoint["include_state_features"] is True
             assert "encoder_config" in checkpoint
             assert "head_config" in checkpoint
             model.encoder.load_state_dict(checkpoint["encoder_state"])
@@ -313,4 +320,96 @@ class TestMain:
             assert (output_dir / "metrics.json").exists()
             assert (output_dir / "predictions.npz").exists()
             assert (output_dir / "best.pt").exists()
+        return
+
+
+class TestEvalScoreProbe:
+    def test_loads_encoder_head_and_recipe_from_a_probe_checkpoint(self, tmp_path):
+        with given("a saved probe checkpoint using the full recipe"):
+            model = make_model(feature="full", state_features=3)
+            path = tmp_path / "probe.pt"
+            save_checkpoint(
+                path,
+                model,
+                epoch=1,
+                feature="full",
+                unfreeze_last_block=False,
+                metrics={"mse": 0.2},
+                window=2,
+                include_state_features=True,
+            )
+
+        with when("the probe is loaded for evaluation"):
+            loaded = load_score_probe(path, torch.device("cpu"))
+
+        with then("the recipe and weights are restored"):
+            assert loaded.feature == "full"
+            assert loaded.unfreeze_last_block is False
+            assert loaded.head.config.state_features == 3
+            torch.testing.assert_close(
+                loaded.head.classifier.weight, model.head.classifier.weight
+            )
+        return
+
+    def test_writes_metrics_and_predictions_for_a_game_shard(self, tmp_path):
+        with given("a games shard and a probe checkpoint"):
+            pd = tmp_path
+            make_score_parquet(pd / "games.parquet", n_games=8)
+            model = make_model()
+            probe_path = pd / "probe.pt"
+            save_checkpoint(
+                probe_path,
+                model,
+                epoch=1,
+                feature="native",
+                unfreeze_last_block=False,
+                metrics={"mse": 0.2},
+                window=1,
+                include_state_features=False,
+            )
+            output_dir = pd / "eval"
+
+        with when("the evaluation CLI runs"):
+            exit_code = eval_main(
+                [
+                    "--checkpoint",
+                    str(probe_path),
+                    "--data-dir",
+                    str(pd),
+                    "--output-dir",
+                    str(output_dir),
+                    "--batch-size",
+                    "4",
+                    "--num-workers",
+                    "0",
+                    "--device",
+                    "cpu",
+                    "--amp",
+                    "none",
+                ]
+            )
+
+        with then("metrics and per-position predictions are written"):
+            assert exit_code == 0
+            metrics = json.loads((output_dir / "metrics.json").read_text())
+            assert {"mse", "r2", "n"} <= set(metrics["metrics"])
+            assert metrics["games"] == 8
+            predictions = np.load(output_dir / "predictions.npz")
+            assert predictions["predictions"].shape == predictions["targets"].shape
+            assert predictions["sources"].shape[0] == predictions["targets"].shape[0]
+        return
+
+    def test_rejects_a_missing_checkpoint(self, tmp_path):
+        with given("a path that does not exist"):
+            path = tmp_path / "missing.pt"
+
+        with when("the probe is loaded"):
+            error = None
+            try:
+                load_score_probe(path, torch.device("cpu"))
+            except FileNotFoundError as exc:
+                error = exc
+
+        with then("a FileNotFoundError is raised"):
+            assert isinstance(error, FileNotFoundError)
         return

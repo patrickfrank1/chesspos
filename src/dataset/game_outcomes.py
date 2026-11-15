@@ -50,6 +50,7 @@ class GameOutcome:
     result: str
     white_elo: int = 0
     black_elo: int = 0
+    source: str = ""
 
     def __post_init__(self) -> None:
         if not self.segments:
@@ -234,6 +235,7 @@ class ScoreDataset(Dataset):
             "target": np.float32(record.score),
             "ply": ply,
             "game_id": record.game_id,
+            "source": record.source,
             "material": material_balance(segments[-1]),
         }
         if self.include_state_features:
@@ -261,6 +263,7 @@ def collate_score_samples(batch: list[dict]) -> dict:
         ),
         "plies": torch.tensor([sample["ply"] for sample in batch], dtype=torch.long),
         "game_ids": [sample["game_id"] for sample in batch],
+        "sources": [sample.get("source", "") for sample in batch],
     }
     if "material" in batch[0]:
         collated["materials"] = torch.tensor(
@@ -274,6 +277,7 @@ def collate_score_samples(batch: list[dict]) -> dict:
 
 
 def read_game_shard(path: Path, limit: int | None = None) -> list[GameOutcome]:
+    source = path.parent.name
     table = pq.read_table(
         path,
         columns=["packed", "game_id", "white_elo", "black_elo", "result"],
@@ -297,6 +301,7 @@ def read_game_shard(path: Path, limit: int | None = None) -> list[GameOutcome]:
                 result=result,
                 white_elo=int(row.get("white_elo") or 0),
                 black_elo=int(row.get("black_elo") or 0),
+                source=source,
             )
         )
     return records

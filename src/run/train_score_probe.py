@@ -215,6 +215,7 @@ def predict(
     plies: list[np.ndarray] = []
     materials: list[np.ndarray] = []
     game_ids: list[str] = []
+    sources: list[str] = []
     for batch in loader:
         tokens = batch["tokens"].to(device, non_blocking=True)
         segment_ids = batch["segment_ids"].to(device, non_blocking=True)
@@ -226,12 +227,14 @@ def predict(
         plies.append(batch["plies"].numpy())
         materials.append(batch["materials"].numpy())
         game_ids.extend(batch["game_ids"])
+        sources.extend(batch["sources"])
     return {
         "predictions": np.concatenate(predictions).astype(np.float32),
         "targets": np.concatenate(targets).astype(np.float32),
         "plies": np.concatenate(plies).astype(np.int16),
         "materials": np.concatenate(materials).astype(np.int16),
         "game_ids": np.asarray(game_ids),
+        "sources": np.asarray(sources),
     }
 
 
@@ -258,6 +261,8 @@ def save_checkpoint(
     feature: str,
     unfreeze_last_block: bool,
     metrics: dict[str, float],
+    window: int = 1,
+    include_state_features: bool = False,
 ) -> None:
     torch.save(
         {
@@ -267,6 +272,8 @@ def save_checkpoint(
             "head_state": model.head.state_dict(),
             "feature": feature,
             "unfreeze_last_block": unfreeze_last_block,
+            "window": window,
+            "include_state_features": include_state_features,
             "epoch": epoch,
             "metrics": metrics,
         },
@@ -407,6 +414,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             args.feature,
             args.unfreeze_last_block,
             metrics,
+            window=args.window,
+            include_state_features=args.include_state_features,
         )
         if val_loss < best_val_loss:
             best_val_loss = val_loss
@@ -417,6 +426,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 args.feature,
                 args.unfreeze_last_block,
                 metrics,
+                window=args.window,
+                include_state_features=args.include_state_features,
             )
             save_predictions(output_dir / "predictions.npz", outputs)
             print(f"saved best checkpoint to {output_dir / 'best.pt'}")

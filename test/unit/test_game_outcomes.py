@@ -401,6 +401,40 @@ class TestCollateSamples:
             assert collated["features"].dtype.is_floating_point
         return
 
+    def test_collates_sources_for_slicing(self):
+        with given("two samples from different shard families"):
+            base = {
+                "tokens": np.array([CLS, 1, 1, 1, SEP], dtype=np.int16),
+                "segment_ids": np.array([0, 0, 0, 0, 1], dtype=np.int64),
+                "padding_mask": np.ones(5, dtype=bool),
+                "ply": 1,
+                "material": 0,
+            }
+            batch = [
+                {
+                    **base,
+                    "target": 1.0,
+                    "game_id": "a",
+                    "source": "lichess_elite_2019-01",
+                },
+                {
+                    **base,
+                    "target": 0.0,
+                    "game_id": "b",
+                    "source": "lichess_db_standard_rated_2026-08",
+                },
+            ]
+
+        with when("the samples are collated"):
+            collated = collate_score_samples(batch)
+
+        with then("the sources are preserved per sample"):
+            assert collated["sources"] == [
+                "lichess_elite_2019-01",
+                "lichess_db_standard_rated_2026-08",
+            ]
+        return
+
 
 class TestLoadGameRecords:
     def test_loads_results_and_elo_and_drops_unknown_results(self, tmp_path):
@@ -430,6 +464,7 @@ class TestLoadGameRecords:
             assert records[1].score == 0.0
             assert records[0].white_elo == 2000
             assert len(records[0].segments) == 1
+            assert records[0].source == tmp_path.name
         return
 
     def test_limit_stops_after_the_requested_number(self, tmp_path):
