@@ -458,6 +458,23 @@ class TestPoolingOption:
             assert args.feature == "full"
         return
 
+    def test_chance_abort_is_opt_in(self):
+        with given("no chance guard and an explicit guard"):
+            default_argv = ["train_puzzle_classifier.py"]
+            guarded_argv = ["train_puzzle_classifier.py", "--abort-if-chance"]
+
+        with when("the arguments are parsed"):
+            with patch("sys.argv", default_argv):
+                default = parse_args()
+            with patch("sys.argv", guarded_argv):
+                guarded = parse_args()
+
+        with then("the guard is disabled by default"):
+            assert default.abort_if_chance is False
+            assert guarded.abort_if_chance is True
+            assert guarded.chance_margin_z == 1.645
+        return
+
     def test_defaults_to_no_autocast_and_accepts_bf16(self):
         with given("no autocast flag and an explicit bf16 flag"):
             default_argv = ["train_puzzle_classifier.py"]

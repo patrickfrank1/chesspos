@@ -30,6 +30,7 @@ from src.modeling.score_head import (
     ScoreHeadConfig,
 )
 from src.training.autocast import autocast_context
+from src.training.early_stop import is_at_chance
 from src.training.score_metrics import score_metrics
 
 
@@ -64,6 +65,12 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--feature", choices=("native", "full"), default="native")
     parser.add_argument("--loss", choices=("mse", "huber"), default="mse")
     parser.add_argument("--amp", choices=("none", "bf16"), default="none")
+    parser.add_argument(
+        "--abort-if-chance",
+        action="store_true",
+        help="Stop after an epoch whose decisive AUC is not above chance",
+    )
+    parser.add_argument("--chance-margin-z", type=float, default=1.645)
     parser.add_argument("--include-state-features", action="store_true")
     parser.add_argument("--unfreeze-last-block", action="store_true")
     parser.add_argument("--window", type=int, default=1)
@@ -386,6 +393,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     output_dir.mkdir(parents=True, exist_ok=True)
     best_val_loss = float("inf")
     history: list[dict] = []
+    aborted = False
 
     print(
         f"records={len(records)} train={len(train_records)} "
@@ -462,6 +470,24 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             save_predictions(output_dir / "predictions.npz", outputs)
             print(f"saved best checkpoint to {output_dir / 'best.pt'}")
+        if args.abort_if_chance and epoch < args.epochs:
+            decisive = outputs["targets"] != 0
+            n_positive = int((outputs["targets"][decisive] > 0).sum())
+            n_negative = int((outputs["targets"][decisive] < 0).sum())
+            at_chance = is_at_chance(
+                metrics["auroc_decisive"],
+                n_positive,
+                n_negative,
+                args.chance_margin_z,
+            )
+            if at_chance:
+                print(
+                    f"aborted after epoch {epoch}: decisive AUC "
+                    f"{metrics['auroc_decisive']:.4f} is not above chance "
+                    f"(n_pos={n_positive}, n_neg={n_negative})"
+                )
+                aborted = True
+                break
 
     (output_dir / "metrics.json").write_text(
         json.dumps(
@@ -476,6 +502,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "train_games": len(train_records),
                 "val_games": len(val_records),
                 "history": history,
+                "aborted": aborted,
             },
             indent=2,
         )

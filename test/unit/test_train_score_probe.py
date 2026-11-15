@@ -164,6 +164,21 @@ class TestParseArgs:
             assert args.lr == 1e-3
         return
 
+    def test_chance_abort_is_opt_in(self):
+        with given("default and explicitly enabled arguments"):
+            default = parse_args(["--checkpoint", "encoder.pt"])
+            guarded = parse_args(["--checkpoint", "encoder.pt", "--abort-if-chance"])
+
+        with when("both are parsed"):
+            default_flag = default.abort_if_chance
+            guarded_flag = guarded.abort_if_chance
+
+        with then("the guard is disabled by default"):
+            assert default_flag is False
+            assert guarded_flag is True
+            assert guarded.chance_margin_z == 1.645
+        return
+
     def test_defaults_to_no_autocast_and_accepts_bf16(self):
         with given("default and bf16 argument lists"):
             default = parse_args(["--checkpoint", "encoder.pt"])

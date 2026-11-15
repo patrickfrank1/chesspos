@@ -32,6 +32,7 @@ from src.training.losses import (
 )
 from src.evaluation.retrieval import evaluate_retrieval, load_benchmark
 from src.training.autocast import autocast_context
+from src.training.early_stop import is_at_chance
 from src.training.puzzle_metrics import binary_metrics
 
 
@@ -69,6 +70,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--retrieval-batch-size", type=int, default=128)
     parser.add_argument("--loss", choices=("bce", "focal"), default="bce")
     parser.add_argument("--amp", choices=("none", "bf16"), default="none")
+    parser.add_argument(
+        "--abort-if-chance",
+        action="store_true",
+        help="Stop after an epoch whose AUROC is not above chance",
+    )
+    parser.add_argument("--chance-margin-z", type=float, default=1.645)
     parser.add_argument(
         "--focal-gamma",
         type=float,
@@ -309,6 +316,8 @@ def main() -> int:
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     best_pr_auc = -1.0
+    val_positives = int((val_plan.label == 1).sum())
+    val_negatives = int((val_plan.label == 0).sum())
 
     print(
         f"records={len(records)} train={len(train_records)} val={len(val_records)} "
@@ -373,6 +382,19 @@ def main() -> int:
                 feature=args.feature,
             )
             print(f"saved best checkpoint to {output_dir / 'best.pt'}")
+        if args.abort_if_chance and epoch < args.epochs:
+            if is_at_chance(
+                metrics["auroc"],
+                val_positives,
+                val_negatives,
+                args.chance_margin_z,
+            ):
+                print(
+                    f"aborted after epoch {epoch}: AUROC "
+                    f"{metrics['auroc']:.4f} is not above chance "
+                    f"(n_pos={val_positives}, n_neg={val_negatives})"
+                )
+                break
     return 0
 
 

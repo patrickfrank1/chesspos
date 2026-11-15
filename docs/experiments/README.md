@@ -16,6 +16,7 @@ for the full analysis and plan.
 
 | Date | Report | Topic | Outcome |
 |---|---|---|---|
+| 2026-11-15 | [Downstream probes: sacrifice classification and position score regression](downstream_probes_2026-11-15.md) | Frozen-encoder evaluation of `run_20m_lazy` and `run_6m_isolated` on two downstream tasks | The 20m checkpoint is consistently better, but both are weak evaluators: held-out decisive AUC 0.587 vs 0.656 for an affine material baseline, with signal concentrated in lopsided endgames. |
 | 2026-11-10 | [Perceiver 6M: LR schedule collapse and validation drift](perceiver_6m_lr2e4_2026-11-10.md) | Segment-aware Perceiver IO, LR-schedule extension, NCE guard, resume data replay | First run exploded at ~33.4k; resume run stayed stable but val drifted and material R² stayed negative. Stopped at 41.5k. |
 | 2026-11-10 | [Text embedding survey and simplified chess embedding plan](text_embedding_survey_and_simplification_2026-11-10.md) | MTEB/embedding-model patterns, chesspos mapping, hard-negative validation | Recommends a single-tower contrastive baseline, validated hard negatives, large batches, and staged training. |
 | 2026-11-09 | [Perceiver content-embedding collapse](analysis_perceiver_content_collapse_2026-11-09.md) | Shared latent readout and large segment embedding | Root-caused a constant-direction collapse; fixed with small segment-embedding init and decoded-slot attention pooling. |
