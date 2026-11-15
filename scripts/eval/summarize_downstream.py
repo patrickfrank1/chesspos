@@ -157,6 +157,14 @@ def _bucket(values: np.ndarray, low: int, high: int) -> np.ndarray:
     return (values >= low) & (values <= high)
 
 
+def _source_family(source: str) -> str:
+    if "elite" in source:
+        return "elite"
+    if "standard" in source:
+        return "standard"
+    return source
+
+
 def score_slices(
     outputs: dict[str, np.ndarray],
 ) -> dict[str, dict[str, float]]:
