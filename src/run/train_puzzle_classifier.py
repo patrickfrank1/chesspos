@@ -54,6 +54,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dropout", type=float, default=0.0)
     parser.add_argument("--head-hidden-dim", type=int, default=256)
     parser.add_argument("--pooling", choices=("mean", "attention"), default="attention")
+    parser.add_argument(
+        "--feature",
+        choices=("native", "full"),
+        default="native",
+        help="Frozen encoder embedding: native embed() or full-trunk encode()",
+    )
     parser.add_argument("--pos-weight", type=float, default=None)
     parser.add_argument("--num-workers", type=int, default=4)
     parser.add_argument("--log-every", type=int, default=100)
@@ -208,6 +214,7 @@ def save_checkpoint(
     planner: RollingVariantPlanner,
     epoch: int,
     metrics: dict[str, float],
+    feature: str = "native",
 ) -> None:
     torch.save(
         {
@@ -215,6 +222,7 @@ def save_checkpoint(
             "encoder_state": model.encoder.state_dict(),
             "head_config": asdict(model.head.config),
             "head_state": model.head.state_dict(),
+            "feature": feature,
             "planner_state": planner.state_dict(),
             "epoch": epoch,
             "metrics": metrics,
@@ -256,7 +264,7 @@ def main() -> int:
             pooling=args.pooling,
         )
     ).to(device)
-    model = FrozenEncoderClassifier(encoder, head).to(device)
+    model = FrozenEncoderClassifier(encoder, head, feature=args.feature).to(device)
 
     planner = RollingVariantPlanner(
         train_records,
@@ -344,10 +352,19 @@ def main() -> int:
             metrics.update(
                 {f"retrieval_{key}": value for key, value in retrieval_metrics.items()}
             )
-        save_checkpoint(output_dir / "last.pt", model, planner, epoch, metrics)
+        save_checkpoint(
+            output_dir / "last.pt", model, planner, epoch, metrics, feature=args.feature
+        )
         if metrics["pr_auc"] > best_pr_auc:
             best_pr_auc = metrics["pr_auc"]
-            save_checkpoint(output_dir / "best.pt", model, planner, epoch, metrics)
+            save_checkpoint(
+                output_dir / "best.pt",
+                model,
+                planner,
+                epoch,
+                metrics,
+                feature=args.feature,
+            )
             print(f"saved best checkpoint to {output_dir / 'best.pt'}")
     return 0
 

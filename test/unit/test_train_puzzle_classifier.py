@@ -434,6 +434,30 @@ class TestPoolingOption:
             assert args.pooling == "mean"
         return
 
+    def test_defaults_to_the_native_embedding_recipe(self):
+        with given("no feature recipe on the command line"):
+            argv = ["train_puzzle_classifier.py"]
+
+        with when("the arguments are parsed"):
+            with patch("sys.argv", argv):
+                args = parse_args()
+
+        with then("the frozen encoder native embed is the default"):
+            assert args.feature == "native"
+        return
+
+    def test_accepts_the_full_trunk_recipe_for_the_alternative(self):
+        with given("an explicit full-trunk feature recipe"):
+            argv = ["train_puzzle_classifier.py", "--feature", "full"]
+
+        with when("the arguments are parsed"):
+            with patch("sys.argv", argv):
+                args = parse_args()
+
+        with then("the alternative recipe is available to the classifier"):
+            assert args.feature == "full"
+        return
+
 
 class TestFocalLossWiring:
     def test_main_passes_the_focal_config_to_train_epoch(self, tmp_path, monkeypatch):

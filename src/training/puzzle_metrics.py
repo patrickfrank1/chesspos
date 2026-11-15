@@ -3,7 +3,8 @@ from __future__ import annotations
 import numpy as np
 
 
-def _auroc(scores: np.ndarray, labels: np.ndarray) -> float:
+def auroc(scores: np.ndarray, labels: np.ndarray) -> float:
+    """Rank-based area under the ROC curve."""
     n_pos = int(labels.sum())
     n_neg = int(labels.size - n_pos)
     if n_pos == 0 or n_neg == 0:
@@ -98,7 +99,7 @@ def binary_metrics(
         best = _threshold_metrics(scores, labels, float(threshold))
 
     return {
-        "auroc": _auroc(scores, labels),
+        "auroc": auroc(scores, labels),
         "pr_auc": _average_precision(scores, labels),
         **best,
     }

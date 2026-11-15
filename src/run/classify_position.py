@@ -44,7 +44,9 @@ def load_classifier(path: str, device: torch.device) -> FrozenEncoderClassifier:
     encoder.load_state_dict(checkpoint["encoder_state"])
     head = PoolingClassifier(PoolingClassifierConfig(**checkpoint["head_config"]))
     head.load_state_dict(checkpoint["head_state"])
-    model = FrozenEncoderClassifier(encoder, head)
+    model = FrozenEncoderClassifier(
+        encoder, head, feature=checkpoint.get("feature", "native")
+    )
     return model.to(device).eval()
 
 

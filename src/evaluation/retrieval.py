@@ -12,7 +12,7 @@ import pyarrow.parquet as pq
 import torch
 from huggingface_hub import CommitInfo, HfApi, snapshot_download
 
-from src.dataset.puzzle_variants import _split_stream, split_for_puzzle
+from src.dataset.puzzle_variants import split_for_puzzle, split_stream
 from src.dataset.token_stream import TokenStreamEncoder
 from src.evaluation.core.embeddings import embed_tokens
 from src.evaluation.core.ranking import (
@@ -122,7 +122,7 @@ def _iter_validation_positions(
             puzzle_id = str(puzzle_id)
             if split_for_puzzle(puzzle_id, val_ratio) != "val":
                 continue
-            segments = _split_stream(values[offsets[row] : offsets[row + 1]])
+            segments = split_stream(values[offsets[row] : offsets[row + 1]])
             themes = tuple(
                 theme for theme in theme_columns if theme_values[theme][row] == 1
             )

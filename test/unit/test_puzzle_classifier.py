@@ -150,6 +150,50 @@ class TestFrozenEncoderClassifier:
             torch.testing.assert_close(first, second)
         return
 
+    def test_full_feature_uses_the_non_isolated_trunk(self):
+        with given("a frozen classifier using the full-trunk feature recipe"):
+            encoder = tiny_encoder()
+            head = PoolingClassifier(PoolingClassifierConfig(d_model=1))
+            model = FrozenEncoderClassifier(encoder, head, feature="full")
+            tokens, segment_ids, padding_mask = batch_from_boards()
+            calls = []
+            original_embed = encoder.embed
+            original_encode = encoder.encode
+
+            def embed(*args, **kwargs):
+                calls.append("embed")
+                return original_embed(*args, **kwargs)
+
+            def encode(*args, **kwargs):
+                calls.append("encode")
+                return original_encode(*args, **kwargs)
+
+            encoder.embed = embed
+            encoder.encode = encode
+
+        with when("the classifier scores a batch"):
+            model(tokens, segment_ids, padding_mask)
+
+        with then("encode is used instead of embed"):
+            assert calls == ["encode"]
+        return
+
+    def test_rejects_an_unknown_feature_recipe(self):
+        with given("an unsupported feature name"):
+            encoder = tiny_encoder()
+            head = PoolingClassifier(PoolingClassifierConfig(d_model=1))
+
+        with when("the frozen classifier is constructed"):
+            error = None
+            try:
+                FrozenEncoderClassifier(encoder, head, feature="content_state")
+            except ValueError as exc:
+                error = exc
+
+        with then("a ValueError is raised"):
+            assert isinstance(error, ValueError)
+        return
+
 
 class TestTwoLayerHead:
     def test_hidden_layer_shapes_follow_the_config(self):

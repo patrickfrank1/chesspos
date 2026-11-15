@@ -6,6 +6,7 @@ from dataclasses import dataclass
 import torch
 from torch import nn
 
+from src.modeling.frozen import FEATURE_RECIPES, encoder_embeddings, freeze_encoder
 from src.modeling.transformer import MaskedStreamTransformer
 
 
@@ -87,12 +88,17 @@ class FrozenEncoderClassifier(nn.Module):
         self,
         encoder: MaskedStreamTransformer,
         head: PoolingClassifier,
+        feature: str = "native",
     ):
         super().__init__()
         self.encoder = encoder
         self.head = head
-        for parameter in self.encoder.parameters():
-            parameter.requires_grad = False
+        self.feature = feature
+        if feature not in FEATURE_RECIPES:
+            raise ValueError(
+                f"feature must be one of {FEATURE_RECIPES}, got {feature!r}"
+            )
+        freeze_encoder(self.encoder)
         self.encoder.eval()
         return
 
@@ -108,7 +114,11 @@ class FrozenEncoderClassifier(nn.Module):
         padding_mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
         with torch.no_grad():
-            embeddings, mask = self.encoder.embed(
-                tokens, segment_ids, padding_mask=padding_mask
+            embeddings, mask = encoder_embeddings(
+                self.encoder,
+                tokens,
+                segment_ids,
+                padding_mask=padding_mask,
+                feature=self.feature,
             )
         return self.head(embeddings, mask)

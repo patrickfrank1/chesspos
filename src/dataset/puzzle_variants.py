@@ -377,7 +377,8 @@ def collate_variants(batch: list[dict]) -> dict:
     }
 
 
-def _split_stream(stream: np.ndarray) -> list[np.ndarray]:
+def split_stream(stream: np.ndarray) -> list[np.ndarray]:
+    """Split a packed token stream into its position segments."""
     sep_positions = np.flatnonzero(stream == SEP)
     segments = []
     start = 1 if stream.size and stream[0] == CLS else 0
@@ -404,7 +405,7 @@ def load_puzzle_records(
         offsets = np.asarray(packed.offsets)
         values = packed.flatten().to_numpy(zero_copy_only=False).astype(np.int16)
         for i, (puzzle_id, label) in enumerate(zip(puzzle_ids, labels)):
-            segments = _split_stream(values[offsets[i] : offsets[i + 1]])
+            segments = split_stream(values[offsets[i] : offsets[i + 1]])
             if not segments:
                 continue
             records.append(

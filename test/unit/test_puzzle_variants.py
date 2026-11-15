@@ -13,6 +13,7 @@ from src.dataset.puzzle_variants import (
     iter_variants,
     pack_segments,
     split_for_puzzle,
+    split_stream,
     variant_count,
 )
 from src.dataset.token_stream import CLS, PAD, SEP
@@ -264,6 +265,36 @@ class TestPackSegments:
                 segment_ids,
                 np.array([0, 0, 0, 0, 1, 1, 1, 1, 2], dtype=np.int64),
             )
+        return
+
+
+class TestSplitStream:
+    def test_splits_cls_prefixed_stream_into_segments(self):
+        with given("a packed stream of two segments"):
+            segments = [
+                np.array([10, 11, 12], dtype=np.int16),
+                np.array([13, 14, 15], dtype=np.int16),
+            ]
+            tokens, _ = pack_segments(segments)
+
+        with when("the stream is split"):
+            decoded = split_stream(tokens)
+
+        with then("the structural tokens are removed and segments are preserved"):
+            assert len(decoded) == 2
+            np.testing.assert_array_equal(decoded[0], segments[0])
+            np.testing.assert_array_equal(decoded[1], segments[1])
+        return
+
+    def test_returns_no_segments_for_an_empty_stream(self):
+        with given("an empty token stream"):
+            tokens = np.array([], dtype=np.int16)
+
+        with when("the stream is split"):
+            decoded = split_stream(tokens)
+
+        with then("the result is empty"):
+            assert decoded == []
         return
 
 

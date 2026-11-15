@@ -9,7 +9,7 @@ import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from src.dataset.puzzle_variants import _split_stream
+from src.dataset.puzzle_variants import split_stream
 from src.dataset.token_stream import SEGMENT_LEN, TokenStreamEncoder
 
 _PIECE_VALUES = {
@@ -364,7 +364,7 @@ def load_test_samples(
             stream = values[offsets[row] : offsets[row + 1]]
             segments = [
                 segment
-                for segment in _split_stream(stream)
+                for segment in split_stream(stream)
                 if segment.size == SEGMENT_LEN
             ]
             if not segments:
@@ -452,7 +452,7 @@ def load_puzzle_samples(
         for row, puzzle_id in enumerate(puzzle_ids):
             segments = [
                 segment
-                for segment in _split_stream(values[offsets[row] : offsets[row + 1]])
+                for segment in split_stream(values[offsets[row] : offsets[row + 1]])
                 if segment.size == SEGMENT_LEN
             ]
             if not segments:
