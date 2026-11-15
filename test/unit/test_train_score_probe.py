@@ -28,6 +28,7 @@ from src.modeling.transformer import MaskedStreamTransformer, TransformerConfig
 from src.run.eval_score_probe import load_score_probe
 from src.run.eval_score_probe import main as eval_main
 from src.run.train_score_probe import (
+    build_optimizer,
     build_score_loader,
     evaluate,
     main,
@@ -149,6 +150,18 @@ class TestParseArgs:
             assert args.unfreeze_last_block is True
             assert args.loss == "huber"
             assert args.include_state_features is True
+        return
+
+    def test_defaults_to_a_separate_small_encoder_lr(self):
+        with given("the default arguments"):
+            args = parse_args(["--checkpoint", "encoder.pt"])
+
+        with when("the encoder learning rate is inspected"):
+            encoder_lr = args.encoder_lr
+
+        with then("the encoder LR is much smaller than the head LR"):
+            assert encoder_lr == 1e-5
+            assert args.lr == 1e-3
         return
 
     def test_defaults_to_no_autocast_and_accepts_bf16(self):
@@ -412,4 +425,43 @@ class TestEvalScoreProbe:
 
         with then("a FileNotFoundError is raised"):
             assert isinstance(error, FileNotFoundError)
+        return
+
+
+class TestOptimizer:
+    def test_frozen_model_has_a_single_head_group(self):
+        with given("a frozen probe with no trainable encoder parameters"):
+            model = make_model()
+
+        with when("the optimizer is built"):
+            optimizer = build_optimizer(
+                model, lr=1e-3, encoder_lr=1e-5, weight_decay=0.01
+            )
+
+        with then("only the head parameters are optimized at the head LR"):
+            assert len(optimizer.param_groups) == 1
+            assert optimizer.param_groups[0]["lr"] == 1e-3
+            group_params = {id(p) for p in optimizer.param_groups[0]["params"]}
+            assert group_params == {
+                id(p) for p in model.head.parameters() if p.requires_grad
+            }
+        return
+
+    def test_unfrozen_encoder_gets_its_own_group(self):
+        with given("a probe with the last block unfrozen"):
+            encoder = MaskedStreamTransformer(tiny_config())
+            head = ScoreHead(ScoreHeadConfig(d_model=1))
+            model = FrozenEncoderScore(
+                encoder, head, feature="full", unfreeze_last_block=True
+            )
+
+        with when("the optimizer is built"):
+            optimizer = build_optimizer(
+                model, lr=1e-3, encoder_lr=1e-5, weight_decay=0.0
+            )
+
+        with then("the encoder uses the small LR and the head the large one"):
+            assert len(optimizer.param_groups) == 2
+            lrs = sorted(group["lr"] for group in optimizer.param_groups)
+            assert lrs == [1e-5, 1e-3]
         return

@@ -51,6 +51,12 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--epochs", type=int, default=3)
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--lr", type=float, default=1e-3)
+    parser.add_argument(
+        "--encoder-lr",
+        type=float,
+        default=1e-5,
+        help="Learning rate for unfrozen encoder blocks (last-block arm)",
+    )
     parser.add_argument("--weight-decay", type=float, default=0.01)
     parser.add_argument("--dropout", type=float, default=0.0)
     parser.add_argument("--head-hidden-dim", type=int, default=256)
@@ -126,6 +132,29 @@ def resolve_records(args: argparse.Namespace) -> list[GameOutcome]:
             shard_pattern=args.remote_shard_pattern,
         )
     return load_game_records(args.data_dir, limit=args.limit)
+
+
+def build_optimizer(
+    model: FrozenEncoderScore,
+    lr: float,
+    encoder_lr: float,
+    weight_decay: float,
+) -> torch.optim.Optimizer:
+    """Separate parameter groups: unfrozen encoder blocks train slowly."""
+    encoder_params = [
+        parameter
+        for name, parameter in model.encoder.named_parameters()
+        if parameter.requires_grad
+    ]
+    head_params = [
+        parameter for parameter in model.head.parameters() if parameter.requires_grad
+    ]
+    groups: list[dict] = []
+    if encoder_params:
+        groups.append({"params": encoder_params, "lr": encoder_lr})
+    if head_params:
+        groups.append({"params": head_params, "lr": lr})
+    return torch.optim.AdamW(groups, lr=lr, weight_decay=weight_decay)
 
 
 def build_score_loader(
@@ -333,10 +362,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         unfreeze_last_block=args.unfreeze_last_block,
     ).to(device)
 
-    trainable = [
-        parameter for parameter in model.parameters() if parameter.requires_grad
-    ]
-    optimizer = torch.optim.AdamW(trainable, lr=args.lr, weight_decay=args.weight_decay)
+    optimizer = build_optimizer(
+        model,
+        lr=args.lr,
+        encoder_lr=args.encoder_lr,
+        weight_decay=args.weight_decay,
+    )
 
     val_plan = _validation_plan(val_records)
     val_loader = build_score_loader(
