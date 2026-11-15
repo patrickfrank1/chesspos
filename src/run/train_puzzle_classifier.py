@@ -207,7 +207,7 @@ def evaluate(
         total_loss += float(loss.item()) * batch_labels.shape[0]
         total_examples += batch_labels.shape[0]
 
-        scores.append(torch.sigmoid(logits).cpu().numpy())
+        scores.append(torch.sigmoid(logits).float().cpu().numpy())
         labels.append(batch_labels.cpu().numpy())
 
     metrics = binary_metrics(np.concatenate(scores), np.concatenate(labels))
