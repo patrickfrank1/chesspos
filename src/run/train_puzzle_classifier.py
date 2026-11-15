@@ -31,6 +31,7 @@ from src.training.losses import (
     resolve_focal_loss,
 )
 from src.evaluation.retrieval import evaluate_retrieval, load_benchmark
+from src.training.autocast import autocast_context
 from src.training.puzzle_metrics import binary_metrics
 
 
@@ -67,6 +68,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--retrieval-benchmark-revision", default=None)
     parser.add_argument("--retrieval-batch-size", type=int, default=128)
     parser.add_argument("--loss", choices=("bce", "focal"), default="bce")
+    parser.add_argument("--amp", choices=("none", "bf16"), default="none")
     parser.add_argument(
         "--focal-gamma",
         type=float,
@@ -142,6 +144,7 @@ def train_epoch(
     epoch: int = 1,
     log_every: int = 0,
     focal: FocalLossConfig | None = None,
+    amp: str = "none",
 ) -> float:
     model.train()
     total_loss = 0.0
@@ -153,15 +156,16 @@ def train_epoch(
         padding_mask = batch["padding_mask"].to(device, non_blocking=True)
         labels = batch["labels"].to(device, non_blocking=True)
 
-        logits = model(tokens, segment_ids, padding_mask)
-        if focal is None:
-            loss = nn.functional.binary_cross_entropy_with_logits(
-                logits, labels, pos_weight=pos_weight
-            )
-        else:
-            loss = focal_loss_with_logits(
-                logits, labels, gamma=focal.gamma, alpha=focal.alpha
-            )
+        with autocast_context(device, amp):
+            logits = model(tokens, segment_ids, padding_mask)
+            if focal is None:
+                loss = nn.functional.binary_cross_entropy_with_logits(
+                    logits, labels, pos_weight=pos_weight
+                )
+            else:
+                loss = focal_loss_with_logits(
+                    logits, labels, gamma=focal.gamma, alpha=focal.alpha
+                )
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.head.parameters(), 1.0)
@@ -184,6 +188,7 @@ def evaluate(
     model: FrozenEncoderClassifier,
     loader: DataLoader,
     device: torch.device,
+    amp: str = "none",
 ) -> tuple[dict[str, float], float]:
     model.eval()
     scores: list[np.ndarray] = []
@@ -196,8 +201,9 @@ def evaluate(
         padding_mask = batch["padding_mask"].to(device, non_blocking=True)
         batch_labels = batch["labels"].to(device, non_blocking=True)
 
-        logits = model(tokens, segment_ids, padding_mask)
-        loss = nn.functional.binary_cross_entropy_with_logits(logits, batch_labels)
+        with autocast_context(device, amp):
+            logits = model(tokens, segment_ids, padding_mask)
+            loss = nn.functional.binary_cross_entropy_with_logits(logits, batch_labels)
         total_loss += float(loss.item()) * batch_labels.shape[0]
         total_examples += batch_labels.shape[0]
 
@@ -328,8 +334,9 @@ def main() -> int:
             epoch=epoch,
             log_every=args.log_every,
             focal=focal,
+            amp=args.amp,
         )
-        metrics, val_loss = evaluate(model, val_loader, device)
+        metrics, val_loss = evaluate(model, val_loader, device, amp=args.amp)
         print(
             f"epoch={epoch} train_loss={train_loss:.4f} val_loss={val_loss:.4f} "
             f"auroc={metrics['auroc']:.4f} pr_auc={metrics['pr_auc']:.4f} "

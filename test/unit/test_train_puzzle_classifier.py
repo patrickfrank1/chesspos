@@ -458,6 +458,22 @@ class TestPoolingOption:
             assert args.feature == "full"
         return
 
+    def test_defaults_to_no_autocast_and_accepts_bf16(self):
+        with given("no autocast flag and an explicit bf16 flag"):
+            default_argv = ["train_puzzle_classifier.py"]
+            bf16_argv = ["train_puzzle_classifier.py", "--amp", "bf16"]
+
+        with when("the arguments are parsed"):
+            with patch("sys.argv", default_argv):
+                default = parse_args()
+            with patch("sys.argv", bf16_argv):
+                bf16 = parse_args()
+
+        with then("autocast is opt-in"):
+            assert default.amp == "none"
+            assert bf16.amp == "bf16"
+        return
+
 
 class TestFocalLossWiring:
     def test_main_passes_the_focal_config_to_train_epoch(self, tmp_path, monkeypatch):

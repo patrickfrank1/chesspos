@@ -29,6 +29,7 @@ from src.modeling.score_head import (
     ScoreHead,
     ScoreHeadConfig,
 )
+from src.training.autocast import autocast_context
 from src.training.score_metrics import score_metrics
 
 
@@ -56,6 +57,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--pooling", choices=("mean", "attention"), default="mean")
     parser.add_argument("--feature", choices=("native", "full"), default="native")
     parser.add_argument("--loss", choices=("mse", "huber"), default="mse")
+    parser.add_argument("--amp", choices=("none", "bf16"), default="none")
     parser.add_argument("--include-state-features", action="store_true")
     parser.add_argument("--unfreeze-last-block", action="store_true")
     parser.add_argument("--window", type=int, default=1)
@@ -167,6 +169,7 @@ def train_epoch(
     loss: str = "mse",
     epoch: int = 1,
     log_every: int = 0,
+    amp: str = "none",
 ) -> float:
     model.train()
     total_loss = 0.0
@@ -179,8 +182,9 @@ def train_epoch(
         padding_mask = batch["padding_mask"].to(device, non_blocking=True)
         targets = batch["targets"].to(device, non_blocking=True)
 
-        scores = model(tokens, segment_ids, padding_mask, _features(batch, device))
-        batch_loss = _loss(scores, targets, loss)
+        with autocast_context(device, amp):
+            scores = model(tokens, segment_ids, padding_mask, _features(batch, device))
+            batch_loss = _loss(scores, targets, loss)
         optimizer.zero_grad(set_to_none=True)
         batch_loss.backward()
         torch.nn.utils.clip_grad_norm_(trainable, 1.0)
@@ -203,6 +207,7 @@ def predict(
     model: FrozenEncoderScore,
     loader: DataLoader,
     device: torch.device,
+    amp: str = "none",
 ) -> dict[str, np.ndarray]:
     model.eval()
     predictions: list[np.ndarray] = []
@@ -214,8 +219,9 @@ def predict(
         tokens = batch["tokens"].to(device, non_blocking=True)
         segment_ids = batch["segment_ids"].to(device, non_blocking=True)
         padding_mask = batch["padding_mask"].to(device, non_blocking=True)
-        scores = model(tokens, segment_ids, padding_mask, _features(batch, device))
-        predictions.append(scores.cpu().numpy())
+        with autocast_context(device, amp):
+            scores = model(tokens, segment_ids, padding_mask, _features(batch, device))
+        predictions.append(scores.float().cpu().numpy())
         targets.append(batch["targets"].numpy())
         plies.append(batch["plies"].numpy())
         materials.append(batch["materials"].numpy())
@@ -233,8 +239,9 @@ def evaluate(
     model: FrozenEncoderScore,
     loader: DataLoader,
     device: torch.device,
+    amp: str = "none",
 ) -> tuple[dict[str, float], float]:
-    outputs = predict(model, loader, device)
+    outputs = predict(model, loader, device, amp=amp)
     metrics = score_metrics(outputs["predictions"], outputs["targets"])
     return metrics, metrics["mse"]
 
@@ -374,8 +381,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             loss=args.loss,
             epoch=epoch,
             log_every=args.log_every,
+            amp=args.amp,
         )
-        outputs = predict(model, val_loader, device)
+        outputs = predict(model, val_loader, device, amp=args.amp)
         metrics = score_metrics(outputs["predictions"], outputs["targets"])
         val_loss = metrics["mse"]
         print(
@@ -421,6 +429,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "window": args.window,
                 "include_state_features": args.include_state_features,
                 "loss": args.loss,
+                "amp": args.amp,
                 "checkpoint": args.checkpoint,
                 "train_games": len(train_records),
                 "val_games": len(val_records),

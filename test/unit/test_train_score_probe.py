@@ -148,6 +148,20 @@ class TestParseArgs:
             assert args.include_state_features is True
         return
 
+    def test_defaults_to_no_autocast_and_accepts_bf16(self):
+        with given("default and bf16 argument lists"):
+            default = parse_args(["--checkpoint", "encoder.pt"])
+            mixed = parse_args(["--checkpoint", "encoder.pt", "--amp", "bf16"])
+
+        with when("both are parsed"):
+            default_amp = default.amp
+            mixed_amp = mixed.amp
+
+        with then("autocast is opt-in"):
+            assert default_amp == "none"
+            assert mixed_amp == "bf16"
+        return
+
 
 class TestTrainEpoch:
     def test_updates_only_the_head_and_reports_a_loss(self):
