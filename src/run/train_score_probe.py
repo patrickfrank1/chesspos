@@ -72,6 +72,12 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--chance-margin-z", type=float, default=1.645)
     parser.add_argument("--include-state-features", action="store_true")
+    parser.add_argument(
+        "--token-pooling",
+        choices=("mean", "attention"),
+        default="mean",
+        help="Pool the last token layer by mean or a learned attention query",
+    )
     parser.add_argument("--unfreeze-last-block", action="store_true")
     parser.add_argument("--window", type=int, default=1)
     parser.add_argument("--positions-per-game", type=int, default=16)
@@ -299,6 +305,7 @@ def save_checkpoint(
     metrics: dict[str, float],
     window: int = 1,
     include_state_features: bool = False,
+    token_pooling: str = "mean",
 ) -> None:
     torch.save(
         {
@@ -308,6 +315,10 @@ def save_checkpoint(
             "head_state": model.head.state_dict(),
             "feature": feature,
             "unfreeze_last_block": unfreeze_last_block,
+            "token_pooling": token_pooling,
+            "token_pool_state": (
+                model.token_pool.state_dict() if model.token_pool is not None else None
+            ),
             "window": window,
             "include_state_features": include_state_features,
             "epoch": epoch,
@@ -367,6 +378,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         head,
         feature=args.feature,
         unfreeze_last_block=args.unfreeze_last_block,
+        token_pooling=args.token_pooling,
     ).to(device)
 
     optimizer = build_optimizer(
@@ -455,6 +467,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             metrics,
             window=args.window,
             include_state_features=args.include_state_features,
+            token_pooling=args.token_pooling,
         )
         if val_loss < best_val_loss:
             best_val_loss = val_loss
@@ -467,6 +480,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 metrics,
                 window=args.window,
                 include_state_features=args.include_state_features,
+                token_pooling=args.token_pooling,
             )
             save_predictions(output_dir / "predictions.npz", outputs)
             print(f"saved best checkpoint to {output_dir / 'best.pt'}")
@@ -498,6 +512,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "include_state_features": args.include_state_features,
                 "loss": args.loss,
                 "amp": args.amp,
+                "token_pooling": args.token_pooling,
                 "checkpoint": args.checkpoint,
                 "train_games": len(train_records),
                 "val_games": len(val_records),

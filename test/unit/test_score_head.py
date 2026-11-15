@@ -14,14 +14,14 @@ from src.modeling.score_head import (
 from src.modeling.transformer import MaskedStreamTransformer, TransformerConfig
 
 
-def tiny_encoder() -> MaskedStreamTransformer:
+def tiny_encoder(d_model: int = 1, d_ff: int = 2) -> MaskedStreamTransformer:
     return MaskedStreamTransformer(
         TransformerConfig(
             vocab_size=VOCAB_SIZE,
-            d_model=1,
+            d_model=d_model,
             n_heads=1,
             n_layers=2,
-            d_ff=2,
+            d_ff=d_ff,
             dropout=0.0,
             max_seq_len=256,
             max_segments=8,
@@ -243,4 +243,87 @@ class TestFrozenEncoderScore:
             assert "encoder.ln_final.weight" in trainable
             assert not any(name.startswith("encoder.blocks.0.") for name in trainable)
             assert any(name.startswith("head.") for name in trainable)
+        return
+
+
+class TestAttentionTokenPool:
+    def test_attention_pool_trains_only_the_query_when_frozen(self):
+        with given("a frozen encoder score model with attention token pooling"):
+            encoder = tiny_encoder(d_model=4, d_ff=8)
+            head = ScoreHead(ScoreHeadConfig(d_model=4))
+            model = FrozenEncoderScore(
+                encoder, head, feature="full", token_pooling="attention"
+            )
+            tokens, segment_ids, padding_mask = batch_from_fen()
+
+        with when("a training step is run"):
+            model.train()
+            score = model(tokens, segment_ids, padding_mask)
+            (score - 1.0).pow(2).mean().backward()
+
+        with then("the query trains and the encoder stays frozen"):
+            assert model.token_pool.query is not None
+            assert model.token_pool.query.grad is not None
+            assert all(p.grad is None for p in model.encoder.parameters())
+        return
+
+    def test_attention_pool_with_unfrozen_last_block_reaches_the_block(self):
+        with given("an attention-pooled model with the last block unfrozen"):
+            encoder = tiny_encoder(d_model=4, d_ff=8)
+            head = ScoreHead(ScoreHeadConfig(d_model=4))
+            model = FrozenEncoderScore(
+                encoder,
+                head,
+                feature="full",
+                unfreeze_last_block=True,
+                token_pooling="attention",
+            )
+            tokens, segment_ids, padding_mask = batch_from_fen()
+
+        with when("the loss is backpropagated"):
+            score = model(tokens, segment_ids, padding_mask)
+            (score - 1.0).pow(2).mean().backward()
+
+        with then("gradients reach the last block through the attention pool"):
+            assert encoder.blocks[1].qkv.weight.grad is not None
+            assert encoder.blocks[1].qkv.weight.grad.abs().sum() > 0
+        return
+
+    def test_mean_token_pooling_keeps_the_native_embedding_path(self):
+        with given("a model using the default mean token pooling"):
+            encoder = tiny_encoder()
+            head = ScoreHead(ScoreHeadConfig(d_model=1))
+            model = FrozenEncoderScore(encoder, head, feature="full")
+            tokens, segment_ids, padding_mask = batch_from_fen()
+            calls = []
+            original_encode = encoder.encode
+
+            def encode(*args, **kwargs):
+                calls.append("encode")
+                return original_encode(*args, **kwargs)
+
+            encoder.encode = encode
+
+        with when("the model scores a batch"):
+            model(tokens, segment_ids, padding_mask)
+
+        with then("the encoder's own pooling is used"):
+            assert calls == ["encode"]
+            assert model.token_pool is None
+        return
+
+    def test_rejects_an_unknown_token_pooling_mode(self):
+        with given("an unsupported token pooling mode"):
+            encoder = tiny_encoder()
+            head = ScoreHead(ScoreHeadConfig(d_model=1))
+
+        with when("the model is constructed"):
+            error = None
+            try:
+                FrozenEncoderScore(encoder, head, feature="full", token_pooling="max")
+            except ValueError as exc:
+                error = exc
+
+        with then("a ValueError is raised"):
+            assert isinstance(error, ValueError)
         return

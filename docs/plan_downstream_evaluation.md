@@ -346,6 +346,29 @@ the sharable report.
 | 8 | `run_20m_lazy/last.pt` (120k) and `run_6m_isolated/best.pt` (69k) |
 | 9 | Sharable writeup with plots and evaluation tables in `docs/experiments/` |
 
+### Added to the curriculum: token-level pooling ablation
+
+The fine-tune arm pools the last per-token layer with a fixed **mean**. A mean
+pool cannot reweight tokens as the last block adapts, so it conflates the
+pooling operator with the adaptation of the block. The ablation crosses the two
+pooling operators with the two freeze levels:
+
+| | mean pooling | attention pooling |
+|---|---|---|
+| frozen encoder | existing `native` / `full` runs | **new** |
+| last block fine-tuned | existing `ftlast` arm | **new** |
+
+- Attention pool: one learned `d_model` query over the last token layer, a
+  masked softmax per segment (structural tokens excluded; content-only for the
+  content-isolated native recipe), zero-initialised so training starts at the
+  mean. The query is a probe parameter and trains even when the encoder is
+  frozen.
+- Runs: 4 cells × 2 checkpoints × seed 17, one epoch each, same data and head.
+- Metrics: held-out R²/AUC and calibration versus the mean cells and the
+  material baseline.
+- Implementation: `src/modeling/token_pool.py`, `--token-pooling
+  mean|attention`, `MaskedStreamTransformer.token_states()`.
+
 Remaining implementation-level details (not blocking, defaults proposed):
 `positions_per_game=16`, `max_ply=150`, `val_ratio=0.1`, `head_hidden_dim=256`,
 `dropout=0.0`, `lr=1e-3`, `batch_size=64`, 3 epochs, 3 seeds.

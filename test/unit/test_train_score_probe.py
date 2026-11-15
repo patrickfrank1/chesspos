@@ -106,10 +106,16 @@ def make_score_parquet(path: Path, n_games: int) -> None:
     return
 
 
-def make_model(feature: str = "native", state_features: int = 0) -> FrozenEncoderScore:
+def make_model(
+    feature: str = "native",
+    state_features: int = 0,
+    token_pooling: str = "mean",
+) -> FrozenEncoderScore:
     encoder = MaskedStreamTransformer(tiny_config()).eval()
     head = ScoreHead(ScoreHeadConfig(d_model=1, state_features=state_features))
-    return FrozenEncoderScore(encoder, head, feature=feature)
+    return FrozenEncoderScore(
+        encoder, head, feature=feature, token_pooling=token_pooling
+    )
 
 
 class TestParseArgs:
@@ -177,6 +183,22 @@ class TestParseArgs:
             assert default_flag is False
             assert guarded_flag is True
             assert guarded.chance_margin_z == 1.645
+        return
+
+    def test_defaults_to_mean_token_pooling_and_accepts_attention(self):
+        with given("default and attention token pooling arguments"):
+            default = parse_args(["--checkpoint", "encoder.pt"])
+            attention = parse_args(
+                ["--checkpoint", "encoder.pt", "--token-pooling", "attention"]
+            )
+
+        with when("both are parsed"):
+            default_mode = default.token_pooling
+            attention_mode = attention.token_pooling
+
+        with then("mean pooling is the default"):
+            assert default_mode == "mean"
+            assert attention_mode == "attention"
         return
 
     def test_defaults_to_no_autocast_and_accepts_bf16(self):
@@ -354,7 +376,9 @@ class TestMain:
 class TestEvalScoreProbe:
     def test_loads_encoder_head_and_recipe_from_a_probe_checkpoint(self, tmp_path):
         with given("a saved probe checkpoint using the full recipe"):
-            model = make_model(feature="full", state_features=3)
+            model = make_model(
+                feature="full", state_features=3, token_pooling="attention"
+            )
             path = tmp_path / "probe.pt"
             save_checkpoint(
                 path,
@@ -365,6 +389,7 @@ class TestEvalScoreProbe:
                 metrics={"mse": 0.2},
                 window=2,
                 include_state_features=True,
+                token_pooling="attention",
             )
 
         with when("the probe is loaded for evaluation"):
@@ -373,6 +398,8 @@ class TestEvalScoreProbe:
         with then("the recipe and weights are restored"):
             assert loaded.feature == "full"
             assert loaded.unfreeze_last_block is False
+            assert loaded.token_pooling == "attention"
+            assert loaded.token_pool is not None
             assert loaded.head.config.state_features == 3
             torch.testing.assert_close(
                 loaded.head.classifier.weight, model.head.classifier.weight

@@ -68,7 +68,11 @@ def load_score_probe(path: str | Path, device: torch.device) -> FrozenEncoderSco
         head,
         feature=checkpoint.get("feature", "native"),
         unfreeze_last_block=checkpoint.get("unfreeze_last_block", False),
+        token_pooling=checkpoint.get("token_pooling", "mean"),
     )
+    state = checkpoint.get("token_pool_state")
+    if state is not None and model.token_pool is not None:
+        model.token_pool.load_state_dict(state)
     return model.to(device).eval()
 
 
@@ -140,6 +144,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             {
                 "checkpoint": str(args.checkpoint),
                 "feature": model.feature,
+                "token_pooling": model.token_pooling,
                 "window": window,
                 "include_state_features": include_state_features,
                 "source": args.remote_repo or args.data_dir,

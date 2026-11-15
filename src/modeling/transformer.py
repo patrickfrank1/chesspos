@@ -443,6 +443,20 @@ class MaskedStreamTransformer(nn.Module):
         state, _ = self.pool_state(hidden, tokens, segment_ids, padding_mask)
         return content, state, segment_mask
 
+    def token_states(
+        self,
+        tokens: torch.Tensor,
+        segment_ids: torch.Tensor,
+        padding_mask: torch.Tensor | None = None,
+        isolated: bool = False,
+    ) -> torch.Tensor:
+        """Return final per-token hidden states, optionally content-isolated."""
+        if padding_mask is None:
+            padding_mask = tokens.ne(0)
+        if isolated:
+            return self._trunk_isolated(tokens, segment_ids, padding_mask)
+        return self._trunk(tokens, segment_ids, padding_mask)
+
     @torch.no_grad()
     def embed(
         self,

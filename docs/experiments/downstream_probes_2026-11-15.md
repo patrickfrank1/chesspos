@@ -113,6 +113,16 @@ while large-material endgames reach AUC 0.86. Openings add nothing, as
 expected. The 20m model is ahead of the 6m in the late-game and large-material
 buckets and identical elsewhere.
 
+## Results — token-level pooling ablation
+
+_Pending: runs queued after the primary grid._
+
+The fine-tune arm uses **mean** token pooling over the last per-token layer. A
+learned attention pool is the control for whether the pooling operator itself
+limits the probe. The grid is {frozen, last-block fine-tuned} × {mean,
+attention}; the mean cells are the tables above and the attention cells are
+run on the same data, head, and seed.
+
 ## Results — sacrifice classification
 
 _Filled in when the full-corpus runs finish._

@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import math
+from contextlib import nullcontext
 from dataclasses import dataclass
 
 import torch
 from torch import nn
 
 from src.modeling.frozen import FEATURE_RECIPES, encoder_embeddings, freeze_encoder
+from src.modeling.token_pool import TokenPool, TokenPoolConfig
 from src.modeling.transformer import MaskedStreamTransformer
 
 POOLING_MODES = ("mean", "attention")
@@ -113,11 +115,16 @@ class FrozenEncoderScore(nn.Module):
         head: ScoreHead,
         feature: str = "native",
         unfreeze_last_block: bool = False,
+        token_pooling: str = "mean",
     ):
         super().__init__()
         if feature not in FEATURE_RECIPES:
             raise ValueError(
                 f"feature must be one of {FEATURE_RECIPES}, got {feature!r}"
+            )
+        if token_pooling not in ("mean", "attention"):
+            raise ValueError(
+                f"token_pooling must be 'mean' or 'attention', got {token_pooling!r}"
             )
         if unfreeze_last_block and feature != "full":
             raise ValueError(
@@ -128,6 +135,18 @@ class FrozenEncoderScore(nn.Module):
         self.head = head
         self.feature = feature
         self.unfreeze_last_block = unfreeze_last_block
+        self.token_pooling = token_pooling
+        self.isolated = feature == "native" and bool(encoder.config.content_pooling)
+        if token_pooling == "attention":
+            self.token_pool = TokenPool(
+                TokenPoolConfig(
+                    d_model=encoder.config.d_model,
+                    mode="attention",
+                    token_filter="content" if self.isolated else "full",
+                )
+            )
+        else:
+            self.token_pool = None
         freeze_encoder(self.encoder)
         if unfreeze_last_block:
             for parameter in self.encoder.blocks[-1].parameters():
@@ -154,16 +173,9 @@ class FrozenEncoderScore(nn.Module):
         padding_mask: torch.Tensor | None = None,
         features: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        if self.unfreeze_last_block:
-            embeddings, mask = encoder_embeddings(
-                self.encoder,
-                tokens,
-                segment_ids,
-                padding_mask=padding_mask,
-                feature=self.feature,
-            )
-        else:
-            with torch.no_grad():
+        grad_context = nullcontext() if self.unfreeze_last_block else torch.no_grad()
+        if self.token_pool is None:
+            with grad_context:
                 embeddings, mask = encoder_embeddings(
                     self.encoder,
                     tokens,
@@ -171,4 +183,19 @@ class FrozenEncoderScore(nn.Module):
                     padding_mask=padding_mask,
                     feature=self.feature,
                 )
+        else:
+            if padding_mask is None:
+                padding_mask = tokens.ne(0)
+            with grad_context:
+                hidden = self.encoder.token_states(
+                    tokens,
+                    segment_ids,
+                    padding_mask,
+                    isolated=self.isolated,
+                )
+            # The pooling query is a trainable parameter of the probe, so it
+            # stays outside the encoder's frozen-gradient context.
+            embeddings, mask = self.token_pool(
+                hidden, tokens, segment_ids, padding_mask
+            )
         return self.head(embeddings, mask, features)
