@@ -13,6 +13,7 @@ from scripts.eval.summarize_downstream import (
     aggregate,
     collect_sacrifice_runs,
     collect_score_runs,
+    material_baseline,
     plot_calibration,
     plot_training_curves,
     render_markdown,
@@ -310,4 +311,26 @@ class TestScoreSlices:
             assert slices["material:7+"]["n"] == 1.0
             assert slices["source:elite"]["n"] == 2.0
             assert slices["source:standard"]["n"] == 2.0
+        return
+
+
+class TestMaterialBaseline:
+    def test_noiseless_material_recovers_the_outcome(self):
+        with given("scores that are a deterministic function of material"):
+            materials = np.arange(-9, 10, dtype=np.int16)
+            targets = np.clip(materials / 9.0, -1.0, 1.0).astype(np.float32)
+            outputs = {
+                "predictions": np.zeros(materials.size, dtype=np.float32),
+                "targets": targets,
+                "plies": np.ones(materials.size, dtype=np.int16),
+                "materials": materials,
+                "sources": np.array(["s"] * materials.size),
+            }
+
+        with when("the material baseline is fitted"):
+            baseline = material_baseline(outputs)
+
+        with then("the baseline ranks every decisive game correctly"):
+            assert baseline["auroc_decisive"] == pytest.approx(1.0)
+            assert baseline["r2"] > 0.99
         return

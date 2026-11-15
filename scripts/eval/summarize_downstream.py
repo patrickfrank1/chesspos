@@ -185,6 +185,21 @@ def score_slices(
     return slices
 
 
+def material_baseline(
+    outputs: dict[str, np.ndarray], seed: int = 0
+) -> dict[str, float]:
+    """Affine material-only reference fitted on 80% and scored on 20%."""
+    materials = np.asarray(outputs["materials"], dtype=np.float64)
+    targets = np.asarray(outputs["targets"], dtype=np.float64)
+    order = np.random.default_rng(seed).permutation(materials.size)
+    split = int(0.8 * materials.size)
+    train, test = order[:split], order[split:]
+    design = np.stack([materials[train], np.ones(train.size)], axis=1)
+    weights, *_ = np.linalg.lstsq(design, targets[train], rcond=None)
+    predictions = materials[test] * weights[0] + weights[1]
+    return score_metrics(predictions, targets[test])
+
+
 def training_histories(root: str | Path) -> dict[tuple[str, str], list[list[dict]]]:
     root = Path(root)
     histories: dict[tuple[str, str], list[list[dict]]] = {}
@@ -284,6 +299,19 @@ def collect_eval_slices(eval_root: str | Path) -> dict[str, dict[str, float]]:
     return slices
 
 
+def collect_material_baselines(
+    eval_root: str | Path,
+) -> dict[str, dict[str, float]]:
+    baselines: dict[str, dict[str, float]] = {}
+    for (recipe, model), paths in sorted(_prediction_files(eval_root).items()):
+        outputs = {
+            key: np.concatenate([np.load(path)[key] for path in paths])
+            for key in ("predictions", "targets", "plies", "materials", "sources")
+        }
+        baselines[f"{model} ({recipe})"] = material_baseline(outputs)
+    return baselines
+
+
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Summarize downstream probe runs")
     parser.add_argument("--training-root", default="data/models/downstream/score")
@@ -318,6 +346,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             {
                 "rows": rows,
                 "slices": collect_eval_slices(args.eval_root),
+                "material_baseline": collect_material_baselines(args.eval_root),
             },
             indent=2,
         )
