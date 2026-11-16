@@ -178,3 +178,20 @@ class TestMixedPrecision:
             assert embeddings.dtype == torch.bfloat16
             assert mask.dtype == torch.bool
         return
+
+
+class TestAutocast:
+    def test_attention_pool_handles_float32_states_under_autocast(self):
+        with given("fp32 hidden states and bf16 autocast, as on GPU"):
+            hidden, tokens, segment_ids, padding_mask = make_batch()
+            pool = TokenPool(TokenPoolConfig(d_model=4, mode="attention"))
+
+        with when("the pool runs inside the autocast context"):
+            with torch.autocast("cpu", dtype=torch.bfloat16):
+                embeddings, mask = pool(hidden, tokens, segment_ids, padding_mask)
+
+        with then("the mixed score/pool dtypes do not raise"):
+            assert embeddings.shape == (2, 3, 4)
+            assert embeddings.dtype == torch.float32
+            assert mask.shape == (2, 3)
+        return

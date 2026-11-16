@@ -83,14 +83,17 @@ class TokenPool(nn.Module):
             pooled = sums / counts.clamp_min(1.0).unsqueeze(-1)
         else:
             query = self.query.to(hidden.dtype)
-            scores = (hidden @ query / math.sqrt(dim)).masked_fill(
-                ~valid, float("-inf")
-            )
+            # The softmax normalisation runs in fp32 so that the segment max
+            # and the exponentials stay stable even when the trunk returns
+            # bf16 (autocast) or fp32 (promoted layer norm) tensors.
+            scores = (hidden @ query / math.sqrt(dim)).float()
+            valid_weights = valid.to(scores.dtype)
+            scores = scores.masked_fill(~valid, float("-inf"))
             max_scores = torch.full(
                 (batch, n_segments),
                 float("-inf"),
                 device=hidden.device,
-                dtype=hidden.dtype,
+                dtype=scores.dtype,
             )
             max_scores.scatter_reduce_(
                 1, segment, scores, reduce="amax", include_self=True
@@ -101,14 +104,15 @@ class TokenPool(nn.Module):
                 torch.zeros_like(max_scores),
             )
             weights = torch.exp(scores - max_scores.gather(1, segment))
-            weights = weights * valid.to(hidden.dtype)
+            weights = weights * valid_weights
             denom = torch.zeros(
-                batch, n_segments, device=hidden.device, dtype=hidden.dtype
+                batch, n_segments, device=hidden.device, dtype=scores.dtype
             )
             denom.scatter_add_(1, segment, weights)
             weights = weights / denom.gather(1, segment).clamp_min(1e-9)
             pooled = torch.zeros(
                 batch, n_segments, dim, device=hidden.device, dtype=hidden.dtype
             )
-            pooled.scatter_add_(1, expanded, hidden * weights.unsqueeze(-1))
+            contributions = hidden * weights.unsqueeze(-1).to(hidden.dtype)
+            pooled.scatter_add_(1, expanded, contributions)
         return pooled, counts > 0
