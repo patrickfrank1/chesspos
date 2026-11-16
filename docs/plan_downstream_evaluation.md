@@ -1,6 +1,6 @@
 # Plan: downstream evaluation of the two best foundation checkpoints
 
-- **Status:** In progress — probe code implemented and tested; experiment runs pending
+- **Status:** Complete — results in [`experiments/downstream_probes_2026-11-15.md`](experiments/downstream_probes_2026-11-15.md)
 - **Date:** 2026-11-15
 - **Scope:** Train frozen-encoder downstream heads on the two best foundation
   checkpoints and compare them on (a) sacrifice-theme classification and
@@ -302,8 +302,15 @@ Done and green (`ruff format`, `ruff check`, full `pytest` — 778 passed):
   fine-tune arm unfreezes `blocks[-1]` + `ln_final` + head (and requires
   `feature="full"` because `embed()` runs under `torch.no_grad()`).
 
-Still to do: puzzle parquet generation, vast.ai runs, aggregation/plots, and
-the sharable report.
+Finished: full puzzle corpus built (62 shards, `downstream/puzzles` in the
+bucket), all runs completed on vast.ai (3 seeds for the frozen grid, seed 17
+for the adapted arms), and the report with calibration, training curves,
+slices, and the material baseline is written. The GPU box was destroyed after
+the artifacts were verified in the bucket.
+
+Headline: frozen AUC 0.587 (20m) vs 0.656 for a material baseline; last-block
+fine-tuning 0.653; full fine-tuning **0.713** (20m) and **0.700** (6m). Turn
+tokens and attention pooling are not the bottleneck; adaptation is.
 
 ---
 
