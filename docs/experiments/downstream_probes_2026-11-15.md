@@ -113,20 +113,35 @@ while large-material endgames reach AUC 0.86. Openings add nothing, as
 expected. The 20m model is ahead of the 6m in the late-game and large-material
 buckets and identical elsewhere.
 
-## Results — token-level pooling ablation
+## Results — adaptation ablations
 
-_Pending: runs queued after the primary grid._
+The frozen probes pool per-token states with a **mean** and train only the
+head. Two controls test what limits them: how much of the encoder adapts, and
+whether a learned pooling operator (over the last per-token layer) matters.
 
-The fine-tune arm uses **mean** token pooling over the last per-token layer. A
-learned attention pool is the control for whether the pooling operator itself
-limits the probe. The grid is {frozen, last-block fine-tuned} × {mean,
-attention}; the mean cells are the tables above and the attention cells are
-run on the same data, head, and seed.
+Held-out test split, seed 17 (1 seed for the adapted arms):
 
-A second control unfreezes the **whole encoder** (encoder LR 1e-5, head LR
-1e-3, mean pooling) to separate "last block is enough" from "the probe needs
-more adaptation capacity". The last-block result (held-out R² 0.078, AUC 0.653
-for the 20m) is the reference.
+| pooling | freeze level | model | R² | decisive AUC | MAE |
+|---|---|---|---|---:|---:|---:|
+| mean | frozen | run_20m_lazy | 0.024 | 0.587 | 0.859 |
+| mean | frozen | run_6m_isolated | 0.010 | 0.571 | 0.867 |
+| mean | last block | run_20m_lazy | 0.078 | 0.653 | 0.820 |
+| mean | last block | run_6m_isolated | 0.013 | 0.574 | 0.865 |
+| mean | **all parameters** | run_20m_lazy | **0.131** | **0.713** | 0.773 |
+| mean | **all parameters** | run_6m_isolated | **0.117** | **0.700** | 0.786 |
+| attention | frozen | _running_ | — | — | — |
+| attention | last block | _running_ | — | — | — |
+| material baseline | — | — | 0.065 | 0.656 | 0.835 |
+
+**Full fine-tuning is the largest single lever.** It roughly triples the
+frozen R² and adds 0.13 AUC for both checkpoints, and clears the material
+baseline on both metrics. With the whole encoder adapted, the 6m model nearly
+catches the 20m (AUC 0.700 vs 0.713, R² 0.117 vs 0.131), so most of the 6m
+deficit is recoverable representation capacity rather than a hard capacity
+ceiling.
+
+The attention-pooling cells (frozen and last-block) are running; they isolate
+whether the gain comes from token reweighting or from adaptation itself.
 
 ## Results — sacrifice classification
 
@@ -134,9 +149,12 @@ _Filled in when the full-corpus runs finish._
 
 ## Findings
 
-1. **Neither checkpoint is a usable position evaluator today.** The best
+1. **Frozen, neither checkpoint is a usable position evaluator.** The best
    held-out decisive AUC is 0.587 (20m), versus 0.656 for an affine function of
-   material alone. R² is 0.023–0.024 versus 0.065.
+   material alone (R² 0.023–0.024 vs 0.065). **Fully fine-tuned they are:**
+   AUC 0.713 / R² 0.131 (20m) and 0.700 / 0.117 (6m), both above the material
+   baseline. The frozen-probe result measures the representation, not what the
+   checkpoint can become.
 2. **The 20m checkpoint is consistently the better representation.** It wins by
    ~0.015 AUC and ~0.013 R² on held-out data, well outside the seed standard
    deviation (0.001–0.003).
@@ -182,6 +200,9 @@ _Filled in when the full-corpus runs finish._
 - Decide whether the next foundation-model work should target material and
   phase structure explicitly (an auxiliary head on the pooled content vector),
   given that those are the only slices with signal.
-- A last-block fine-tune arm is running as an alternative; if it closes the gap
-  to the material baseline, the frozen-probe conclusion becomes "the
-  representation needs adaptation", not "the representation lacks the signal".
+- Adaptation answers the question: full fine-tuning more than doubles the
+  last-block gain and beats the material baseline, so the frozen probe
+  understated the checkpoints. The practical recipe is "fine-tune the model,
+  then probe", not "freeze and probe".
+- The same adaptation should be tried on the sacrifice task, where the frozen
+  representation already reaches AUROC 0.71.
