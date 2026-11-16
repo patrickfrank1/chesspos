@@ -363,7 +363,11 @@ pooling operators with the two freeze levels:
   content-isolated native recipe), zero-initialised so training starts at the
   mean. The query is a probe parameter and trains even when the encoder is
   frozen.
-- Runs: 4 cells × 2 checkpoints × seed 17, one epoch each, same data and head.
+- A third freeze level is also measured: **full fine-tuning** (every encoder
+  parameter, encoder LR 1e-5, head LR 1e-3), with mean pooling. It bounds how
+  much of the gap is adaptation capacity versus the pooling operator.
+- Runs: 4 pooling cells + 2 full fine-tuning cells, × 2 checkpoints × seed 17,
+  one epoch each, same data and head.
 - Metrics: held-out R²/AUC and calibration versus the mean cells and the
   material baseline.
 - Implementation: `src/modeling/token_pool.py`, `--token-pooling

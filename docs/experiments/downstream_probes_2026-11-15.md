@@ -123,6 +123,11 @@ limits the probe. The grid is {frozen, last-block fine-tuned} × {mean,
 attention}; the mean cells are the tables above and the attention cells are
 run on the same data, head, and seed.
 
+A second control unfreezes the **whole encoder** (encoder LR 1e-5, head LR
+1e-3, mean pooling) to separate "last block is enough" from "the probe needs
+more adaptation capacity". The last-block result (held-out R² 0.078, AUC 0.653
+for the 20m) is the reference.
+
 ## Results — sacrifice classification
 
 _Filled in when the full-corpus runs finish._
