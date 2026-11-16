@@ -82,11 +82,15 @@ class TokenPool(nn.Module):
             sums.scatter_add_(1, expanded, hidden * valid.unsqueeze(-1))
             pooled = sums / counts.clamp_min(1.0).unsqueeze(-1)
         else:
-            scores = (hidden @ self.query / math.sqrt(dim)).masked_fill(
+            query = self.query.to(hidden.dtype)
+            scores = (hidden @ query / math.sqrt(dim)).masked_fill(
                 ~valid, float("-inf")
             )
             max_scores = torch.full(
-                (batch, n_segments), float("-inf"), device=hidden.device
+                (batch, n_segments),
+                float("-inf"),
+                device=hidden.device,
+                dtype=hidden.dtype,
             )
             max_scores.scatter_reduce_(
                 1, segment, scores, reduce="amax", include_self=True

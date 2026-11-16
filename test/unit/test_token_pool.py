@@ -161,3 +161,20 @@ class TestConfig:
         with then("each invalid config raises"):
             assert errors == [True, True, True]
         return
+
+
+class TestMixedPrecision:
+    def test_attention_pool_supports_bfloat16_hidden_states(self):
+        with given("a batch of bf16 hidden states, as produced under autocast"):
+            hidden, tokens, segment_ids, padding_mask = make_batch()
+            pool = TokenPool(TokenPoolConfig(d_model=4, mode="attention"))
+
+        with when("the segments are pooled"):
+            embeddings, mask = pool(
+                hidden.bfloat16(), tokens, segment_ids, padding_mask
+            )
+
+        with then("the pooled embeddings keep the bf16 dtype"):
+            assert embeddings.dtype == torch.bfloat16
+            assert mask.dtype == torch.bool
+        return
