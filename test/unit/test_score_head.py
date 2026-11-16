@@ -327,3 +327,78 @@ class TestAttentionTokenPool:
         with then("a ValueError is raised"):
             assert isinstance(error, ValueError)
         return
+
+
+class TestFullFineTune:
+    def test_all_encoder_parameters_are_trainable(self):
+        with given("a score model with every encoder parameter unfrozen"):
+            encoder = tiny_encoder(d_model=4, d_ff=8)
+            head = ScoreHead(ScoreHeadConfig(d_model=4))
+            model = FrozenEncoderScore(encoder, head, feature="full", unfreeze_all=True)
+            tokens, segment_ids, padding_mask = batch_from_fen()
+
+        with when("a training step is run"):
+            score = model(tokens, segment_ids, padding_mask)
+            (score - 1.0).pow(2).mean().backward()
+
+        with then("the first block and embeddings receive gradients"):
+            assert all(p.requires_grad for p in model.encoder.parameters())
+            assert model.encoder.training is True
+            assert encoder.blocks[0].qkv.weight.grad is not None
+            assert encoder.blocks[0].qkv.weight.grad.abs().sum() > 0
+        return
+
+    def test_eval_mode_restores_the_frozen_behaviour_of_the_encoder(self):
+        with given("a fully unfrozen model"):
+            encoder = tiny_encoder(d_model=4, d_ff=8)
+            head = ScoreHead(ScoreHeadConfig(d_model=4))
+            model = FrozenEncoderScore(encoder, head, feature="full", unfreeze_all=True)
+
+        with when("the model is switched to train and then eval"):
+            model.train()
+            train_mode = model.encoder.training
+            model.eval()
+            eval_mode = model.encoder.training
+
+        with then("the encoder follows the requested mode"):
+            assert train_mode is True
+            assert eval_mode is False
+        return
+
+    def test_requires_the_full_feature_recipe(self):
+        with given("full fine-tuning combined with the native embedding"):
+            encoder = tiny_encoder(d_model=4, d_ff=8)
+            head = ScoreHead(ScoreHeadConfig(d_model=4))
+
+        with when("the model is constructed"):
+            error = None
+            try:
+                FrozenEncoderScore(encoder, head, feature="native", unfreeze_all=True)
+            except ValueError as exc:
+                error = exc
+
+        with then("a ValueError is raised"):
+            assert isinstance(error, ValueError)
+        return
+
+    def test_cannot_be_combined_with_last_block_unfreezing(self):
+        with given("both unfreeze options enabled"):
+            encoder = tiny_encoder(d_model=4, d_ff=8)
+            head = ScoreHead(ScoreHeadConfig(d_model=4))
+
+        with when("the model is constructed"):
+            error = None
+            try:
+                FrozenEncoderScore(
+                    encoder,
+                    head,
+                    feature="full",
+                    unfreeze_all=True,
+                    unfreeze_last_block=True,
+                )
+            except ValueError as exc:
+                error = exc
+
+        with then("a ValueError is raised"):
+            assert isinstance(error, ValueError)
+        return

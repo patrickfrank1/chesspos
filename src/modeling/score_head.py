@@ -116,6 +116,7 @@ class FrozenEncoderScore(nn.Module):
         feature: str = "native",
         unfreeze_last_block: bool = False,
         token_pooling: str = "mean",
+        unfreeze_all: bool = False,
     ):
         super().__init__()
         if feature not in FEATURE_RECIPES:
@@ -126,15 +127,20 @@ class FrozenEncoderScore(nn.Module):
             raise ValueError(
                 f"token_pooling must be 'mean' or 'attention', got {token_pooling!r}"
             )
-        if unfreeze_last_block and feature != "full":
+        if unfreeze_last_block and unfreeze_all:
             raise ValueError(
-                "unfreeze_last_block requires feature='full': the native "
-                "embedding runs under torch.no_grad()"
+                "unfreeze_last_block and unfreeze_all are mutually exclusive"
+            )
+        if (unfreeze_last_block or unfreeze_all) and feature != "full":
+            raise ValueError(
+                "fine-tuning requires feature='full': the native embedding "
+                "runs under torch.no_grad()"
             )
         self.encoder = encoder
         self.head = head
         self.feature = feature
         self.unfreeze_last_block = unfreeze_last_block
+        self.unfreeze_all = unfreeze_all
         self.token_pooling = token_pooling
         self.isolated = feature == "native" and bool(encoder.config.content_pooling)
         if token_pooling == "attention":
@@ -148,7 +154,11 @@ class FrozenEncoderScore(nn.Module):
         else:
             self.token_pool = None
         freeze_encoder(self.encoder)
-        if unfreeze_last_block:
+        if unfreeze_all:
+            for parameter in self.encoder.parameters():
+                parameter.requires_grad = True
+            self.encoder.train()
+        elif unfreeze_last_block:
             for parameter in self.encoder.blocks[-1].parameters():
                 parameter.requires_grad = True
             for parameter in self.encoder.ln_final.parameters():
@@ -160,7 +170,7 @@ class FrozenEncoderScore(nn.Module):
 
     def train(self, mode: bool = True) -> "FrozenEncoderScore":
         super().train(mode)
-        if self.unfreeze_last_block:
+        if self.unfreeze_last_block or self.unfreeze_all:
             self.encoder.train(mode)
         else:
             self.encoder.eval()
@@ -173,7 +183,8 @@ class FrozenEncoderScore(nn.Module):
         padding_mask: torch.Tensor | None = None,
         features: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        grad_context = nullcontext() if self.unfreeze_last_block else torch.no_grad()
+        fine_tuning = self.unfreeze_last_block or self.unfreeze_all
+        grad_context = nullcontext() if fine_tuning else torch.no_grad()
         if self.token_pool is None:
             with grad_context:
                 embeddings, mask = encoder_embeddings(

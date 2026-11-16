@@ -185,6 +185,31 @@ class TestParseArgs:
             assert guarded.chance_margin_z == 1.645
         return
 
+    def test_exposes_full_fine_tuning_and_rejects_both_unfreeze_flags(self):
+        with given("a full fine-tuning flag and a conflicting pair"):
+            full = parse_args(["--checkpoint", "encoder.pt", "--unfreeze-all"])
+
+        with when("the arguments are parsed"):
+            unfreeze_all = full.unfreeze_all
+            conflict = None
+            try:
+                parse_args(
+                    [
+                        "--checkpoint",
+                        "encoder.pt",
+                        "--unfreeze-all",
+                        "--unfreeze-last-block",
+                    ]
+                )
+            except SystemExit as exc:
+                conflict = exc
+
+        with then("full fine-tuning is opt-in and the flags conflict"):
+            assert unfreeze_all is True
+            assert full.unfreeze_last_block is False
+            assert conflict is not None
+        return
+
     def test_defaults_to_mean_token_pooling_and_accepts_attention(self):
         with given("default and attention token pooling arguments"):
             default = parse_args(["--checkpoint", "encoder.pt"])
