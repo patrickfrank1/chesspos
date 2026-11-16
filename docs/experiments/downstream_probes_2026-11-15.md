@@ -129,8 +129,10 @@ Held-out test split, seed 17 (1 seed for the adapted arms):
 | mean | last block | run_6m_isolated | 0.013 | 0.574 | 0.865 |
 | mean | **all parameters** | run_20m_lazy | **0.131** | **0.713** | 0.773 |
 | mean | **all parameters** | run_6m_isolated | **0.117** | **0.700** | 0.786 |
-| attention | frozen | _running_ | — | — | — |
-| attention | last block | _running_ | — | — | — |
+| attention | frozen | run_20m_lazy | 0.020 | 0.577 | 0.864 |
+| attention | frozen | run_6m_isolated | 0.012 | 0.571 | 0.868 |
+| attention | last block | run_20m_lazy | 0.079 | 0.653 | 0.820 |
+| attention | last block | run_6m_isolated | 0.013 | 0.574 | 0.865 |
 | material baseline | — | — | 0.065 | 0.656 | 0.835 |
 
 **Full fine-tuning is the largest single lever.** It roughly triples the
@@ -140,8 +142,16 @@ catches the 20m (AUC 0.700 vs 0.713, R² 0.117 vs 0.131), so most of the 6m
 deficit is recoverable representation capacity rather than a hard capacity
 ceiling.
 
-The attention-pooling cells (frozen and last-block) are running; they isolate
-whether the gain comes from token reweighting or from adaptation itself.
+**The pooling operator is not the bottleneck.** Attention pooling matches the
+mean within ±0.001 AUC and ±0.004 R² in every cell (frozen and last block,
+both checkpoints), and is marginally worse for the frozen 20m (0.577 vs
+0.587). The zero-initialised query is free to learn a non-uniform weighting,
+but the probe gains nothing from it. What matters is *how much of the encoder
+adapts*, not how the last token layer is pooled.
+
+Reading the grid as a whole: frozen 0.57–0.59 AUC → last block 0.65 (20m only)
+→ all parameters 0.70–0.71 for both checkpoints. The 20m's last-block gain is
+large; the 6m needs the whole encoder before it catches up.
 
 ## Results — sacrifice classification
 
@@ -158,10 +168,10 @@ _Filled in when the full-corpus runs finish._
 2. **The 20m checkpoint is consistently the better representation.** It wins by
    ~0.015 AUC and ~0.013 R² on held-out data, well outside the seed standard
    deviation (0.001–0.003).
-3. **The full-trunk recipe barely helps the 6m checkpoint** (0.571 → 0.573 AUC
-   on test). Giving the head explicit access to the turn token recovers only a
-   fraction of the gap to the 20m model, so turn-blindness is not the main
-   limitation of the pooled content vector.
+3. **Neither the turn token nor the pooling operator is the main limit.** The
+   full-trunk recipe moves the 6m by +0.002 AUC, and learned attention pooling
+   by ±0.001. Freezing is the constraint: full fine-tuning adds +0.126 AUC
+   (20m) and +0.129 (6m).
 4. **The aggregate hides where the signal lives.** The embedding is a weak
    material detector: chance in balanced positions, strong in lopsided
    endgames. Any claim that the representation "understands" a position should
@@ -197,9 +207,14 @@ _Filled in when the full-corpus runs finish._
 
 ## Next steps
 
+- Fine-tune on the sacrifice task as well: the frozen representation already
+  reaches AUROC 0.71, and adaptation is clearly the largest lever on the score
+  task.
+- If the goal is a position evaluator, the recipe is "fine-tune, then probe".
+  The frozen checkpoint is a feature extractor, not an evaluator.
 - Decide whether the next foundation-model work should target material and
   phase structure explicitly (an auxiliary head on the pooled content vector),
-  given that those are the only slices with signal.
+  given that those are the only slices with signal in the frozen setting.
 - Adaptation answers the question: full fine-tuning more than doubles the
   last-block gain and beats the material baseline, so the frozen probe
   understated the checkpoints. The practical recipe is "fine-tune the model,
