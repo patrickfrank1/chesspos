@@ -38,7 +38,7 @@ from src.training.puzzle_metrics import binary_metrics
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Train a frozen-encoder binary classifier for a puzzle theme"
+        description="Train a binary puzzle-theme classifier on a foundation encoder"
     )
     parser.add_argument("--data-dir", default="data/processed/puzzles")
     parser.add_argument("--theme", default="sacrifice")
@@ -50,6 +50,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--epochs", type=int, default=3)
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--lr", type=float, default=1e-3)
+    parser.add_argument(
+        "--encoder-lr",
+        type=float,
+        default=1e-5,
+        help="Learning rate for unfrozen encoder blocks",
+    )
     parser.add_argument("--weight-decay", type=float, default=0.01)
     parser.add_argument("--positive-fraction", type=float, default=0.5)
     parser.add_argument("--val-ratio", type=float, default=0.1)
@@ -60,7 +66,18 @@ def parse_args() -> argparse.Namespace:
         "--feature",
         choices=("native", "full"),
         default="native",
-        help="Frozen encoder embedding: native embed() or full-trunk encode()",
+        help="Encoder embedding: native embed() or full-trunk encode()",
+    )
+    unfreeze = parser.add_mutually_exclusive_group()
+    unfreeze.add_argument(
+        "--unfreeze-last-block",
+        action="store_true",
+        help="Fine-tune the last transformer block and final norm",
+    )
+    unfreeze.add_argument(
+        "--unfreeze-all",
+        action="store_true",
+        help="Fine-tune every encoder parameter (requires --feature full)",
     )
     parser.add_argument("--pos-weight", type=float, default=None)
     parser.add_argument("--num-workers", type=int, default=4)
@@ -103,6 +120,27 @@ def load_frozen_encoder(path: str, device: torch.device) -> nn.Module:
     for parameter in encoder.parameters():
         parameter.requires_grad = False
     return encoder
+
+
+def build_optimizer(
+    model: FrozenEncoderClassifier,
+    lr: float,
+    encoder_lr: float,
+    weight_decay: float,
+) -> torch.optim.Optimizer:
+    """Separate parameter groups: unfrozen encoder blocks train slowly."""
+    encoder_params = [
+        parameter for parameter in model.encoder.parameters() if parameter.requires_grad
+    ]
+    head_params = [
+        parameter for parameter in model.head.parameters() if parameter.requires_grad
+    ]
+    groups: list[dict] = []
+    if encoder_params:
+        groups.append({"params": encoder_params, "lr": encoder_lr})
+    if head_params:
+        groups.append({"params": head_params, "lr": lr})
+    return torch.optim.AdamW(groups, lr=lr, weight_decay=weight_decay)
 
 
 def build_validation_plan(records: list[PuzzleRecord]) -> EpochPlan:
@@ -157,6 +195,9 @@ def train_epoch(
     total_loss = 0.0
     total_examples = 0
     total_batches = len(loader)
+    trainable = [
+        parameter for parameter in model.parameters() if parameter.requires_grad
+    ]
     for step, batch in enumerate(loader, start=1):
         tokens = batch["tokens"].to(device, non_blocking=True)
         segment_ids = batch["segment_ids"].to(device, non_blocking=True)
@@ -175,7 +216,7 @@ def train_epoch(
                 )
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
-        torch.nn.utils.clip_grad_norm_(model.head.parameters(), 1.0)
+        torch.nn.utils.clip_grad_norm_(trainable, 1.0)
         optimizer.step()
 
         total_loss += float(loss.item()) * labels.shape[0]
@@ -228,6 +269,7 @@ def save_checkpoint(
     epoch: int,
     metrics: dict[str, float],
     feature: str = "native",
+    encoder_lr: float = 1e-5,
 ) -> None:
     torch.save(
         {
@@ -236,6 +278,9 @@ def save_checkpoint(
             "head_config": asdict(model.head.config),
             "head_state": model.head.state_dict(),
             "feature": feature,
+            "unfreeze_last_block": model.unfreeze_last_block,
+            "unfreeze_all": model.unfreeze_all,
+            "encoder_lr": encoder_lr,
             "planner_state": planner.state_dict(),
             "epoch": epoch,
             "metrics": metrics,
@@ -277,7 +322,13 @@ def main() -> int:
             pooling=args.pooling,
         )
     ).to(device)
-    model = FrozenEncoderClassifier(encoder, head, feature=args.feature).to(device)
+    model = FrozenEncoderClassifier(
+        encoder,
+        head,
+        feature=args.feature,
+        unfreeze_last_block=args.unfreeze_last_block,
+        unfreeze_all=args.unfreeze_all,
+    ).to(device)
 
     planner = RollingVariantPlanner(
         train_records,
@@ -300,8 +351,11 @@ def main() -> int:
         else None
     )
 
-    optimizer = torch.optim.AdamW(
-        model.head.parameters(), lr=args.lr, weight_decay=args.weight_decay
+    optimizer = build_optimizer(
+        model,
+        lr=args.lr,
+        encoder_lr=args.encoder_lr,
+        weight_decay=args.weight_decay,
     )
     pos_weight = (
         torch.tensor(args.pos_weight, device=device)
@@ -322,7 +376,9 @@ def main() -> int:
     print(
         f"records={len(records)} train={len(train_records)} val={len(val_records)} "
         f"theme={args.theme} device={device} loss={args.loss} "
-        f"pooling={args.pooling}"
+        f"pooling={args.pooling} feature={args.feature} "
+        f"unfreeze_last_block={args.unfreeze_last_block} "
+        f"unfreeze_all={args.unfreeze_all}"
     )
     if focal is not None:
         print(f"focal_gamma={focal.gamma:.4f} focal_alpha={focal.alpha:.4f}")
@@ -369,7 +425,13 @@ def main() -> int:
                 {f"retrieval_{key}": value for key, value in retrieval_metrics.items()}
             )
         save_checkpoint(
-            output_dir / "last.pt", model, planner, epoch, metrics, feature=args.feature
+            output_dir / "last.pt",
+            model,
+            planner,
+            epoch,
+            metrics,
+            feature=args.feature,
+            encoder_lr=args.encoder_lr,
         )
         if metrics["pr_auc"] > best_pr_auc:
             best_pr_auc = metrics["pr_auc"]
@@ -380,6 +442,7 @@ def main() -> int:
                 epoch,
                 metrics,
                 feature=args.feature,
+                encoder_lr=args.encoder_lr,
             )
             print(f"saved best checkpoint to {output_dir / 'best.pt'}")
         if args.abort_if_chance and epoch < args.epochs:
