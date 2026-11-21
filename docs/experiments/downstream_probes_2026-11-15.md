@@ -2,10 +2,12 @@
 
 ## Status
 
-Frozen-encoder downstream evaluation of the two best foundation checkpoints.
-Score regression is complete (two recipes, three seeds, held-out test split);
-sacrifice classification uses the full puzzle corpus. Plots and the fine-tune
-arm are appended as they finish.
+Frozen and fine-tuned downstream evaluation of the two best foundation
+checkpoints. Score regression is complete (two recipes, three seeds, held-out
+test split; fine-tuning ablations with seed 17). Sacrifice classification is
+complete for the frozen encoder and for the last-block/full-encoder ablations.
+The sacrifice ablation grid uses a fixed 1M-puzzle subset to bound compute;
+the earlier full-corpus frozen runs are retained as a reference.
 
 ## Question
 
@@ -62,8 +64,18 @@ That is why the full-trunk recipe (recipe A) is run as an alternative.
 ### Sacrifice classification
 
 Reuses the existing puzzle pipeline (`RollingVariantPlanner`, 50/50 epoch
-plans, subsequence variants, attention-pooled sequence head, PR-AUC on the
-natural-prevalence validation split) with the full 6.16M-puzzle corpus.
+plans, subsequence variants, pooled sequence head, PR-AUC on the
+natural-prevalence validation split). The frozen reference uses the full
+6.16M-puzzle corpus. The fine-tuning grid uses the first 1M puzzles (16% of
+the corpus; 7.57% sacrifice prevalence versus 7.54% overall, so the class mix
+is representative) and otherwise the same hash-based 90/10 split.
+
+Freeze levels are frozen encoder, last transformer block + final norm, and all
+encoder parameters. The head is a two-layer `PoolingClassifier` with either
+mean or attention pooling over the puzzle's position embeddings. Fine-tuning
+uses the full-trunk feature recipe (`encode()`), encoder LR 1e-5, head LR
+1e-3, batch 128, one epoch, bf16 autocast, and seed 17. Metrics are PR-AUC
+(primary), AUROC, and F1 at the validation-optimal threshold.
 
 ## Results — position score regression
 
@@ -113,7 +125,7 @@ while large-material endgames reach AUC 0.86. Openings add nothing, as
 expected. The 20m model is ahead of the 6m in the late-game and large-material
 buckets and identical elsewhere.
 
-## Results — adaptation ablations
+## Results — score adaptation ablations
 
 The frozen probes pool per-token states with a **mean** and train only the
 head. Two controls test what limits them: how much of the encoder adapts, and
@@ -155,7 +167,61 @@ large; the 6m needs the whole encoder before it catches up.
 
 ## Results — sacrifice classification
 
-_Filled in when the full-corpus runs finish._
+Validation split, natural prevalence, seed 17 (1 seed for every cell). The
+fine-tuning grid uses 1M puzzles; the `native` rows are the earlier
+full-corpus frozen reference and are not directly comparable to the 1M cells.
+
+| pooling | freeze level | model | PR-AUC | AUROC | F1 |
+|---|---|---|---:|---:|---:|
+| mean | frozen | run_20m_lazy | 0.203 | 0.697 | 0.262 |
+| mean | frozen | run_6m_isolated | 0.200 | 0.685 | 0.254 |
+| attention | frozen | run_20m_lazy | 0.203 | 0.697 | 0.261 |
+| attention | frozen | run_6m_isolated | 0.201 | 0.686 | 0.254 |
+| mean | last block | run_20m_lazy | 0.253 | 0.728 | 0.295 |
+| mean | last block | run_6m_isolated | 0.211 | 0.692 | 0.259 |
+| attention | last block | run_20m_lazy | 0.254 | 0.728 | 0.294 |
+| attention | last block | run_6m_isolated | 0.214 | 0.693 | 0.260 |
+| mean | **all parameters** | run_20m_lazy | **0.455** | **0.834** | **0.449** |
+| mean | **all parameters** | run_6m_isolated | **0.387** | **0.802** | **0.397** |
+| attention | **all parameters** | run_20m_lazy | **0.455** | **0.834** | 0.448 |
+| attention | **all parameters** | run_6m_isolated | 0.385 | 0.801 | 0.396 |
+| attention | frozen (full corpus) | run_20m_lazy | 0.224 | 0.712 | 0.274 |
+| attention | frozen (full corpus) | run_6m_isolated | 0.216 | 0.697 | 0.263 |
+
+Threshold metrics at the validation-optimal F1 threshold (mean pooling; the
+attention cells are within ±0.001):
+
+| freeze level | model | precision | recall | accuracy |
+|---|---|---:|---:|---:|
+| frozen | run_20m_lazy | 0.188 | 0.432 | 0.768 |
+| frozen | run_6m_isolated | 0.173 | 0.477 | 0.733 |
+| last block | run_20m_lazy | 0.236 | 0.393 | 0.821 |
+| last block | run_6m_isolated | 0.191 | 0.401 | 0.782 |
+| all parameters | run_20m_lazy | 0.439 | 0.459 | 0.893 |
+| all parameters | run_6m_isolated | 0.360 | 0.444 | 0.872 |
+
+**Full fine-tuning is again the dominant lever.** It roughly doubles PR-AUC
+for both checkpoints (20m: 0.203 → 0.455; 6m: 0.200 → 0.387) and adds 0.14 /
+0.12 AUROC, clearing the full-corpus frozen reference by a wide margin. The
+6m checkpoint also improves substantially, but it does not close the gap the
+way it did on score regression: the 20m remains ahead by ~0.07 PR-AUC and
+~0.03 AUROC.
+
+**Last-block fine-tuning helps the 20m, barely moves the 6m.** The 20m gains
++0.05 PR-AUC and +0.03 AUROC from the last block alone; the 6m gains only
++0.01 PR-AUC and +0.007 AUROC, landing near its full-corpus frozen reference.
+Adapting the last block is not enough to unlock the smaller checkpoint.
+
+**The pooling operator is not the bottleneck.** Mean and attention pooling
+match within 0.002 PR-AUC, 0.001 AUROC, and 0.001 F1 in every cell, for both
+checkpoints and every freeze level. As on score regression, what matters is
+how much of the encoder adapts.
+
+**Accuracy is misleading on the natural-prevalence split.** The best model's
+accuracy is 0.893, still below the 0.925 accuracy of always predicting
+"not sacrifice", while its PR-AUC (0.455) is ~6× the 0.075 prevalence and its
+F1 (0.449) is far above the frozen baseline. Read sacrifice with PR-AUC,
+AUROC, precision, and recall, not accuracy.
 
 ## Findings
 
@@ -166,17 +232,28 @@ _Filled in when the full-corpus runs finish._
    baseline. The frozen-probe result measures the representation, not what the
    checkpoint can become.
 2. **The 20m checkpoint is consistently the better representation.** It wins by
-   ~0.015 AUC and ~0.013 R² on held-out data, well outside the seed standard
-   deviation (0.001–0.003).
+   ~0.015 AUC and ~0.013 R² on held-out score data, well outside the seed
+   standard deviation (0.001–0.003), and by ~0.07 PR-AUC / ~0.03 AUROC after
+   full sacrifice fine-tuning.
 3. **Neither the turn token nor the pooling operator is the main limit.** The
    full-trunk recipe moves the 6m by +0.002 AUC, and learned attention pooling
-   by ±0.001. Freezing is the constraint: full fine-tuning adds +0.126 AUC
-   (20m) and +0.129 (6m).
-4. **The aggregate hides where the signal lives.** The embedding is a weak
+   by ±0.001 on score; on sacrifice, mean and attention pooling match within
+   0.002 PR-AUC in every cell. Freezing is the constraint: full fine-tuning
+   adds +0.126 AUC (20m) and +0.129 (6m) on score.
+4. **Full fine-tuning transfers to sacrifice and is the largest lever there
+   too.** PR-AUC roughly doubles (20m 0.203 → 0.455, 6m 0.200 → 0.387) and
+   both checkpoints clear the full-corpus frozen reference (0.224 / 0.216).
+   Last-block adaptation helps the 20m (+0.05 PR-AUC) but barely moves the 6m
+   (+0.01), so the smaller checkpoint needs the whole encoder.
+5. **The aggregate hides where the signal lives.** The embedding is a weak
    material detector: chance in balanced positions, strong in lopsided
    endgames. Any claim that the representation "understands" a position should
    be read against that slice table.
-5. **Calibration is compressed toward zero.** Predictions occupy a narrow band
+6. **Accuracy is misleading on natural-prevalence sacrifice.** The best model
+   reaches 0.893 accuracy, below the 0.925 always-negative baseline, while its
+   PR-AUC is ~6× prevalence. PR-AUC, AUROC, precision, and recall are the
+   meaningful sacrifice metrics.
+7. **Calibration is compressed toward zero.** Predictions occupy a narrow band
    around the base rate; ranking (AUC) survives while R² does not. The
    calibration plot shows the slope deficit.
 
@@ -192,32 +269,40 @@ _Filled in when the full-corpus runs finish._
 - Single-position inputs ignore move history. A window ablation with a ridge
   probe on 4k games showed no gain (window 1/4/8 all ~0.56 AUC), but the head
   was not retrained per window.
-- Sacrifice uses one epoch over the full corpus per seed; the plan's three
-  epochs would change absolute numbers, not the model ordering.
+- The sacrifice fine-tuning grid uses a fixed 1M-puzzle subset (16% of the
+  corpus) and one epoch, seed 17. Its class prevalence matches the full corpus
+  (7.57% vs 7.54%), but absolute numbers are not directly comparable to the
+  full-corpus frozen reference; the relative freeze-level and pooling ordering
+  is the result. More epochs would likely raise absolute numbers.
+- The adapted arms use a single seed, so the reported gap is not accompanied
+  by seed variance. The frozen score grid's seed standard deviation was
+  0.001–0.004, well below the observed sacrifice differences.
 
 ## Artifacts
 
 - Code: `feature/downstream-probes` (`src/dataset/game_outcomes.py`,
-  `src/modeling/score_head.py`, `src/run/train_score_probe.py`,
+  `src/modeling/score_head.py`, `src/modeling/puzzle_classifier.py`,
+  `src/run/train_score_probe.py`, `src/run/train_puzzle_classifier.py`,
   `src/run/eval_score_probe.py`, `scripts/eval/summarize_downstream.py`).
 - Runs: `hf://buckets/patrickfrank1/chesspos-checkpoints/downstream/` plus the
   box-local `data/models/downstream/` and `data/eval/downstream/` trees
-  (`metrics.json`, `predictions.npz`, checkpoints).
+  (`metrics.json`, `predictions.npz`, checkpoints). Sacrifice checkpoints are
+  under `downstream/runs/models/sacrifice/<recipe>/<model>/seed17/`.
 - Plan and decisions: [`../plan_downstream_evaluation.md`](../plan_downstream_evaluation.md).
 
 ## Next steps
 
-- Fine-tune on the sacrifice task as well: the frozen representation already
-  reaches AUROC 0.71, and adaptation is clearly the largest lever on the score
-  task.
+- Run the winning all-parameters sacrifice recipe on the full 6.16M corpus to
+  obtain absolute numbers directly comparable to the full-corpus frozen
+  reference. The 1M grid already establishes the ordering.
+- Try more than one epoch for full fine-tuning; one epoch may underfit the
+  adapted encoder, especially on the 6m checkpoint.
+- Repeat the adapted sacrifice cells with 3 seeds to attach variance to the
+  freeze-level and checkpoint gaps.
 - If the goal is a position evaluator, the recipe is "fine-tune, then probe".
   The frozen checkpoint is a feature extractor, not an evaluator.
 - Decide whether the next foundation-model work should target material and
   phase structure explicitly (an auxiliary head on the pooled content vector),
   given that those are the only slices with signal in the frozen setting.
-- Adaptation answers the question: full fine-tuning more than doubles the
-  last-block gain and beats the material baseline, so the frozen probe
-  understated the checkpoints. The practical recipe is "fine-tune the model,
-  then probe", not "freeze and probe".
-- The same adaptation should be tried on the sacrifice task, where the frozen
-  representation already reaches AUROC 0.71.
+- The practical recipe is "fine-tune the model, then probe", not "freeze and
+  probe"; this now holds for both score regression and sacrifice.

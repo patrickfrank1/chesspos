@@ -312,6 +312,11 @@ Headline: frozen AUC 0.587 (20m) vs 0.656 for a material baseline; last-block
 fine-tuning 0.653; full fine-tuning **0.713** (20m) and **0.700** (6m). Turn
 tokens and attention pooling are not the bottleneck; adaptation is.
 
+Follow-up (2026-11-21): the sacrifice classifier now supports last-block and
+full-encoder fine-tuning (`--unfreeze-last-block`, `--unfreeze-all`). On a 1M
+puzzle subset, full fine-tuning lifts PR-AUC from ~0.20 to **0.455** (20m) and
+**0.387** (6m); mean vs attention pooling is again irrelevant.
+
 ---
 
 ## 8. Risks and mitigations
