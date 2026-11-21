@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>chesspos · position evaluator</title>
+    <link rel="stylesheet" href="/static/style.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div>
+        <h1>chesspos <span>position evaluator</span></h1>
+        <p id="device-line" class="muted">Loading checkpoints…</p>
+      </div>
+      <div class="top-actions">
+        <button id="flip-btn" class="ghost" type="button">Flip board</button>
+        <button id="reset-btn" class="ghost" type="button">Reset</button>
+      </div>
+    </header>
+
+    <main class="layout">
+      <section class="board-panel">
+        <div class="board-wrap">
+          <div id="board" class="board" aria-label="Chess board"></div>
+        </div>
+
+        <div class="board-meta">
+          <div class="status-row">
+            <div id="status-line" class="status-line">White to move</div>
+            <label class="promotion">
+              Promotion
+              <select id="promotion-select">
+                <option value="q">Queen</option>
+                <option value="r">Rook</option>
+                <option value="b">Bishop</option>
+                <option value="n">Knight</option>
+              </select>
+            </label>
+          </div>
+
+          <div class="fen-row">
+            <input id="fen-input" spellcheck="false" aria-label="FEN" />
+            <button id="load-fen-btn" type="button">Load FEN</button>
+            <button id="copy-fen-btn" class="ghost" type="button">Copy</button>
+          </div>
+
+          <div class="moves-wrap">
+            <div class="moves-header">
+              <span>Moves</span>
+              <span id="material-line" class="muted"></span>
+            </div>
+            <div id="move-list" class="move-list">No moves yet</div>
+          </div>
+        </div>
+      </section>
+
+      <aside class="eval-panel">
+        <div class="panel-header">
+          <h2>Evaluations</h2>
+          <span id="eval-status" class="muted"></span>
+        </div>
+
+        <div id="eval-cards" class="eval-cards">
+          <div class="empty-card">Select one or more checkpoints.</div>
+        </div>
+
+        <details class="model-picker" open>
+          <summary>Models <span id="model-count" class="muted"></span></summary>
+          <div class="picker-actions">
+            <button id="select-score-btn" class="ghost small" type="button">
+              Best score
+            </button>
+            <button id="select-sacrifice-btn" class="ghost small" type="button">
+              Best sacrifice
+            </button>
+            <button id="clear-models-btn" class="ghost small" type="button">
+              Clear
+            </button>
+          </div>
+          <div id="model-list" class="model-list"></div>
+        </details>
+
+        <div class="legend">
+          <p>
+            <strong>Score</strong> is White's realised game result in
+            <code>[-1, +1]</code>, not centipawns. <code>+1</code> means White
+            wins, <code>0</code> a draw, <code>-1</code> Black wins.
+          </p>
+          <p>
+            <strong>Sacrifice</strong> is the classifier probability for the
+            sacrifice theme. The threshold is the validation-optimal F1 cutoff.
+          </p>
+          <p class="muted">
+            These are learned probes, not engine evaluations. A larger bar is
+            not necessarily a stronger chess claim. The 6M content-isolated
+            native embedding is turn-blind by construction; the full recipes
+            include the side-to-move token.
+          </p>
+        </div>
+      </aside>
+    </main>
+
+    <div id="toast" class="toast" hidden></div>
+    <script src="/static/app.js"></script>
+  </body>
+</html>

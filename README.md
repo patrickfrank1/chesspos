@@ -217,3 +217,10 @@ Notes:
 - Start ML Flow UI, in correct python venv
 
     mlflow ui
+
+- Interactive position evaluator with a clickable board and selectable
+  score/sacrifice checkpoints:
+
+    uv run python -m src.chess_eval --host 127.0.0.1 --port 8000
+
+  See [`docs/chess_eval_widget.md`](docs/chess_eval_widget.md).

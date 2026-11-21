@@ -541,10 +541,12 @@ source = { virtual = "." }
 dependencies = [
     { name = "chess" },
     { name = "datasets" },
+    { name = "fastapi" },
     { name = "matplotlib" },
     { name = "mlflow" },
     { name = "numpy" },
     { name = "ray", extra = ["data", "default"] },
+    { name = "uvicorn" },
     { name = "zstandard" },
 ]
 
@@ -560,6 +562,7 @@ gpu = [
 
 [package.dev-dependencies]
 dev = [
+    { name = "httpx" },
     { name = "ipywidgets" },
     { name = "jupyter" },
     { name = "pytest" },
@@ -571,6 +574,7 @@ dev = [
 requires-dist = [
     { name = "chess", specifier = ">=1.11.2" },
     { name = "datasets", specifier = ">=4.5.0" },
+    { name = "fastapi", specifier = ">=0.139.2" },
     { name = "flash-attn", marker = "extra == 'gpu'", specifier = ">=2.6.3" },
     { name = "matplotlib", specifier = ">=3.10.8" },
     { name = "mlflow", specifier = ">=3.17.2" },
@@ -579,12 +583,14 @@ requires-dist = [
     { name = "ray", extras = ["default"], specifier = ">=2.40.0" },
     { name = "torch", marker = "extra == 'cpu'", specifier = ">=2.14.1", index = "https://download.pytorch.org/whl/cpu", conflict = { package = "chesspos", extra = "cpu" } },
     { name = "torch", marker = "extra == 'gpu'", specifier = ">=2.14.1", index = "https://download.pytorch.org/whl/cu126", conflict = { package = "chesspos", extra = "gpu" } },
+    { name = "uvicorn", specifier = ">=0.51.0" },
     { name = "zstandard", specifier = ">=0.23.0" },
 ]
 provides-extras = ["cpu", "gpu"]
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "httpx", specifier = ">=0.28.1" },
     { name = "ipywidgets", specifier = ">=8.1.8" },
     { name = "jupyter", specifier = ">=1.1.1" },
     { name = "pytest", specifier = ">=9.1.1" },
