@@ -218,8 +218,8 @@ Notes:
 
     mlflow ui
 
-- Interactive position evaluator with a clickable board and selectable
-  score/sacrifice checkpoints:
+- Interactive position evaluator with a clickable board, selectable
+  score/sacrifice checkpoints, and Stockfish 19 running locally in the browser:
 
     uv run python -m src.chess_eval --host 127.0.0.1 --port 8000
 

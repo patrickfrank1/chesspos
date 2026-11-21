@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import mimetypes
 from pathlib import Path
 from typing import Sequence
 
 import chess
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -16,8 +17,11 @@ from src.chess_eval.backend import (
     resolve_device,
     state_response,
 )
+from src.chess_eval.stockfish import ensure_nnue, nnue_info
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
+mimetypes.add_type("application/wasm", ".wasm")
+mimetypes.add_type("text/javascript", ".js")
 
 
 class PositionRequest(BaseModel):
@@ -35,14 +39,26 @@ class MoveRequest(PositionRequest):
 def create_app(
     model_roots: Sequence[str | Path] | None = None,
     device: str | None = None,
+    nnue_cache_dir: str | Path | None = None,
 ) -> FastAPI:
     roots = [Path(root) for root in (model_roots or DEFAULT_MODEL_ROOTS)]
     catalog = catalog_by_id(discover_models(roots))
     resolved_device = resolve_device(device)
+    resolved_nnue_dir = Path(nnue_cache_dir) if nnue_cache_dir else None
 
     app = FastAPI(title="chesspos position evaluator")
     app.state.catalog = catalog
     app.state.device = resolved_device
+    app.state.nnue_cache_dir = resolved_nnue_dir
+
+    @app.middleware("http")
+    async def isolation_headers(request: Request, call_next):
+        response = await call_next(request)
+        response.headers["Cross-Origin-Opener-Policy"] = "same-origin"
+        response.headers["Cross-Origin-Embedder-Policy"] = "require-corp"
+        response.headers["Cross-Origin-Resource-Policy"] = "same-origin"
+        return response
+
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
     @app.get("/")
@@ -50,6 +66,7 @@ def create_app(
         return FileResponse(STATIC_DIR / "index.html")
 
     @app.get("/api/health")
+    @app.get("/health")
     def health() -> dict:
         return {
             "status": "ok",
@@ -63,6 +80,23 @@ def create_app(
             "models": [info.to_dict() for info in catalog.values()],
             "device": str(resolved_device),
         }
+
+    @app.get("/api/stockfish/info")
+    def stockfish_info() -> dict:
+        return nnue_info(resolved_nnue_dir)
+
+    @app.get("/api/stockfish/nnue")
+    def stockfish_nnue() -> FileResponse:
+        try:
+            path = ensure_nnue(resolved_nnue_dir)
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        return FileResponse(
+            path,
+            media_type="application/octet-stream",
+            filename=path.name,
+            headers={"Cache-Control": "public, max-age=31536000, immutable"},
+        )
 
     @app.post("/api/position")
     def position(request: PositionRequest) -> dict:

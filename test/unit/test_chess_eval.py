@@ -237,6 +237,62 @@ class TestHttpApi:
             assert response.json()["position"]["moves"] == ["e2e4"]
         return
 
+    def test_cross_origin_isolation_headers_are_set(self, tmp_path):
+        with given("an app serving the board page"):
+            app = create_app(model_roots=[tmp_path], device="cpu")
+            client = TestClient(app)
+
+        with when("the root page is requested"):
+            response = client.get("/")
+
+        with then("the headers required by threaded WASM are present"):
+            assert response.headers["cross-origin-opener-policy"] == "same-origin"
+            assert response.headers["cross-origin-embedder-policy"] == "require-corp"
+            assert response.headers["cross-origin-resource-policy"] == "same-origin"
+        return
+
+    def test_stockfish_assets_are_served(self, tmp_path):
+        with given("an app with the vendored Stockfish build"):
+            app = create_app(model_roots=[tmp_path], device="cpu")
+            client = TestClient(app)
+
+        with when("the engine script and WASM are requested"):
+            script = client.get("/static/stockfish/sf_19.js")
+            wasm = client.get("/static/stockfish/sf_19.wasm")
+
+        with then("both assets are available with the expected media types"):
+            assert script.status_code == 200
+            assert script.headers["content-type"].startswith(
+                ("text/javascript", "application/javascript")
+            )
+            assert wasm.status_code == 200
+            assert wasm.headers["content-type"] == "application/wasm"
+        return
+
+    def test_stockfish_nnue_is_served_from_the_cache(self, tmp_path):
+        with given("a cached NNUE file"):
+            nnue_dir = tmp_path / "nnue"
+            nnue_dir.mkdir()
+            (nnue_dir / "nn-1a298aa575a0.nnue").write_bytes(b"fake-nnue")
+            app = create_app(
+                model_roots=[tmp_path / "models"],
+                device="cpu",
+                nnue_cache_dir=nnue_dir,
+            )
+            client = TestClient(app)
+
+        with when("the NNUE endpoint is requested"):
+            response = client.get("/api/stockfish/nnue")
+            info = client.get("/api/stockfish/info").json()
+
+        with then("the cached bytes and engine metadata are returned"):
+            assert response.status_code == 200
+            assert response.content == b"fake-nnue"
+            assert info["engine"] == "Stockfish 19"
+            assert info["cached"] is True
+            assert info["nnue"] == "nn-1a298aa575a0.nnue"
+        return
+
     def test_index_page_is_served(self, tmp_path):
         with given("an app with no checkpoints"):
             app = create_app(model_roots=[tmp_path], device="cpu")

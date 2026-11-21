@@ -1,3 +1,5 @@
+import { StockfishController, parseStockfishInfo } from "./stockfish.js";
+
 const START_FEN =
   "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
 
@@ -28,6 +30,15 @@ const state = {
   orientation: "white",
   selectedSquare: null,
   busy: false,
+  stockfish: {
+    controller: null,
+    ready: false,
+    error: null,
+    info: null,
+    bestmove: null,
+    progress: null,
+    thinking: false,
+  },
 };
 
 const elements = {
@@ -43,6 +54,13 @@ const elements = {
   modelCount: document.getElementById("model-count"),
   promotion: document.getElementById("promotion-select"),
   toast: document.getElementById("toast"),
+  sfDot: document.getElementById("sf-dot"),
+  sfEval: document.getElementById("sf-eval"),
+  sfMeta: document.getElementById("sf-meta"),
+  sfPv: document.getElementById("sf-pv"),
+  sfDepth: document.getElementById("sf-depth"),
+  sfAuto: document.getElementById("sf-auto"),
+  sfRun: document.getElementById("sf-run"),
 };
 
 function pieceColor(piece) {
@@ -386,6 +404,15 @@ function applyServerState(payload) {
   renderStatus();
   renderMoves();
   renderEvaluations();
+  if (elements.sfAuto.checked) {
+    runStockfish();
+  } else {
+    state.stockfish.controller?.stop();
+    state.stockfish.info = null;
+    state.stockfish.bestmove = null;
+    state.stockfish.thinking = false;
+    renderStockfish();
+  }
 }
 
 async function refreshPosition() {
@@ -555,6 +582,132 @@ async function loadModels() {
   await refreshPosition();
 }
 
+function formatCompact(value) {
+  if (!value) return "0";
+  if (value >= 1e9) return `${(value / 1e9).toFixed(1)}B`;
+  if (value >= 1e6) return `${(value / 1e6).toFixed(1)}M`;
+  if (value >= 1e3) return `${(value / 1e3).toFixed(1)}k`;
+  return String(Math.round(value));
+}
+
+function formatMegabytes(bytes) {
+  return (bytes / (1024 * 1024)).toFixed(1);
+}
+
+function formatEngineScore(info) {
+  if (info.scoreType === "mate") {
+    return `#${info.scoreValue}`;
+  }
+  const pawns = info.scoreValue / 100;
+  return `${pawns >= 0 ? "+" : ""}${pawns.toFixed(2)}`;
+}
+
+function renderStockfish() {
+  const sf = state.stockfish;
+  const progress = sf.progress;
+  if (sf.error) {
+    elements.sfDot.className = "engine-dot error";
+    elements.sfEval.textContent = "unavailable";
+    elements.sfMeta.textContent = sf.error;
+    elements.sfPv.textContent = "";
+    return;
+  }
+  if (!sf.ready) {
+    elements.sfDot.className = "engine-dot loading";
+    elements.sfEval.textContent = "Loading engine…";
+    if (progress && progress.total > 0) {
+      const percent = Math.min(100, (progress.received / progress.total) * 100);
+      elements.sfMeta.textContent = `Downloading NNUE ${percent.toFixed(0)}% (${formatMegabytes(
+        progress.received,
+      )}/${formatMegabytes(progress.total)} MB)`;
+    } else if (progress) {
+      elements.sfMeta.textContent = `Downloading NNUE ${formatMegabytes(
+        progress.received,
+      )} MB`;
+    } else {
+      elements.sfMeta.textContent = "Starting Stockfish 19 WebAssembly…";
+    }
+    elements.sfPv.textContent = "";
+    return;
+  }
+  if (!sf.info) {
+    elements.sfDot.className = sf.thinking ? "engine-dot thinking" : "engine-dot ready";
+    elements.sfEval.textContent = sf.thinking ? "…" : "—";
+    elements.sfMeta.textContent = sf.thinking ? "thinking…" : "ready";
+    elements.sfPv.textContent = "";
+    return;
+  }
+  elements.sfDot.className = `engine-dot ${sf.bestmove ? "ready" : "thinking"}`;
+  elements.sfEval.textContent = formatEngineScore(sf.info);
+  const depth = sf.info.seldepth
+    ? `${sf.info.depth}/${sf.info.seldepth}`
+    : `${sf.info.depth}`;
+  const best = sf.bestmove ? ` · best ${sf.bestmove}` : "";
+  elements.sfMeta.textContent = `depth ${depth} · ${formatCompact(
+    sf.info.nodes,
+  )} nodes · ${formatCompact(sf.info.nps)} nps${best}`;
+  elements.sfPv.textContent = sf.info.pv ? `PV (UCI): ${sf.info.pv}` : "";
+}
+
+function handleNnueProgress(progress) {
+  state.stockfish.progress = progress;
+  if (!state.stockfish.ready) renderStockfish();
+}
+
+function handleEngineLine(line) {
+  const info = parseStockfishInfo(line, state.position?.turn || "white");
+  if (info) {
+    state.stockfish.info = info;
+    state.stockfish.bestmove = null;
+    renderStockfish();
+  }
+  if (line.startsWith("bestmove ")) {
+    state.stockfish.bestmove = line.split(" ")[1] || null;
+    state.stockfish.thinking = false;
+    renderStockfish();
+  }
+}
+
+function runStockfish(force = false) {
+  const sf = state.stockfish;
+  if (!sf.controller || !state.position) return;
+  if (!force && !elements.sfAuto.checked) return;
+  sf.info = null;
+  sf.bestmove = null;
+  sf.thinking = true;
+  renderStockfish();
+  sf.controller.evaluate(state.position.fen, Number(elements.sfDepth.value));
+}
+
+function initStockfish() {
+  if (!window.crossOriginIsolated) {
+    state.stockfish.error =
+      "Stockfish needs cross-origin isolation. Open http://127.0.0.1:8000 or serve over HTTPS.";
+    renderStockfish();
+    return;
+  }
+  try {
+    state.stockfish.controller = new StockfishController({
+      onReady: () => {
+        if (state.stockfish.ready) return;
+        state.stockfish.ready = true;
+        renderStockfish();
+        if (state.position) runStockfish(true);
+      },
+      onLine: handleEngineLine,
+      onError: (message) => {
+        state.stockfish.error = message;
+        renderStockfish();
+      },
+      onProgress: handleNnueProgress,
+    });
+    renderStockfish();
+  } catch (error) {
+    state.stockfish.error = error?.message || String(error);
+    renderStockfish();
+  }
+}
+
 function wireEvents() {
   document.getElementById("flip-btn").addEventListener("click", () => {
     state.orientation = state.orientation === "white" ? "black" : "white";
@@ -599,10 +752,26 @@ function wireEvents() {
     renderModelList();
     refreshPosition();
   });
+  elements.sfRun.addEventListener("click", () => runStockfish(true));
+  elements.sfDepth.addEventListener("change", () => {
+    if (elements.sfAuto.checked) runStockfish(true);
+  });
+  elements.sfAuto.addEventListener("change", () => {
+    if (elements.sfAuto.checked) {
+      runStockfish(true);
+    } else {
+      state.stockfish.controller?.stop();
+      state.stockfish.info = null;
+      state.stockfish.bestmove = null;
+      state.stockfish.thinking = false;
+      renderStockfish();
+    }
+  });
 }
 
 wireEvents();
 renderBoard();
+initStockfish();
 loadModels().catch((error) => {
   elements.deviceLine.textContent = `Could not load models: ${error.message}`;
   showToast(error.message);

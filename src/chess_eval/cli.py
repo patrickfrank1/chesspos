@@ -23,12 +23,21 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         default=None,
         help="Torch device, e.g. cpu or cuda (default: auto)",
     )
+    parser.add_argument(
+        "--nnue-cache-dir",
+        default=None,
+        help="Where to cache the Stockfish NNUE file",
+    )
     return parser.parse_args(argv)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
-    app = create_app(args.model_root, device=args.device)
+    app = create_app(
+        args.model_root,
+        device=args.device,
+        nnue_cache_dir=args.nnue_cache_dir,
+    )
     import uvicorn
 
     print(

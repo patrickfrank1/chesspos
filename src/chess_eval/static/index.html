@@ -60,6 +60,35 @@
           <span id="eval-status" class="muted"></span>
         </div>
 
+        <section class="engine-panel">
+          <div class="engine-header">
+            <div class="engine-title">
+              <span id="sf-dot" class="engine-dot loading"></span>
+              <span>Stockfish 19</span>
+              <span class="muted">browser</span>
+            </div>
+            <div class="engine-controls">
+              <label>
+                Depth
+                <select id="sf-depth">
+                  <option value="8">8</option>
+                  <option value="12" selected>12</option>
+                  <option value="16">16</option>
+                  <option value="20">20</option>
+                </select>
+              </label>
+              <label class="check">
+                <input id="sf-auto" type="checkbox" checked />
+                Auto
+              </label>
+              <button id="sf-run" class="ghost small" type="button">Run</button>
+            </div>
+          </div>
+          <div id="sf-eval" class="engine-eval">Loading engine…</div>
+          <div id="sf-meta" class="engine-meta">Fetching the 94 MB NNUE on first use.</div>
+          <div id="sf-pv" class="engine-pv"></div>
+        </section>
+
         <div id="eval-cards" class="eval-cards">
           <div class="empty-card">Select one or more checkpoints.</div>
         </div>
@@ -101,6 +130,6 @@
     </main>
 
     <div id="toast" class="toast" hidden></div>
-    <script src="/static/app.js"></script>
+    <script type="module" src="/static/app.js"></script>
   </body>
 </html>
