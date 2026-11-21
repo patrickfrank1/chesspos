@@ -17,6 +17,7 @@ from src.chess_eval.backend import (
     resolve_device,
     state_response,
 )
+from src.chess_eval.samples import DEFAULT_PUZZLE_DIR, load_puzzle_samples
 from src.chess_eval.stockfish import ensure_nnue, nnue_info
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
@@ -40,11 +41,15 @@ def create_app(
     model_roots: Sequence[str | Path] | None = None,
     device: str | None = None,
     nnue_cache_dir: str | Path | None = None,
+    puzzle_data_dir: str | Path | None = None,
 ) -> FastAPI:
     roots = [Path(root) for root in (model_roots or DEFAULT_MODEL_ROOTS)]
     catalog = catalog_by_id(discover_models(roots))
     resolved_device = resolve_device(device)
     resolved_nnue_dir = Path(nnue_cache_dir) if nnue_cache_dir else None
+    resolved_puzzle_dir = (
+        Path(puzzle_data_dir) if puzzle_data_dir is not None else DEFAULT_PUZZLE_DIR
+    )
 
     app = FastAPI(title="chesspos position evaluator")
     app.state.catalog = catalog
@@ -80,6 +85,18 @@ def create_app(
             "models": [info.to_dict() for info in catalog.values()],
             "device": str(resolved_device),
         }
+
+    @app.get("/api/samples")
+    def samples() -> dict:
+        try:
+            return {
+                "samples": [
+                    sample.to_dict()
+                    for sample in load_puzzle_samples(resolved_puzzle_dir)
+                ]
+            }
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
 
     @app.get("/api/stockfish/info")
     def stockfish_info() -> dict:

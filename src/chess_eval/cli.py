@@ -28,6 +28,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         default=None,
         help="Where to cache the Stockfish NNUE file",
     )
+    parser.add_argument(
+        "--puzzle-data-dir",
+        default=None,
+        help="Puzzle parquet shards used by the sample-position dropdown",
+    )
     return parser.parse_args(argv)
 
 
@@ -37,6 +42,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         args.model_root,
         device=args.device,
         nnue_cache_dir=args.nnue_cache_dir,
+        puzzle_data_dir=args.puzzle_data_dir,
     )
     import uvicorn
 

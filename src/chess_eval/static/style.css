@@ -282,6 +282,24 @@ select:focus {
   box-shadow: 0 0 0 3px rgba(88, 166, 255, 0.16);
 }
 
+.sample-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.sample-row label {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+
+.sample-row select {
+  width: 100%;
+  min-width: 0;
+}
+
 .fen-row {
   display: flex;
   gap: 8px;

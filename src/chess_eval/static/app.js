@@ -23,6 +23,8 @@ const PIECES = {
 const state = {
   models: [],
   selected: new Set(),
+  samples: [],
+  sampleMap: new Map(),
   startFen: START_FEN,
   moves: [],
   position: null,
@@ -41,12 +43,15 @@ const state = {
   },
 };
 
+let boardRequestId = 0;
+
 const elements = {
   board: document.getElementById("board"),
   deviceLine: document.getElementById("device-line"),
   statusLine: document.getElementById("status-line"),
   materialLine: document.getElementById("material-line"),
   fenInput: document.getElementById("fen-input"),
+  sampleSelect: document.getElementById("sample-select"),
   moveList: document.getElementById("move-list"),
   evalCards: document.getElementById("eval-cards"),
   evalStatus: document.getElementById("eval-status"),
@@ -416,8 +421,7 @@ function applyServerState(payload) {
 }
 
 async function refreshPosition() {
-  if (state.busy) return;
-  state.busy = true;
+  const requestId = ++boardRequestId;
   setEvalStatus("evaluating…");
   try {
     const payload = await api("/api/position", {
@@ -425,13 +429,13 @@ async function refreshPosition() {
       moves: state.moves,
       model_ids: [...state.selected],
     });
+    if (requestId !== boardRequestId) return;
     applyServerState(payload);
     setEvalStatus("");
   } catch (error) {
+    if (requestId !== boardRequestId) return;
     showToast(error.message);
     setEvalStatus("error");
-  } finally {
-    state.busy = false;
   }
 }
 
@@ -447,6 +451,7 @@ async function submitMove(source, target) {
   const move = candidates.find((candidate) => candidate.length === 5)
     ? source + target + promotion
     : source + target;
+  const requestId = ++boardRequestId;
   state.busy = true;
   setEvalStatus("evaluating…");
   try {
@@ -458,9 +463,12 @@ async function submitMove(source, target) {
       promotion: move.length === 5 ? move.slice(4) : null,
       model_ids: [...state.selected],
     });
+    if (requestId !== boardRequestId) return;
     applyServerState(payload);
+    clearSampleSelection();
     setEvalStatus("");
   } catch (error) {
+    if (requestId !== boardRequestId) return;
     showToast(error.message);
     setEvalStatus("error");
   } finally {
@@ -580,6 +588,66 @@ async function loadModels() {
   if (sacrifice) state.selected.add(sacrifice.model_id);
   renderModelList();
   await refreshPosition();
+}
+
+function renderSamples() {
+  const select = elements.sampleSelect;
+  select.innerHTML = "";
+  state.sampleMap.clear();
+  const placeholder = document.createElement("option");
+  placeholder.value = "";
+  placeholder.textContent = state.samples.length
+    ? "Choose a puzzle position…"
+    : "No puzzle samples found";
+  select.appendChild(placeholder);
+
+  const groups = [
+    { label: "Sacrifice samples", sacrifice: 1 },
+    { label: "Non-sacrifice samples", sacrifice: 0 },
+  ];
+  for (const group of groups) {
+    const samples = state.samples.filter(
+      (sample) => sample.sacrifice === group.sacrifice,
+    );
+    if (!samples.length) continue;
+    const optgroup = document.createElement("optgroup");
+    optgroup.label = group.label;
+    for (const sample of samples) {
+      const option = document.createElement("option");
+      option.value = sample.sample_id;
+      option.textContent = sample.label;
+      optgroup.appendChild(option);
+      state.sampleMap.set(sample.sample_id, sample);
+    }
+    select.appendChild(optgroup);
+  }
+}
+
+async function loadSamples() {
+  try {
+    const response = await fetch("/api/samples");
+    if (!response.ok) throw new Error(`samples failed (${response.status})`);
+    const payload = await response.json();
+    state.samples = payload.samples || [];
+    renderSamples();
+  } catch (error) {
+    elements.sampleSelect.innerHTML =
+      '<option value="">Could not load puzzle samples</option>';
+    showToast(error.message);
+  }
+}
+
+function loadSample(sample) {
+  state.startFen = sample.fen;
+  state.moves = [];
+  state.selectedSquare = null;
+  elements.sampleSelect.value = sample.sample_id;
+  elements.fenInput.value = sample.fen;
+  refreshPosition();
+}
+
+function clearSampleSelection() {
+  elements.sampleSelect.value = "";
 }
 
 function formatCompact(value) {
@@ -717,6 +785,7 @@ function wireEvents() {
     state.startFen = START_FEN;
     state.moves = [];
     state.selectedSquare = null;
+    clearSampleSelection();
     refreshPosition();
   });
   document.getElementById("load-fen-btn").addEventListener("click", async () => {
@@ -725,7 +794,12 @@ function wireEvents() {
     state.startFen = fen;
     state.moves = [];
     state.selectedSquare = null;
+    clearSampleSelection();
     await refreshPosition();
+  });
+  elements.sampleSelect.addEventListener("change", () => {
+    const sample = state.sampleMap.get(elements.sampleSelect.value);
+    if (sample) loadSample(sample);
   });
   elements.fenInput.addEventListener("keydown", (event) => {
     if (event.key === "Enter") {
@@ -776,3 +850,4 @@ loadModels().catch((error) => {
   elements.deviceLine.textContent = `Could not load models: ${error.message}`;
   showToast(error.message);
 });
+loadSamples().catch((error) => showToast(error.message));

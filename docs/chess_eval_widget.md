@@ -8,6 +8,9 @@ outputs of the trained downstream checkpoints.
 - **History:** the move chips let you jump back to any earlier ply; `Reset`
   returns to the initial position.
 - **FEN:** paste any legal FEN and load it.
+- **Puzzle samples:** choose a sampled puzzle position from the parquet puzzle
+  shards. The dropdown mixes sacrifice and non-sacrifice puzzles and includes
+  each puzzle’s start position plus every position after a solution move.
 - **Models:** choose any combination of score regressors and sacrifice
   classifiers. The app auto-selects the best 20M score and sacrifice rows.
 - **Stockfish 19:** the full Stockfish 19 WASM build runs locally in a Web
@@ -56,6 +59,22 @@ hf buckets sync \
   hf://buckets/patrickfrank1/chesspos-checkpoints/downstream/runs/models/sacrifice \
   ./data/models/downstream/sacrifice/
 ```
+
+## Puzzle samples
+
+The sample dropdown reads the local puzzle parquet shards:
+
+```
+data/processed/puzzles/*.parquet
+```
+
+It samples 60 puzzles (balanced between sacrifice and non-sacrifice) from the
+first five shards, then exposes each puzzle's start position and every position
+after a solution move. Selecting an entry loads that FEN directly; the model
+and Stockfish evaluations update immediately.
+
+The sample set is cached in memory after the first request. Use
+`--puzzle-data-dir` to point at a different shard directory.
 
 ## Stockfish 19
 
