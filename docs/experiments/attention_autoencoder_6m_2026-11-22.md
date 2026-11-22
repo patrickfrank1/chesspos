@@ -496,6 +496,9 @@ Training changes to pair with it:
   AUC, latent-swap delta.
 - **Metadata fix:** store the resolved `AuxiliaryLossConfig`/weight vector in
   the checkpoint metadata, not the raw CLI args.
+- **Eval performance:** set `OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1` in the
+  launch environment; after the CUDA-SVD fix `full_eval` is ~1–2 min, so it can
+  stay enabled at every evaluation.
 - **Then** the InfoNCE ablation, now on a model whose reconstruction channel is
   not the binding constraint.
 
@@ -503,6 +506,7 @@ Training changes to pair with it:
 
 | Symptom | Cause | Fix |
 |---|---|---|
+| `full_eval` stalls for 10–37 min after the training steps | `phase_stats_ci` refits PCA for every bootstrap; a 1,024×1,024 numpy SVD takes **107 s** with 96 OpenBLAS threads (thread oversubscription) vs **4.6 s** with one thread | `phase_stats`/`phase_stats_ci` now run the SVD on CUDA via `torch.linalg.svd` (~17 s for 21 SVDs); launch env also sets `OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1` |
 | Concurrent HF shard downloads stall at 0 bytes | `hf_xet` multi-threaded/multi-process downloads hang on these hosts | `HF_HUB_DISABLE_XET=1`; verified 8 parallel downloads at 134 MB/s |
 | Startup stuck on "remote unigram pass: shard 1/443" | Threaded remote unigram pass downloads every shard and stalls | Built `data/hf-shards/unigram_counts.npz` from the 443 `.meta.json` sidecars (exact totals, 110 s) |
 | No training step for many minutes with `--num-workers 16` | DataLoader/compile contention; first batch never delivered | `--num-workers 8` (GPU 98–100%) |

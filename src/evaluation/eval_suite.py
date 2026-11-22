@@ -450,19 +450,33 @@ def side_to_move_probe(
     return {"test_acc_side_to_move": accuracy}
 
 
+def _svd_device(
+    embeds: torch.Tensor, device: torch.device | str | None
+) -> torch.device:
+    """Resolve the device used for the PCA SVD."""
+    if device is not None:
+        return torch.device(device)
+    return embeds.device if embeds.is_cuda else torch.device("cpu")
+
+
 def phase_stats(
-    embeds: torch.Tensor, piece_counts: np.ndarray
+    embeds: torch.Tensor,
+    piece_counts: np.ndarray,
+    device: torch.device | str | None = None,
 ) -> tuple[np.ndarray, float, float]:
     """PCA phase correlation with a deterministic, non-negative sign.
 
     The sign of an SVD component is arbitrary; flipping each component so its
     correlation with the piece count is non-negative makes the value stable
-    across samples and bootstrap resamples.
+    across samples and bootstrap resamples. The SVD runs on ``device`` (CUDA by
+    default when the input is already there), which avoids the severe
+    thread-oversubscription cost of small numpy SVDs on many-core hosts.
     """
-    x = embeds.numpy()
-    x = x - x.mean(axis=0)
-    _, _, vt = np.linalg.svd(x, full_matrices=False)
-    projected = x @ vt[:2].T
+    target = _svd_device(embeds, device)
+    x = embeds.detach().to(device=target, dtype=torch.float32)
+    x = x - x.mean(dim=0, keepdim=True)
+    _, _, vt = torch.linalg.svd(x, full_matrices=False)
+    projected = (x @ vt[:2].T).cpu().numpy()
 
     def safe_corr(values: np.ndarray, targets: np.ndarray) -> float:
         if np.std(values) == 0 or np.std(targets) == 0:
@@ -485,15 +499,23 @@ def phase_stats_ci(
     piece_counts: np.ndarray,
     seed: int,
     n_bootstrap: int = 20,
+    device: torch.device | str | None = None,
 ) -> dict[str, float]:
-    """Bootstrap confidence interval for the PCA phase correlations."""
-    _, corr1, corr2 = phase_stats(embeds, piece_counts)
+    """Bootstrap confidence interval for the PCA phase correlations.
+
+    The embedding matrix is moved to ``device`` once and each resample indexes
+    it there, so every bootstrap SVD stays on the accelerator.
+    """
+    target = _svd_device(embeds, device)
+    x = embeds.detach().to(device=target, dtype=torch.float32)
+    _, corr1, corr2 = phase_stats(x, piece_counts, device=target)
     rng = np.random.default_rng(seed)
-    n = len(embeds)
+    n = x.shape[0]
     values = []
     for _ in range(max(2, n_bootstrap)):
         indices = rng.integers(0, n, n)
-        _, c1, c2 = phase_stats(embeds[indices], piece_counts[indices])
+        index = torch.from_numpy(indices).to(target)
+        _, c1, c2 = phase_stats(x[index], piece_counts[indices], device=target)
         values.append((c1, c2))
     array = np.asarray(values, dtype=float)
     pc1 = array[:, 0]
@@ -593,8 +615,8 @@ def full_eval(
             )
         metrics.update(material_probe_ci(embeds, materials, seed))
         metrics.update(side_to_move_probe(embeds, boards, seed))
-        projected, _, _ = phase_stats(embeds, piece_counts)
-        metrics.update(phase_stats_ci(embeds, piece_counts, seed))
+        projected, _, _ = phase_stats(embeds, piece_counts, device=device)
+        metrics.update(phase_stats_ci(embeds, piece_counts, seed, device=device))
         if plot_dir is not None:
             plot_phase_projection(projected, piece_counts, plot_dir)
     if was_training:
