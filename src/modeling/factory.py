@@ -7,12 +7,17 @@ from typing import Any
 
 from torch import nn
 
+from src.modeling.autoencoder.config import AttentionAutoencoderConfig
+from src.modeling.autoencoder.model import AttentionAutoencoderModel
 from src.modeling.perceiver.config import PerceiverIOConfig
 from src.modeling.perceiver.model import PerceiverIOModel
 from src.modeling.transformer import MaskedStreamTransformer, TransformerConfig
 
 ARCH_TRANSFORMER = "transformer"
 ARCH_PERCEIVER_IO = "perceiver_io"
+ARCH_ATTENTION_AUTOENCODER = "attention_autoencoder"
+
+ModelConfig = TransformerConfig | PerceiverIOConfig | AttentionAutoencoderConfig
 
 
 def model_arch(config: dict[str, Any] | Any) -> str:
@@ -26,27 +31,27 @@ def _known_fields(config_type: type) -> set[str]:
     return {field.name for field in fields(config_type)}
 
 
-def model_config_from_dict(
-    values: dict[str, Any],
-) -> TransformerConfig | PerceiverIOConfig:
+def _build_config(values: dict[str, Any], config_type: type) -> Any:
+    known = _known_fields(config_type)
+    return config_type(**{key: value for key, value in values.items() if key in known})
+
+
+def model_config_from_dict(values: dict[str, Any]) -> ModelConfig:
     """Build the appropriate config from a checkpoint ``model_config`` dict."""
-    if values.get("arch", ARCH_TRANSFORMER) == ARCH_PERCEIVER_IO:
-        known = _known_fields(PerceiverIOConfig)
-        return PerceiverIOConfig(
-            **{key: value for key, value in values.items() if key in known}
-        )
-    known = _known_fields(TransformerConfig)
-    return TransformerConfig(
-        **{key: value for key, value in values.items() if key in known}
-    )
+    arch = values.get("arch", ARCH_TRANSFORMER)
+    if arch == ARCH_PERCEIVER_IO:
+        return _build_config(values, PerceiverIOConfig)
+    if arch == ARCH_ATTENTION_AUTOENCODER:
+        return _build_config(values, AttentionAutoencoderConfig)
+    return _build_config(values, TransformerConfig)
 
 
-def build_model(
-    config: TransformerConfig | PerceiverIOConfig | dict[str, Any],
-) -> nn.Module:
+def build_model(config: ModelConfig | dict[str, Any]) -> nn.Module:
     """Build a model from a config object or a config dictionary."""
     if isinstance(config, dict):
         config = model_config_from_dict(config)
+    if isinstance(config, AttentionAutoencoderConfig):
+        return AttentionAutoencoderModel(config)
     if isinstance(config, PerceiverIOConfig):
         return PerceiverIOModel(config)
     if isinstance(config, TransformerConfig):
@@ -54,6 +59,6 @@ def build_model(
     raise TypeError(f"Unsupported model config type: {type(config)!r}")
 
 
-def config_asdict(config: TransformerConfig | PerceiverIOConfig) -> dict[str, Any]:
+def config_asdict(config: ModelConfig) -> dict[str, Any]:
     """Return a checkpoint-safe config mapping."""
     return asdict(config)

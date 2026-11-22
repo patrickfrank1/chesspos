@@ -2,6 +2,7 @@ from bdd import given, then, when
 from src.modeling.masking import MaskingConfig
 from src.run.train_masked_transformer import (
     auxiliary_config,
+    full_reconstruction_weights,
     masking_config,
     parse_args,
     streaming_train_config,
@@ -542,4 +543,124 @@ class TestStreamShardsFlags:
 
         with then("remote shard fetching stays disabled"):
             assert config.remote_repo is None
+        return
+
+
+class TestAttentionAutoencoderFlags:
+    def test_autoencoder_preset_matches_the_six_million_recipe(self, monkeypatch):
+        with given("the attention autoencoder architecture and no size flags"):
+            monkeypatch.setattr(
+                "sys.argv",
+                ["train_masked_transformer", "--model-arch", "attention_autoencoder"],
+            )
+
+        with when("the arguments are parsed"):
+            args = parse_args()
+
+        with then("the compact six-million-parameter preset is selected"):
+            assert args.d_model == 256
+            assert args.n_heads == 8
+            assert args.n_layers == 4
+            assert args.d_ff == 1024
+            assert args.n_decoder_layers == 3
+            assert args.latent_dim == 512
+        return
+
+    def test_explicit_size_overrides_the_preset(self, monkeypatch):
+        with given("the autoencoder architecture with explicit widths"):
+            monkeypatch.setattr(
+                "sys.argv",
+                [
+                    "train_masked_transformer",
+                    "--model-arch",
+                    "attention_autoencoder",
+                    "--d-model",
+                    "320",
+                    "--n-layers",
+                    "5",
+                    "--n-heads",
+                    "8",
+                    "--d-ff",
+                    "1280",
+                    "--n-decoder-layers",
+                    "2",
+                    "--latent-dim",
+                    "768",
+                ],
+            )
+
+        with when("the arguments are parsed"):
+            args = parse_args()
+
+        with then("the explicit values win over the preset"):
+            assert args.d_model == 320
+            assert args.n_layers == 5
+            assert args.n_heads == 8
+            assert args.d_ff == 1280
+            assert args.n_decoder_layers == 2
+            assert args.latent_dim == 768
+        return
+
+    def test_autoencoder_auxiliary_config_is_reconstruction_only(self, monkeypatch):
+        with given("the autoencoder architecture and default loss weights"):
+            monkeypatch.setattr(
+                "sys.argv",
+                ["train_masked_transformer", "--model-arch", "attention_autoencoder"],
+            )
+            args = parse_args()
+
+        with when("the auxiliary config is built"):
+            config = auxiliary_config(args)
+
+        with then("only the reconstruction loss is active"):
+            assert config.auxiliary_enabled() is False
+            assert config.mlm_weight == 1.0
+            assert config.warmup_steps == 0
+        return
+
+    def test_autoencoder_weights_every_position(self, monkeypatch):
+        with given("the autoencoder architecture"):
+            monkeypatch.setattr(
+                "sys.argv",
+                ["train_masked_transformer", "--model-arch", "attention_autoencoder"],
+            )
+            args = parse_args()
+
+        with when("the weighting policy is queried"):
+            full = full_reconstruction_weights(args)
+
+        with then("visible positions stay supervised"):
+            assert full is True
+        return
+
+    def test_transformer_keeps_masked_only_weighting(self, monkeypatch):
+        with given("the default transformer architecture"):
+            monkeypatch.setattr("sys.argv", ["train_masked_transformer"])
+            args = parse_args()
+
+        with when("the weighting policy is queried"):
+            full = full_reconstruction_weights(args)
+
+        with then("only masked positions are supervised"):
+            assert full is False
+        return
+
+    def test_streaming_config_carries_reconstruction_weighting(self, monkeypatch):
+        with given("streaming autoencoder args"):
+            monkeypatch.setattr(
+                "sys.argv",
+                [
+                    "train_masked_transformer",
+                    "--streaming",
+                    "--model-arch",
+                    "attention_autoencoder",
+                ],
+            )
+            args = parse_args()
+
+        with when("the streaming train config is built"):
+            config = streaming_train_config(args, data_dir="data/train", start_step=0)
+
+        with then("full-sequence weighting reaches the dataset"):
+            assert config.full_reconstruction_weights is True
         return

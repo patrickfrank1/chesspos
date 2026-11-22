@@ -12,7 +12,12 @@ from torch.utils.data import DataLoader
 from src.dataset.token_stream import resolve_max_segments
 from src.evaluation.eval_suite import full_eval
 from src.evaluation.retrieval import evaluate_retrieval, load_benchmark
-from src.modeling.factory import build_model, model_config_from_dict
+from src.modeling.autoencoder.config import AttentionAutoencoderConfig
+from src.modeling.factory import (
+    ARCH_ATTENTION_AUTOENCODER,
+    build_model,
+    model_config_from_dict,
+)
 from src.modeling.masking import MaskingConfig
 from src.modeling.perceiver.config import PerceiverIOConfig
 from src.modeling.transformer import TransformerConfig
@@ -58,6 +63,48 @@ from src.training.window_dataset import (
     streaming_unigram_counts,
     unigram_counts,
 )
+
+
+_ARCH_MODEL_DEFAULTS = {
+    "transformer": {
+        "d_model": 512,
+        "n_layers": 8,
+        "n_heads": 16,
+        "d_ff": 2048,
+        "n_decoder_layers": None,
+        "latent_dim": None,
+    },
+    "perceiver_io": {
+        "d_model": 512,
+        "n_layers": 8,
+        "n_heads": 16,
+        "d_ff": 2048,
+        "n_decoder_layers": 2,
+        "latent_dim": None,
+    },
+    ARCH_ATTENTION_AUTOENCODER: {
+        "d_model": 256,
+        "n_layers": 4,
+        "n_heads": 8,
+        "d_ff": 1024,
+        "n_decoder_layers": 3,
+        "latent_dim": 512,
+    },
+}
+
+
+def resolve_model_args(args: argparse.Namespace) -> None:
+    """Fill architecture-specific model sizes left unset on the CLI.
+
+    Command-line values always win; unset flags fall back to the preset for
+    the selected architecture, so ``--model-arch attention_autoencoder`` alone
+    builds the six-million-parameter recipe.
+    """
+    defaults = _ARCH_MODEL_DEFAULTS[args.model_arch]
+    for name, value in defaults.items():
+        if getattr(args, name) is None:
+            setattr(args, name, value)
+    return
 
 
 def parse_args() -> argparse.Namespace:
@@ -157,14 +204,35 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--model-arch",
-        choices=("transformer", "perceiver_io"),
+        choices=("transformer", "perceiver_io", ARCH_ATTENTION_AUTOENCODER),
         default="transformer",
         help="Foundation model architecture (default: transformer)",
     )
-    parser.add_argument("--d-model", type=int, default=512)
-    parser.add_argument("--n-layers", type=int, default=8)
-    parser.add_argument("--n-heads", type=int, default=16)
-    parser.add_argument("--d-ff", type=int, default=2048)
+    parser.add_argument(
+        "--d-model",
+        type=int,
+        default=None,
+        help="Model width (default: 512 transformer/perceiver, 256 autoencoder)",
+    )
+    parser.add_argument(
+        "--n-layers",
+        type=int,
+        default=None,
+        help="Encoder layers (default: 8 transformer/perceiver, 4 autoencoder)",
+    )
+    parser.add_argument(
+        "--n-heads",
+        type=int,
+        default=None,
+        help="Attention heads (default: 16 transformer/perceiver, 8 autoencoder)",
+    )
+    parser.add_argument(
+        "--d-ff",
+        type=int,
+        default=None,
+        help="Feed-forward width (default: 2048 transformer/perceiver, "
+        "1024 autoencoder)",
+    )
     parser.add_argument("--dropout", type=float, default=0.1)
     parser.add_argument("--max-seq-len", type=int, default=2048)
     parser.add_argument(
@@ -178,13 +246,24 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--n-state-latents", type=int, default=1)
     parser.add_argument("--n-local-latent-layers", type=int, default=2)
     parser.add_argument("--n-cross-segment-layers", type=int, default=2)
-    parser.add_argument("--n-decoder-layers", type=int, default=2)
+    parser.add_argument(
+        "--n-decoder-layers",
+        type=int,
+        default=None,
+        help="Decoder layers (default: 2 perceiver, 3 autoencoder)",
+    )
     parser.add_argument(
         "--content-readout",
         choices=("attention", "first_latent"),
         default="attention",
     )
     parser.add_argument("--decoder-reconstruction-weight", type=float, default=0.0)
+    parser.add_argument(
+        "--latent-dim",
+        type=int,
+        default=None,
+        help="Autoencoder window bottleneck width (default: 512)",
+    )
     parser.add_argument("--num-workers", type=int, default=4)
     parser.add_argument("--log-every", type=int, default=20)
     parser.add_argument("--eval-every", type=int, default=1_000)
@@ -389,7 +468,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--aux-turn-weight", type=float, default=0.0)
     parser.add_argument("--aux-castle-weight", type=float, default=0.0)
     parser.add_argument("--aux-ep-weight", type=float, default=0.0)
-    return parser.parse_args()
+    args = parser.parse_args()
+    resolve_model_args(args)
+    return args
+
+
+def full_reconstruction_weights(args: argparse.Namespace) -> bool:
+    """Whether the dataset should weight every position, not only masked ones."""
+    return getattr(args, "model_arch", None) == ARCH_ATTENTION_AUTOENCODER
 
 
 def masking_config(args: argparse.Namespace) -> MaskingConfig:
@@ -437,6 +523,28 @@ def masking_config(args: argparse.Namespace) -> MaskingConfig:
 
 def auxiliary_config(args: argparse.Namespace) -> AuxiliaryLossConfig:
     """Build the weighted loss configuration from parsed args."""
+    if getattr(args, "model_arch", None) == ARCH_ATTENTION_AUTOENCODER:
+        # The autoencoder is trained by full-sequence reconstruction alone.
+        # VICReg/InfoNCE need per-segment views the window bottleneck does not
+        # produce, and a hard bottleneck already rules out trivial collapse.
+        return AuxiliaryLossConfig(
+            mlm_weight=args.mlm_weight,
+            visible_identity_weight=0.0,
+            inv_weight=0.0,
+            var_weight=0.0,
+            cov_weight=0.0,
+            nce_weight=0.0,
+            alone_var_weight=0.0,
+            alone_cov_weight=0.0,
+            material_weight=0.0,
+            piece_count_weight=0.0,
+            phase_weight=0.0,
+            turn_weight=0.0,
+            castle_weight=0.0,
+            ep_weight=0.0,
+            warmup_steps=0,
+            content_pooling=False,
+        )
     return AuxiliaryLossConfig(
         mlm_weight=args.mlm_weight,
         visible_identity_weight=args.visible_identity_weight,
@@ -488,6 +596,7 @@ def streaming_train_config(
         seed=args.seed,
         shuffle_buffer=args.shuffle_buffer,
         prefetch_shards=args.prefetch_shards,
+        full_reconstruction_weights=full_reconstruction_weights(args),
         resume_step=0 if args.no_resume_data_skip else start_step,
         batch_size=args.batch_size,
         num_workers=args.num_workers,
@@ -561,6 +670,7 @@ def main() -> None:
     if args.resume:
         checkpoint = torch.load(args.resume, map_location="cpu", weights_only=False)
         model_config = model_config_from_dict(checkpoint["model_config"])
+        args.model_arch = getattr(model_config, "arch", "transformer")
         start_step = checkpoint["step"]
         best_val_loss = checkpoint.get(
             "best_val_loss", checkpoint.get("val_loss", float("inf"))
@@ -588,6 +698,18 @@ def main() -> None:
             content_pooling=args.content_pooling,
             aux_heads=aux_heads,
         )
+    elif args.model_arch == ARCH_ATTENTION_AUTOENCODER:
+        model_config = AttentionAutoencoderConfig(
+            d_model=args.d_model,
+            n_layers=args.n_layers,
+            n_heads=args.n_heads,
+            d_ff=args.d_ff,
+            dropout=args.dropout,
+            max_seq_len=args.max_seq_len,
+            max_segments=args.max_segments,
+            latent_dim=args.latent_dim,
+            n_decoder_layers=args.n_decoder_layers,
+        )
     else:
         model_config = TransformerConfig(
             d_model=args.d_model,
@@ -604,7 +726,7 @@ def main() -> None:
     model = build_model(model_config).to(device)
     raw_model = model
     model = apply_compile(model, args.compile)
-    content_hidden_fn = None
+    raw_encode_views = getattr(raw_model, "encode_views", None)
     if args.visible_identity_weight > 0:
         content_hidden_fn = (
             torch.compile(raw_model.content_hidden_states, dynamic=True)
@@ -612,15 +734,15 @@ def main() -> None:
             else raw_model.content_hidden_states
         )
         encode_views_fn = None
+    elif raw_encode_views is None:
+        encode_views_fn = None
     else:
         encode_views_fn = (
-            torch.compile(raw_model.encode_views, dynamic=True)
+            torch.compile(raw_encode_views, dynamic=True)
             if args.compile
-            else raw_model.encode_views
+            else raw_encode_views
         )
-    encode_views_alone_fn = getattr(
-        raw_model, "encode_views_alone", raw_model.encode_views
-    )
+    encode_views_alone_fn = getattr(raw_model, "encode_views_alone", raw_encode_views)
     n_params = sum(p.numel() for p in model.parameters())
     log(
         f"device={device} params={n_params / 1e6:.2f}M bf16={bf16} compile={args.compile}"
@@ -657,6 +779,7 @@ def main() -> None:
                 max_seq_len=args.max_seq_len,
                 max_segments=args.max_segments,
                 masking=masking_config(args),
+                full_reconstruction_weights=full_reconstruction_weights(args),
             )
         )
         if not args.no_freq_weighting:
@@ -682,6 +805,7 @@ def main() -> None:
             max_segments=args.max_segments,
             masking=masking_config(args),
             seed=args.seed,
+            full_reconstruction_weights=full_reconstruction_weights(args),
         )
     )
     if getattr(args, "stream_shards", False):
@@ -1120,25 +1244,28 @@ def main() -> None:
                     )
                 )
                 extras["full_eval"] = metrics
-            hard_records = collect_hard_negatives(
-                raw_model,
-                batch,
-                loss_config,
-                step=step,
-                top_k=args.hard_negative_top_k,
-                generator=torch.Generator(device=device).manual_seed(args.seed + step),
-            )
-            hard_path = write_hard_negatives(hard_records, checkpoint_dir, step)
-            if hard_path is not None:
-                log(f"step={step} hard negatives saved to {hard_path}")
-                if args.upload_bucket:
-                    upload_file(
-                        hard_path,
-                        bucket_id=args.upload_bucket,
-                        remote_path=(
-                            f"{args.upload_prefix}/hard_negatives/{hard_path.name}"
-                        ),
-                    )
+            if args.model_arch != ARCH_ATTENTION_AUTOENCODER:
+                hard_records = collect_hard_negatives(
+                    raw_model,
+                    batch,
+                    loss_config,
+                    step=step,
+                    top_k=args.hard_negative_top_k,
+                    generator=torch.Generator(device=device).manual_seed(
+                        args.seed + step
+                    ),
+                )
+                hard_path = write_hard_negatives(hard_records, checkpoint_dir, step)
+                if hard_path is not None:
+                    log(f"step={step} hard negatives saved to {hard_path}")
+                    if args.upload_bucket:
+                        upload_file(
+                            hard_path,
+                            bucket_id=args.upload_bucket,
+                            remote_path=(
+                                f"{args.upload_prefix}/hard_negatives/{hard_path.name}"
+                            ),
+                        )
             latest_metrics = {
                 key: value for key, value in extras.items() if key != "full_eval"
             }
