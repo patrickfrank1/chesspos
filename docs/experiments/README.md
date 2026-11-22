@@ -18,7 +18,8 @@ a single 512-d bottleneck and reconstructs every token from it. The 6M run was
 the plateau to the frequency weighting (empty squares were 4.9% of the loss
 weight but 88% of the errors) plus the 512-d latent capacity, not to the data.
 A 20M-parameter follow-up with a 1024-d latent and rebalanced weights is
-proposed. See
+proposed. That run **launched on 2026-11-22** (100k steps, batch 128,
+`balanced-v1` weighting). See
 [attention_autoencoder_6m_2026-11-22.md](attention_autoencoder_6m_2026-11-22.md).
 
 ## Experiment reports
@@ -56,6 +57,8 @@ Attention autoencoder runs:
 - `run_ae_6m_100k/` — `last.pt` (step 42k), `best_stepNNNNN.pt`, `.meta.json`
   sidecars
 - `run_ae_6m_100k_logs/` — `train.log`, eval plots, neighbour reports
+- `run_ae_20m_100k/` — in progress: 20.39M params, 1024-d latent, batch 128,
+  `balanced-v1` weighting, 100k steps
 
 ## Recurring failure modes
 
