@@ -24,6 +24,7 @@ from src.chess_eval.backend import (
     resolve_device,
     state_response,
 )
+from src.chess_eval.puzzles import background_boards
 from src.chess_eval.samples import DEFAULT_PUZZLE_DIR, load_puzzle_samples
 from src.chess_eval.stockfish import ensure_nnue, nnue_info
 
@@ -150,6 +151,11 @@ def create_app(
         try:
             boards, _ = replay(request.start_fen, request.moves)
             handle = load_model(info, resolved_device)
+            background = (
+                background_boards(resolved_puzzle_dir, count=4)
+                if request.method == "shap"
+                else ()
+            )
             result = attribute_position(
                 handle,
                 boards,
@@ -158,6 +164,7 @@ def create_app(
                 occlusion=request.occlusion,
                 samples=request.samples,
                 seed=request.seed,
+                background=background,
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc

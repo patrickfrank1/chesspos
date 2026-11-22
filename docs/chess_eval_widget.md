@@ -91,9 +91,15 @@ selected checkpoint. Choose `Occlusion` or `KernelSHAP`, then press `Explain`:
 - the overlay clears when the position or the model selection changes.
 
 Occlusion uses the `MASK` token by default, matching the encoder's pretraining
-distribution. KernelSHAP only treats occupied squares as players and uses the
-empty board as its baseline, so its values sum to
-`model_value - baseline_value`.
+distribution. Kings are never removed: a kingless board is not a legal
+position. KernelSHAP treats non-king pieces as players and uses four real
+puzzle positions as its background, so its values sum to
+`model_value - baseline_value` and the sampled boards stay in distribution.
+
+The attribution is faithful to the probe, not to chess. `docs/attribution.md`
+measures how often each method ranks the piece the puzzle solution actually
+sacrifices; occlusion is the stronger piece localizer, and the score can be
+low when the probe keys on material rather than the tactical motif.
 
 The same explanations are available from the CLI:
 

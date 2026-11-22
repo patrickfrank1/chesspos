@@ -11,6 +11,8 @@ from src.chess_eval.attribution import (
     attribute_position,
 )
 from src.chess_eval.backend import load_checkpoint_handle, replay
+from src.chess_eval.puzzles import background_boards
+from src.chess_eval.samples import DEFAULT_PUZZLE_DIR
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
@@ -33,6 +35,17 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--method", choices=METHODS, default="occlusion")
     parser.add_argument("--occlusion", choices=OCCLUSION_MODES, default="mask")
     parser.add_argument("--samples", type=int, default=DEFAULT_SHAP_SAMPLES)
+    parser.add_argument(
+        "--background-dir",
+        default=str(DEFAULT_PUZZLE_DIR),
+        help="Puzzle shards providing the interventional SHAP background",
+    )
+    parser.add_argument(
+        "--background-count",
+        type=int,
+        default=4,
+        help="Real positions used as the SHAP background (0 disables it)",
+    )
     parser.add_argument("--top", type=int, default=8)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--device", default=None)
@@ -47,6 +60,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     handle = load_checkpoint_handle(args.checkpoint, task=args.task, device=args.device)
     moves = [move.strip() for move in args.moves.split(",") if move.strip()]
     boards, _ = replay(args.fen, moves)
+    try:
+        background = background_boards(
+            args.background_dir, count=args.background_count, seed=args.seed
+        )
+    except Exception:
+        background = ()
     result = attribute_position(
         handle,
         boards,
@@ -55,6 +74,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         occlusion=args.occlusion,
         samples=args.samples,
         seed=args.seed,
+        background=background,
     )
     print(json.dumps(result.to_dict(top=args.top)))
     return 0

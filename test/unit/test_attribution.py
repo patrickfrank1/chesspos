@@ -25,14 +25,19 @@ from src.modeling.score_head import ScoreHead, ScoreHeadConfig
 from src.modeling.transformer import MaskedStreamTransformer, TransformerConfig
 from src.run.classify_position import load_classifier
 from src.run.eval_score_probe import load_score_probe
-from src.run.evaluate_attribution import attribution_report
+from src.chess_eval.puzzles import SolvedPuzzle
+from src.run.evaluate_attribution import (
+    attribution_report,
+    piece_localization_report,
+)
 from src.run.explain_position import main as explain_main
+from test.unit.test_puzzles import queen_sac_boards
 
 
 def tiny_config() -> TransformerConfig:
     return TransformerConfig(
         vocab_size=VOCAB_SIZE,
-        d_model=1,
+        d_model=2,
         n_heads=1,
         n_layers=1,
         d_ff=2,
@@ -46,7 +51,7 @@ def save_score_checkpoint(path: Path, window: int = 1) -> None:
     config = tiny_config()
     encoder = MaskedStreamTransformer(config)
     head = ScoreHead(
-        ScoreHeadConfig(d_model=1, hidden_dim=2, pooling="mean", state_features=0)
+        ScoreHeadConfig(d_model=2, hidden_dim=2, pooling="mean", state_features=0)
     )
     path.parent.mkdir(parents=True, exist_ok=True)
     torch.save(
@@ -72,8 +77,11 @@ def save_puzzle_checkpoint(path: Path) -> None:
     config = tiny_config()
     encoder = MaskedStreamTransformer(config)
     head = PoolingClassifier(
-        PoolingClassifierConfig(d_model=1, hidden_dim=2, pooling="mean")
+        PoolingClassifierConfig(d_model=2, hidden_dim=2, pooling="mean")
     )
+    # Keep the tiny model away from sigmoid saturation so deltas stay visible.
+    torch.nn.init.normal_(head.classifier.weight, std=0.01)
+    torch.nn.init.zeros_(head.classifier.bias)
     path.parent.mkdir(parents=True, exist_ok=True)
     torch.save(
         {
@@ -476,6 +484,112 @@ class TestAttributionApi:
             )
         with then("the request is a 400"):
             assert bad_method.status_code == 400
+        return
+
+
+class TestCounterfactualValidity:
+    def test_kings_are_never_occluded(self, tmp_path):
+        with given("a tiny sacrifice checkpoint and the starting board"):
+            path = tmp_path / "sacrifice.pt"
+            save_puzzle_checkpoint(path)
+            handle = sacrifice_handle(path)
+            boards = [chess.Board()]
+
+        with when("square occlusion explains the probability"):
+            result = attribute_position(
+                handle, boards, device="cpu", method="occlusion"
+            )
+
+        with then("the kings cannot be removed and are reported as zero"):
+            assert result.squares[chess.E1] == 0.0
+            assert result.squares[chess.E8] == 0.0
+            others = [
+                square
+                for square, piece in boards[0].piece_map().items()
+                if piece.piece_type != chess.KING
+            ]
+            assert any(result.squares[square] != 0.0 for square in others)
+        return
+
+    def test_shap_with_the_board_as_background_cancels_out(self, tmp_path):
+        with given("a background identical to the explained board"):
+            path = tmp_path / "sacrifice.pt"
+            save_puzzle_checkpoint(path)
+            handle = sacrifice_handle(path)
+            boards = [chess.Board()]
+
+        with when("KernelSHAP explains the score with that background"):
+            result = attribute_position(
+                handle,
+                boards,
+                device="cpu",
+                method="shap",
+                samples=32,
+                background=boards,
+            )
+
+        with then("replacing every piece with itself leaves no attribution"):
+            assert all(abs(value) < 1e-6 for value in result.squares)
+            assert result.baseline_value == pytest.approx(result.model_value, abs=1e-6)
+            assert result.background == 1
+        return
+
+    def test_shap_is_efficient_against_a_background(self, tmp_path):
+        with given("a score probe and a real background position"):
+            path = tmp_path / "score.pt"
+            save_score_checkpoint(path)
+            handle = score_handle(path)
+            boards = [chess.Board()]
+            background = [
+                chess.Board(
+                    "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1"
+                )
+            ]
+
+        with when("KernelSHAP explains the score"):
+            result = attribute_position(
+                handle,
+                boards,
+                device="cpu",
+                method="shap",
+                samples=64,
+                background=background,
+            )
+
+        with then("the values still sum to the output above the background baseline"):
+            total = float(sum(result.squares))
+            assert total == pytest.approx(
+                result.model_value - result.baseline_value, abs=1e-4
+            )
+        return
+
+
+class TestPieceLocalization:
+    def test_report_ranks_the_sacrificed_piece_for_each_method(self, tmp_path):
+        with given("a tiny sacrifice checkpoint and one known sacrifice"):
+            path = tmp_path / "sacrifice.pt"
+            save_puzzle_checkpoint(path)
+            handle = sacrifice_handle(path)
+            boards = tuple(queen_sac_boards())
+            puzzle = SolvedPuzzle(
+                puzzle_id="sac",
+                boards=boards,
+                sacrificed_square=chess.D1,
+                rating=1500,
+            )
+
+        with when("the piece-localization report is built"):
+            report = piece_localization_report(
+                handle, [puzzle], device="cpu", samples=16, background=[boards[0]]
+            )
+
+        with then("every method reports top-k and mean rank statistics"):
+            assert set(report["methods"]) == {"occlusion", "shap"}
+            assert report["positions"] == 1
+            for entry in report["methods"].values():
+                assert 0.0 <= entry["top1"] <= 1.0
+                assert 0.0 <= entry["top3"] <= 1.0
+                assert entry["mean_rank"] >= 1.0
         return
 
 

@@ -14,13 +14,19 @@ from src.chess_eval.backend import (
     forward_tokens,
     model_batch,
 )
-from src.dataset.token_stream import EMPTY, MASK
+from src.dataset.token_stream import EMPTY, MASK, TURN_WHITE, piece_id
 
 METHODS = ("occlusion", "shap")
 OCCLUSION_MODES = ("mask", "empty")
 DEFAULT_SHAP_SAMPLES = 128
 
 _OCCLUSION_REPLACEMENTS = {"mask": MASK, "empty": EMPTY}
+_KING_TOKENS = frozenset(
+    {
+        piece_id(chess.Piece(chess.KING, chess.WHITE)),
+        piece_id(chess.Piece(chess.KING, chess.BLACK)),
+    }
+)
 
 
 def occlusion_replacement(occlusion: str) -> int:
@@ -60,6 +66,7 @@ class AttributionResult:
     piece_names: tuple[str | None, ...] = ()
     occlusion: str | None = None
     samples: int | None = None
+    background: int | None = None
     seed: int | None = None
 
     def ranked(self, limit: int = 8) -> list[dict]:
@@ -93,6 +100,7 @@ class AttributionResult:
             "top": self.ranked(top),
             "occlusion": self.occlusion,
             "samples": self.samples,
+            "background": self.background,
             "seed": self.seed,
         }
 
@@ -210,13 +218,18 @@ def attribute_position(
     occlusion: str = "mask",
     samples: int = DEFAULT_SHAP_SAMPLES,
     seed: int = 0,
+    background: Sequence[chess.Board] | None = None,
 ) -> AttributionResult:
     """Explain one model output for the current board.
 
-    ``occlusion`` picks the replacement token (``mask`` or ``empty``) for the
-    occlusion method. KernelSHAP always uses the empty board as its baseline
-    (same side to move, castling rights, and en-passant square, but no pieces),
-    so its values sum to ``model_value - baseline_value``.
+    Kings are never treated as removable: a kingless board is not a legal
+    position, so removing one measures the model's reaction to garbage.
+    ``occlusion`` selects the replacement token for the occlusion method.
+
+    KernelSHAP uses a coalition game over non-king pieces. Without a
+    ``background`` the absent state is an empty square; with a background of
+    real positions, absent squares take that background's content, which keeps
+    the sampled boards in distribution (interventional SHAP).
     """
     if method not in METHODS:
         raise ValueError(f"method must be one of {METHODS}, got {method!r}")
@@ -233,18 +246,30 @@ def attribute_position(
         return forward_tokens(handle, batch, rows, device)
 
     model_value = float(score_batch(batch.tokens[None])[0])
-    empty_rows = batch.tokens[None].copy()
-    empty_rows[0, batch.square_positions.ravel()] = EMPTY
-    baseline_value = float(score_batch(empty_rows)[0])
+    n_segments = batch.square_positions.shape[0]
+    kings = _king_mask(batch)
+    background_rows = _background_rows(handle, background, n_segments)
 
     if method == "occlusion":
         replacement = occlusion_replacement(occlusion)
         _, deltas = occlusion_deltas(
             score_batch, batch.tokens, batch.square_positions, replacement
         )
+        deltas[kings] = 0.0
         segment_squares = tuple(tuple(float(value) for value in row) for row in deltas)
+        baseline_rows = batch.tokens[None].copy()
+        baseline_rows[0, batch.square_positions[~kings]] = replacement
+        baseline_value = float(score_batch(baseline_rows)[0])
     else:
-        segment_squares = _shap_squares(score_batch, batch, samples=samples, seed=seed)
+        segment_squares, baseline_value = _shap_squares(
+            score_batch,
+            batch,
+            kings,
+            background_rows,
+            samples=samples,
+            seed=seed,
+            model_value=model_value,
+        )
 
     segment_totals = tuple(float(sum(segment)) for segment in segment_squares)
     squares = segment_squares[-1]
@@ -261,6 +286,7 @@ def attribute_position(
         piece_names=piece_names,
         occlusion=occlusion if method == "occlusion" else None,
         samples=samples if method == "shap" else None,
+        background=len(background_rows) if background_rows is not None else None,
         seed=seed if method == "shap" else None,
     )
 
@@ -268,38 +294,88 @@ def attribute_position(
 def _shap_squares(
     score_batch: ScoreBatch,
     batch: ModelBatch,
+    kings: np.ndarray,
+    background_rows: np.ndarray | None,
     samples: int,
     seed: int,
-) -> tuple[tuple[float, ...], ...]:
-    """Shapley values over occupied squares only.
-
-    An empty square has the same token whether the coalition calls it present
-    or absent, so its Shapley value is exactly zero. Dropping those players
-    also makes the regression far better determined (32 instead of 64 players
-    on an opening board).
-    """
+    model_value: float,
+) -> tuple[tuple[tuple[float, ...], ...], float]:
+    """Shapley values over non-king pieces, plus the game's baseline value."""
+    players_mask = _player_mask(batch) & ~kings
     n_segments, n_squares = batch.square_positions.shape
-    player_mask = np.zeros((n_segments, n_squares), dtype=bool)
-    for segment, board in enumerate(batch.boards):
-        for square in board.piece_map():
-            player_mask[segment, square] = True
-    players = np.flatnonzero(player_mask.ravel())
-    positions = batch.square_positions.ravel()[players]
     flat = np.zeros(n_segments * n_squares, dtype=np.float64)
+    players = np.flatnonzero(players_mask.ravel())
     if players.size == 0:
-        return tuple(tuple(0.0 for _ in range(n_squares)) for _ in range(n_segments))
+        zeros = tuple(tuple(0.0 for _ in range(n_squares)) for _ in range(n_segments))
+        return zeros, model_value
+
+    positions = batch.square_positions.ravel()[players]
 
     def value_fn(coalitions: np.ndarray) -> np.ndarray:
         coalitions = np.asarray(coalitions, dtype=bool)
-        rows = np.repeat(batch.tokens[None], coalitions.shape[0], axis=0)
-        for index, present in enumerate(coalitions):
-            rows[index, positions[~present]] = EMPTY
-        return score_batch(rows)
+        if background_rows is None:
+            rows = np.repeat(batch.tokens[None], coalitions.shape[0], axis=0)
+            for index, present in enumerate(coalitions):
+                rows[index, positions[~present]] = EMPTY
+            return score_batch(rows)
+        rows = []
+        for present in coalitions:
+            for background in background_rows:
+                row = batch.tokens.copy()
+                for index, position in enumerate(positions):
+                    if not present[index]:
+                        row[position] = _background_token(background[position])
+                rows.append(row)
+        values = score_batch(np.stack(rows)).reshape(
+            coalitions.shape[0], len(background_rows)
+        )
+        return values.mean(axis=1)
 
     phi = kernel_shap(value_fn, players.size, nsamples=samples, seed=seed)
     flat[players] = phi
     shaped = flat.reshape(n_segments, n_squares)
-    return tuple(tuple(float(value) for value in row) for row in shaped)
+    baseline = float(value_fn(np.zeros((1, players.size), dtype=bool))[0])
+    return (
+        tuple(tuple(float(value) for value in row) for row in shaped),
+        baseline,
+    )
+
+
+def _king_mask(batch: ModelBatch) -> np.ndarray:
+    mask = np.zeros(batch.square_positions.shape, dtype=bool)
+    for segment, board in enumerate(batch.boards):
+        for square in board.pieces(chess.KING, chess.WHITE) | board.pieces(
+            chess.KING, chess.BLACK
+        ):
+            mask[segment, square] = True
+    return mask
+
+
+def _player_mask(batch: ModelBatch) -> np.ndarray:
+    mask = np.zeros(batch.square_positions.shape, dtype=bool)
+    for segment, board in enumerate(batch.boards):
+        for square in board.piece_map():
+            mask[segment, square] = True
+    return mask
+
+
+def _background_rows(
+    handle: ModelHandle,
+    background: Sequence[chess.Board] | None,
+    n_segments: int,
+) -> np.ndarray | None:
+    if not background:
+        return None
+    rows = [model_batch(handle, [board] * n_segments).tokens for board in background]
+    return np.stack(rows)
+
+
+def _background_token(token: int) -> int:
+    """Copy a background square unless it would duplicate a king."""
+    token = int(token)
+    if EMPTY <= token < TURN_WHITE and token not in _KING_TOKENS:
+        return token
+    return EMPTY
 
 
 def _piece_breakdown(

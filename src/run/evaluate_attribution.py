@@ -21,6 +21,11 @@ from src.chess_eval.backend import (
     model_batch,
     replay,
 )
+from src.chess_eval.puzzles import (
+    SolvedPuzzle,
+    background_boards,
+    load_solved_puzzles,
+)
 from src.chess_eval.samples import DEFAULT_PUZZLE_DIR, load_puzzle_samples
 from src.dataset.token_stream import EMPTY
 
@@ -37,6 +42,12 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--limit", type=int, default=12, help="Positions to explain")
     parser.add_argument("--samples", type=int, default=64, help="KernelSHAP samples")
     parser.add_argument("--random-trials", type=int, default=2)
+    parser.add_argument(
+        "--background-count",
+        type=int,
+        default=4,
+        help="Real positions used as the interventional SHAP background",
+    )
     parser.add_argument(
         "--steps",
         type=int,
@@ -73,6 +84,7 @@ def _position_impact(
     seed: int,
     occlusion: str,
     steps: int,
+    background: Sequence | None = None,
 ) -> tuple[float, float]:
     boards, _ = replay(fen, [])
     batch = model_batch(handle, boards)
@@ -88,6 +100,7 @@ def _position_impact(
         occlusion=occlusion,
         samples=samples,
         seed=seed,
+        background=background,
     )
     positions = batch.square_positions[-1]
     order = np.argsort(-np.abs(np.asarray(result.squares))).tolist()
@@ -119,6 +132,7 @@ def attribution_report(
     seed: int = 0,
     occlusion: str = "mask",
     steps: int = 16,
+    background: Sequence | None = None,
 ) -> dict:
     """Measure deletion-curve faithfulness of every method on the same positions."""
     methods: dict[str, dict] = {}
@@ -137,6 +151,7 @@ def attribution_report(
                 seed + index,
                 occlusion,
                 steps,
+                background,
             )
             attributed.append(attributed_impact)
             random.append(random_impact)
@@ -163,6 +178,55 @@ def attribution_report(
     }
 
 
+def piece_localization_report(
+    handle: ModelHandle,
+    puzzles: Sequence[SolvedPuzzle],
+    device: str | None = None,
+    samples: int = 128,
+    background: Sequence | None = None,
+) -> dict:
+    """Rank the piece actually sacrificed in each puzzle's solution.
+
+    This is the chess-grounded faithfulness test: a useful explanation should
+    put the piece the solver gives up near the top, not just any piece whose
+    removal perturbs the output.
+    """
+    methods: dict[str, dict] = {}
+    total = 0
+    for method in METHODS:
+        ranks: list[int] = []
+        for puzzle in puzzles:
+            if puzzle.sacrificed_square is None:
+                continue
+            result = attribute_position(
+                handle,
+                [puzzle.boards[0]],
+                device=device,
+                method=method,
+                samples=samples,
+                background=background,
+            )
+            order = np.argsort(-np.abs(np.asarray(result.squares)))
+            rank = int(np.flatnonzero(order == puzzle.sacrificed_square)[0]) + 1
+            ranks.append(rank)
+        total = len(ranks)
+        values = np.asarray(ranks, dtype=np.float64)
+        methods[method] = {
+            "top1": float(np.mean(values <= 1)) if len(values) else None,
+            "top3": float(np.mean(values <= 3)) if len(values) else None,
+            "top5": float(np.mean(values <= 5)) if len(values) else None,
+            "mean_rank": float(values.mean()) if len(values) else None,
+        }
+    return {
+        "task": handle.info.task,
+        "checkpoint": str(handle.info.path),
+        "positions": total,
+        "samples": samples,
+        "background": len(background) if background else 0,
+        "methods": methods,
+    }
+
+
 def select_positions(data_dir: str | Path, limit: int, seed: int) -> list[str]:
     samples = load_puzzle_samples(data_dir, max_puzzles=max(limit, 2), seed=seed)
     if not samples:
@@ -176,10 +240,43 @@ def select_positions(data_dir: str | Path, limit: int, seed: int) -> list[str]:
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
     handle = load_checkpoint_handle(args.checkpoint, task=args.task, device=args.device)
+    background = background_boards(
+        args.puzzle_data_dir, count=args.background_count, seed=args.seed
+    )
+    puzzles = [
+        puzzle
+        for puzzle in load_solved_puzzles(
+            args.puzzle_data_dir, max_puzzles=max(60, args.limit), seed=args.seed
+        )
+        if puzzle.sacrificed_square is not None
+    ][: args.limit]
+
+    report: dict = {
+        "task": handle.info.task,
+        "checkpoint": str(handle.info.path),
+        "background": len(background),
+        "seed": args.seed,
+    }
+    if puzzles:
+        localization = piece_localization_report(
+            handle,
+            puzzles,
+            device=args.device,
+            samples=args.samples,
+            background=background,
+        )
+        report["localization"] = localization
+        print(f"piece localization ({localization['positions']} puzzles)")
+        for method, entry in localization["methods"].items():
+            print(
+                f"  {method:>9}: top1={entry['top1']:.2f} top3={entry['top3']:.2f} "
+                f"top5={entry['top5']:.2f} mean_rank={entry['mean_rank']:.1f}"
+            )
+
     fens = select_positions(args.puzzle_data_dir, args.limit, args.seed)
     if not fens:
         raise ValueError(f"no puzzle positions found in {args.puzzle_data_dir}")
-    report = attribution_report(
+    deletion = attribution_report(
         handle,
         fens,
         device=args.device,
@@ -188,15 +285,19 @@ def main(argv: Sequence[str] | None = None) -> int:
         seed=args.seed,
         occlusion=args.occlusion,
         steps=args.steps,
+        background=background,
     )
-    for method, entry in report["methods"].items():
+    report["deletion"] = deletion
+    print("deletion curves")
+    for method, entry in deletion["methods"].items():
         lift = entry["lift"]
         lift_text = f"{lift:.2f}" if lift is not None else "n/a"
         print(
-            f"{method:>9}: faithfulness={entry['faithfulness']:.4f} "
+            f"  {method:>9}: faithfulness={entry['faithfulness']:.4f} "
             f"random={entry['random']:.4f} lift={lift_text} "
             f"median_lift={entry['median_lift']:.2f}"
         )
+
     if args.output:
         output = Path(args.output)
         output.parent.mkdir(parents=True, exist_ok=True)
