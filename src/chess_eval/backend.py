@@ -10,14 +10,10 @@ import numpy as np
 import torch
 from torch import nn
 
-from src.dataset.game_outcomes import (
-    GameOutcome,
-    ScoreDataset,
-    ScorePlan,
-    collate_score_samples,
-)
-from src.dataset.token_stream import TokenStreamEncoder
-from src.run.classify_position import load_classifier, score_positions
+from src.dataset.game_outcomes import state_features
+from src.dataset.puzzle_variants import pack_segments
+from src.dataset.token_stream import N_SLOTS, SEGMENT_LEN, TokenStreamEncoder
+from src.run.classify_position import load_classifier
 from src.run.eval_score_probe import load_score_probe
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -157,14 +153,43 @@ def load_model(
     if cached is not None:
         return cached
 
-    checkpoint = torch.load(info.path, map_location="cpu", weights_only=False)
+    handle = load_checkpoint_handle(info.path, task=info.task, device=resolved)
+    handle.info = info
+    _MODEL_CACHE[key] = handle
+    return handle
+
+
+def load_checkpoint_handle(
+    path: str | Path,
+    task: str | None = None,
+    device: str | torch.device | None = None,
+) -> ModelHandle:
+    """Load a checkpoint without scanning a model directory.
+
+    ``task`` is inferred from the checkpoint when omitted: score probes carry a
+    ``state_features`` entry in their head config, the sacrifice classifier
+    does not.
+    """
+    path = Path(path)
+    resolved = resolve_device(device)
+    checkpoint = torch.load(path, map_location="cpu", weights_only=False)
+    resolved_task = task or infer_task(checkpoint)
+    info = ModelInfo(
+        model_id=str(path),
+        label=path.stem,
+        task=resolved_task,
+        path=path,
+        recipe="",
+        model="",
+        seed=None,
+    )
     metrics = {
         name: float(value)
         for name, value in (checkpoint.get("metrics") or {}).items()
         if isinstance(value, (int, float))
     }
-    if info.task == "score":
-        model = load_score_probe(info.path, resolved)
+    if resolved_task == "score":
+        model = load_score_probe(path, resolved)
         metadata = {
             "feature": checkpoint.get("feature", "native"),
             "window": int(checkpoint.get("window", 1) or 1),
@@ -173,18 +198,22 @@ def load_model(
             ),
             "token_pooling": checkpoint.get("token_pooling", "mean"),
         }
-    elif info.task == "sacrifice":
-        model = load_classifier(info.path, resolved)
+    elif resolved_task == "sacrifice":
+        model = load_classifier(str(path), resolved)
         metadata = {
             "feature": checkpoint.get("feature", "native"),
             "window": 1,
         }
     else:
-        raise ValueError(f"unknown task {info.task!r}")
+        raise ValueError(f"unknown task {resolved_task!r}")
+    return ModelHandle(info=info, model=model, metrics=metrics, metadata=metadata)
 
-    handle = ModelHandle(info=info, model=model, metrics=metrics, metadata=metadata)
-    _MODEL_CACHE[key] = handle
-    return handle
+
+def infer_task(checkpoint: Mapping) -> str:
+    head_config = checkpoint.get("head_config") or {}
+    if "state_features" in head_config:
+        return "score"
+    return "sacrifice"
 
 
 def evaluate_models(
@@ -230,45 +259,100 @@ def evaluate_models(
     return results
 
 
+@dataclass(frozen=True)
+class ModelBatch:
+    """One packed model input plus the token spans of its square slots.
+
+    ``tokens`` is the un-batched row; ``square_positions[i, s]`` is the token
+    index of square ``s`` (``chess.A1`` .. ``chess.H8``) in segment ``i``.
+    """
+
+    tokens: np.ndarray
+    segment_ids: np.ndarray
+    padding_mask: np.ndarray
+    features: np.ndarray | None
+    boards: tuple[chess.Board, ...]
+    square_positions: np.ndarray
+
+
+def model_batch(
+    handle: ModelHandle,
+    boards: Sequence[chess.Board],
+) -> ModelBatch:
+    """Pack the boards a handle consumes into its token-stream input.
+
+    Score probes may use a window of preceding positions and optional explicit
+    state features; the sacrifice classifier always reads one position.
+    """
+    if not boards:
+        raise ValueError("at least one board is required")
+    if handle.info.task == "score":
+        window = max(1, int(handle.metadata.get("window", 1) or 1))
+        selected = list(boards[-window:])
+    elif handle.info.task == "sacrifice":
+        selected = [boards[-1]]
+    else:
+        raise ValueError(f"unknown task {handle.info.task!r}")
+
+    segments = [_TOKEN_ENCODER.encode(board) for board in selected]
+    tokens, segment_ids = pack_segments(segments)
+    features = None
+    if handle.info.task == "score" and handle.metadata.get("include_state_features"):
+        features = state_features(segments[-1])
+    starts = 1 + np.arange(len(segments), dtype=np.int64) * (SEGMENT_LEN + 1)
+    square_positions = starts[:, None] + np.arange(N_SLOTS, dtype=np.int64)[None, :]
+    return ModelBatch(
+        tokens=tokens,
+        segment_ids=segment_ids,
+        padding_mask=np.ones(tokens.shape, dtype=bool),
+        features=features,
+        boards=tuple(board.copy() for board in selected),
+        square_positions=square_positions,
+    )
+
+
+def forward_tokens(
+    handle: ModelHandle,
+    batch: ModelBatch,
+    token_rows: np.ndarray,
+    device: str | torch.device | None = None,
+) -> np.ndarray:
+    """Evaluate one or more token rows against a handle's packed batch."""
+    resolved = resolve_device(device)
+    rows = np.asarray(token_rows, dtype=np.int64)
+    if rows.ndim == 1:
+        rows = rows[None]
+    count = rows.shape[0]
+    tokens = torch.from_numpy(rows).to(resolved)
+    segment_ids = (
+        torch.from_numpy(batch.segment_ids).unsqueeze(0).repeat(count, 1).to(resolved)
+    )
+    padding_mask = (
+        torch.from_numpy(batch.padding_mask).unsqueeze(0).repeat(count, 1).to(resolved)
+    )
+    features = None
+    if batch.features is not None:
+        features = (
+            torch.from_numpy(np.asarray(batch.features, dtype=np.float32))
+            .unsqueeze(0)
+            .repeat(count, 1)
+            .to(resolved)
+        )
+    with torch.no_grad():
+        if handle.info.task == "score":
+            output = handle.model(tokens, segment_ids, padding_mask, features)
+        else:
+            output = torch.sigmoid(handle.model(tokens, segment_ids, padding_mask))
+    return output.detach().cpu().numpy().astype(np.float64).reshape(-1)
+
+
 def evaluate_handle(
     handle: ModelHandle,
     boards: Sequence[chess.Board],
     device: str | torch.device | None = None,
 ) -> float:
-    resolved = resolve_device(device)
-    if not boards:
-        raise ValueError("at least one board is required")
-    if handle.info.task == "score":
-        window = max(1, int(handle.metadata.get("window", 1) or 1))
-        segments = [_TOKEN_ENCODER.encode(board) for board in boards[-window:]]
-        record = GameOutcome(game_id="live", segments=segments, result="1/2-1/2")
-        plan = ScorePlan(
-            game_index=np.array([0], dtype=np.int32),
-            ply=np.array([len(segments)], dtype=np.int16),
-        )
-        dataset = ScoreDataset(
-            [record],
-            plan,
-            window=window,
-            include_state_features=bool(
-                handle.metadata.get("include_state_features", False)
-            ),
-        )
-        batch = collate_score_samples([dataset[0]])
-        tokens = batch["tokens"].to(resolved)
-        segment_ids = batch["segment_ids"].to(resolved)
-        padding_mask = batch["padding_mask"].to(resolved)
-        features = batch.get("features")
-        if features is not None:
-            features = features.to(resolved)
-        with torch.no_grad():
-            output = handle.model(tokens, segment_ids, padding_mask, features)
-        return float(output.item())
-
-    if handle.info.task == "sacrifice":
-        return float(score_positions(handle.model, [boards[-1]], resolved, window=1)[0])
-
-    raise ValueError(f"unknown task {handle.info.task!r}")
+    batch = model_batch(handle, boards)
+    return float(forward_tokens(handle, batch, batch.tokens, device)[0])
 
 
 def replay(

@@ -10,10 +10,17 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from src.chess_eval.attribution import (
+    METHODS,
+    OCCLUSION_MODES,
+    attribute_position,
+)
 from src.chess_eval.backend import (
     DEFAULT_MODEL_ROOTS,
     catalog_by_id,
     discover_models,
+    load_model,
+    replay,
     resolve_device,
     state_response,
 )
@@ -35,6 +42,14 @@ class MoveRequest(PositionRequest):
     source: str
     target: str
     promotion: str | None = None
+
+
+class AttributionRequest(PositionRequest):
+    model_id: str
+    method: str = "occlusion"
+    occlusion: str = "mask"
+    samples: int = Field(default=128, ge=2, le=4096)
+    seed: int = 0
 
 
 def create_app(
@@ -114,6 +129,39 @@ def create_app(
             filename=path.name,
             headers={"Cache-Control": "public, max-age=31536000, immutable"},
         )
+
+    @app.post("/api/attribution")
+    def attribution(request: AttributionRequest) -> dict:
+        info = catalog.get(request.model_id)
+        if info is None:
+            raise HTTPException(
+                status_code=404, detail=f"unknown model id {request.model_id!r}"
+            )
+        if request.method not in METHODS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"method must be one of {METHODS}",
+            )
+        if request.occlusion not in OCCLUSION_MODES:
+            raise HTTPException(
+                status_code=400,
+                detail=f"occlusion must be one of {OCCLUSION_MODES}",
+            )
+        try:
+            boards, _ = replay(request.start_fen, request.moves)
+            handle = load_model(info, resolved_device)
+            result = attribute_position(
+                handle,
+                boards,
+                device=resolved_device,
+                method=request.method,
+                occlusion=request.occlusion,
+                samples=request.samples,
+                seed=request.seed,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"fen": boards[-1].fen(), "attribution": result.to_dict()}
 
     @app.post("/api/position")
     def position(request: PositionRequest) -> dict:

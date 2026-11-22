@@ -169,6 +169,15 @@ button {
   );
 }
 
+.square.attributed::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: var(--attr-color, transparent);
+  opacity: var(--attr-strength, 0);
+  pointer-events: none;
+}
+
 .piece {
   position: relative;
   z-index: 1;
@@ -372,6 +381,70 @@ button:disabled {
   min-height: 34px;
   color: var(--muted);
   font-size: 0.86rem;
+}
+
+.attribution-wrap {
+  margin-top: 14px;
+  border-top: 1px solid var(--line);
+  padding-top: 12px;
+}
+
+.attribution-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+  color: var(--muted);
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.attribution-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.attribution-controls select {
+  min-width: 0;
+  flex: 1 1 150px;
+}
+
+.attribution-top {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 4px 12px;
+  margin-top: 10px;
+  font-size: 0.82rem;
+}
+
+.attr-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 2px 0;
+  border-bottom: 1px dashed rgba(255, 255, 255, 0.06);
+}
+
+.attr-square {
+  font-family: var(--mono, ui-monospace, monospace);
+  color: var(--text);
+}
+
+.attr-value.positive {
+  color: #3fb97a;
+}
+
+.attr-value.negative {
+  color: #f85149;
+}
+
+.attribution-note {
+  margin: 10px 0 0;
+  font-size: 0.74rem;
+  line-height: 1.4;
 }
 
 .move-chip {

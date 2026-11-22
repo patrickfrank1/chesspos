@@ -32,6 +32,8 @@ const state = {
   orientation: "white",
   selectedSquare: null,
   busy: false,
+  attribution: null,
+  attributionError: null,
   stockfish: {
     controller: null,
     ready: false,
@@ -44,6 +46,7 @@ const state = {
 };
 
 let boardRequestId = 0;
+let attributionRequestId = 0;
 
 const elements = {
   board: document.getElementById("board"),
@@ -66,6 +69,12 @@ const elements = {
   sfDepth: document.getElementById("sf-depth"),
   sfAuto: document.getElementById("sf-auto"),
   sfRun: document.getElementById("sf-run"),
+  attrModel: document.getElementById("attr-model"),
+  attrMethod: document.getElementById("attr-method"),
+  attrRun: document.getElementById("attr-run"),
+  attrClear: document.getElementById("attr-clear"),
+  attrStatus: document.getElementById("attr-status"),
+  attrTop: document.getElementById("attr-top"),
 };
 
 function pieceColor(piece) {
@@ -218,6 +227,33 @@ function renderBoard() {
 
     button.addEventListener("click", () => onSquareClick(square.name));
     elements.board.appendChild(button);
+  }
+  applyAttributionHeat();
+}
+
+function squareIndex(name) {
+  const file = FILES.indexOf(name[0]);
+  const rank = Number(name[1]) - 1;
+  return rank * 8 + file;
+}
+
+function applyAttributionHeat() {
+  const attribution = state.attribution;
+  const fen = state.position ? state.position.fen : null;
+  if (!attribution || !fen || attribution.fen !== fen) return;
+  const values = attribution.squares || [];
+  const maxAbs = Math.max(0, ...values.map((value) => Math.abs(value)));
+  if (!(maxAbs > 0)) return;
+  for (const button of elements.board.querySelectorAll(".square")) {
+    const value = values[squareIndex(button.dataset.square)] || 0;
+    const strength = Math.abs(value) / maxAbs;
+    if (strength < 0.05) continue;
+    button.classList.add("attributed");
+    button.style.setProperty("--attr-color", attributionColor(value));
+    button.style.setProperty(
+      "--attr-strength",
+      String(Math.min(1, 0.9 * strength)),
+    );
   }
 }
 
@@ -405,10 +441,15 @@ function applyServerState(payload) {
   state.startFen = payload.position.start_fen;
   state.moves = payload.position.moves;
   state.selectedSquare = null;
+  if (state.attribution && state.attribution.fen !== payload.position.fen) {
+    state.attribution = null;
+    state.attributionError = null;
+  }
   renderBoard();
   renderStatus();
   renderMoves();
   renderEvaluations();
+  renderAttributionPanel();
   if (elements.sfAuto.checked) {
     runStockfish();
   } else {
@@ -576,6 +617,7 @@ function renderModelList() {
     }
     elements.modelList.appendChild(group);
   }
+  renderAttributionModels();
 }
 
 async function loadModels() {
@@ -648,6 +690,126 @@ function loadSample(sample) {
 
 function clearSampleSelection() {
   elements.sampleSelect.value = "";
+}
+
+function attributionModelOptions() {
+  const options = [];
+  for (const model of state.models) {
+    if (state.selected.has(model.model_id)) options.push(model);
+  }
+  return options;
+}
+
+function renderAttributionModels() {
+  const select = elements.attrModel;
+  const previous = select.value;
+  const models = attributionModelOptions();
+  select.innerHTML = "";
+  if (!models.length) {
+    const option = document.createElement("option");
+    option.value = "";
+    option.textContent = "Select a checkpoint above";
+    select.appendChild(option);
+    select.disabled = true;
+    if (state.attribution) clearAttribution();
+    return;
+  }
+  select.disabled = false;
+  for (const model of models) {
+    const option = document.createElement("option");
+    option.value = model.model_id;
+    option.textContent = model.label;
+    select.appendChild(option);
+  }
+  if (models.some((model) => model.model_id === previous)) {
+    select.value = previous;
+  }
+  if (
+    state.attribution &&
+    !models.some((model) => model.model_id === state.attribution.model_id)
+  ) {
+    clearAttribution();
+  }
+}
+
+function clearAttribution() {
+  state.attribution = null;
+  state.attributionError = null;
+  elements.attrTop.innerHTML = "";
+  elements.attrStatus.textContent = "";
+  renderBoard();
+}
+
+function attributionColor(value) {
+  return value >= 0 ? "rgba(63, 185, 122, 0.95)" : "rgba(248, 81, 73, 0.95)";
+}
+
+function renderAttributionPanel() {
+  const attribution = state.attribution;
+  if (!attribution) {
+    if (state.attributionError) {
+      elements.attrStatus.textContent = state.attributionError;
+    } else {
+      elements.attrStatus.textContent = "";
+    }
+    elements.attrTop.innerHTML = "";
+    return;
+  }
+  const isScore = attribution.task === "score";
+  const value = isScore
+    ? `${attribution.model_value >= 0 ? "+" : ""}${formatNumber(
+        attribution.model_value,
+        2,
+      )}`
+    : `${formatNumber(attribution.model_value * 100, 1)}%`;
+  elements.attrStatus.textContent = `${attribution.method} · ${value}`;
+  elements.attrTop.innerHTML = "";
+  for (const entry of attribution.top || []) {
+    const row = document.createElement("div");
+    row.className = "attr-row";
+    const sign = entry.value >= 0 ? "+" : "";
+    row.innerHTML = `<span class="attr-square">${entry.square}</span>` +
+      `<span class="muted">${entry.piece || "empty"}</span>` +
+      `<span class="attr-value ${entry.value >= 0 ? "positive" : "negative"}">` +
+      `${sign}${formatNumber(entry.value, 3)}</span>`;
+    elements.attrTop.appendChild(row);
+  }
+}
+
+async function runAttribution() {
+  const modelId = elements.attrModel.value;
+  if (!modelId || !state.position) {
+    showToast("Select a checkpoint to explain");
+    return;
+  }
+  const requestId = ++attributionRequestId;
+  elements.attrStatus.textContent = "explaining…";
+  try {
+    const payload = await api("/api/attribution", {
+      start_fen: state.startFen,
+      moves: state.moves,
+      model_id: modelId,
+      method: elements.attrMethod.value,
+      occlusion: "mask",
+      samples: 128,
+    });
+    if (requestId !== attributionRequestId) return;
+    state.attribution = {
+      ...payload.attribution,
+      fen: payload.fen,
+      model_id: modelId,
+    };
+    state.attributionError = null;
+    renderBoard();
+    renderAttributionPanel();
+  } catch (error) {
+    if (requestId !== attributionRequestId) return;
+    state.attribution = null;
+    state.attributionError = error.message;
+    renderAttributionPanel();
+    renderBoard();
+    showToast(error.message);
+  }
 }
 
 function formatCompact(value) {
@@ -841,6 +1003,10 @@ function wireEvents() {
       renderStockfish();
     }
   });
+  elements.attrRun.addEventListener("click", () => runAttribution());
+  elements.attrClear.addEventListener("click", () => clearAttribution());
+  elements.attrModel.addEventListener("change", () => clearAttribution());
+  elements.attrMethod.addEventListener("change", () => clearAttribution());
 }
 
 wireEvents();

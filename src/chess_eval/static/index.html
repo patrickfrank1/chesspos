@@ -58,6 +58,31 @@
             </div>
             <div id="move-list" class="move-list">No moves yet</div>
           </div>
+
+          <div class="attribution-wrap">
+            <div class="attribution-header">
+              <span>Attribution</span>
+              <span id="attr-status" class="muted"></span>
+            </div>
+            <div class="attribution-controls">
+              <select id="attr-model" aria-label="Checkpoint to explain"></select>
+              <select id="attr-method" aria-label="Attribution method">
+                <option value="occlusion">Occlusion</option>
+                <option value="shap">KernelSHAP</option>
+              </select>
+              <button id="attr-run" class="ghost small" type="button">
+                Explain
+              </button>
+              <button id="attr-clear" class="ghost small" type="button">
+                Clear
+              </button>
+            </div>
+            <div id="attr-top" class="attribution-top"></div>
+            <p class="attribution-note muted">
+              Green raises the output, red lowers it. Score is White-POV, so a
+              positive black piece helps White.
+            </p>
+          </div>
         </div>
       </section>
 

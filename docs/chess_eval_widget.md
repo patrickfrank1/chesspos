@@ -21,6 +21,11 @@ outputs of the trained downstream checkpoints.
   centipawn engine evaluation.
 - **Sacrifice output:** the classifier's probability for the sacrifice theme,
   with the validation-optimal F1 threshold shown when the checkpoint has one.
+- **Attribution:** explain one selected checkpoint per square. Occlusion asks
+  "what if this piece were not there?"; KernelSHAP gives additive Shapley
+  values against an empty-board baseline. Green raises the output, red lowers
+  it. See [`docs/attribution.md`](attribution.md) for the method details, CLI,
+  and faithfulness measurements.
 
 ## Run it
 
@@ -75,6 +80,31 @@ and Stockfish evaluations update immediately.
 
 The sample set is cached in memory after the first request. Use
 `--puzzle-data-dir` to point at a different shard directory.
+
+## Attribution
+
+The board panel's **Attribution** section explains the current position for a
+selected checkpoint. Choose `Occlusion` or `KernelSHAP`, then press `Explain`:
+
+- green squares push the model output up, red squares push it down;
+- the ranked list shows the strongest squares and the piece on each;
+- the overlay clears when the position or the model selection changes.
+
+Occlusion uses the `MASK` token by default, matching the encoder's pretraining
+distribution. KernelSHAP only treats occupied squares as players and uses the
+empty board as its baseline, so its values sum to
+`model_value - baseline_value`.
+
+The same explanations are available from the CLI:
+
+```bash
+uv run python -m src.run.explain_position \
+  --checkpoint data/models/downstream/sacrifice/unfreeze_all_mean/run_20m_lazy/seed17/best.pt \
+  --fen "..." --method shap --top 8
+```
+
+On an 8-core CPU with a 20M probe, occlusion takes about 2 s and KernelSHAP
+about 3 s.
 
 ## Stockfish 19
 
