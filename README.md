@@ -217,3 +217,12 @@ Notes:
 - Start ML Flow UI, in correct python venv
 
     mlflow ui
+
+- Interactive position evaluator with a clickable board, selectable
+  score/sacrifice checkpoints, Stockfish 19 running locally in the browser, and
+  per-square occlusion/KernelSHAP attribution:
+
+    uv run python -m src.chess_eval --host 127.0.0.1 --port 8000
+
+  See [`docs/chess_eval_widget.md`](docs/chess_eval_widget.md) and
+  [`docs/attribution.md`](docs/attribution.md).
