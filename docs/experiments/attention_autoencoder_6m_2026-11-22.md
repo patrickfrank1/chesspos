@@ -494,6 +494,9 @@ Training changes to pair with it:
 - **Loss:** run with `--token-weight-preset balanced-v1` (implemented; see
   above); log raw **and** calibrated accuracy, per-class accuracy, occupancy
   AUC, latent-swap delta.
+- **Masking:** 50% rectangle / 50% skip-gram (`--p-rect 0.5 --p-skip-gram 0.5`)
+  instead of the 6M run's 80/20, so masked-token prediction is trained equally
+  on within-board and cross-board context.
 - **Metadata fix:** store the resolved `AuxiliaryLossConfig`/weight vector in
   the checkpoint metadata, not the raw CLI args.
 - **Eval performance:** set `OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1` in the
