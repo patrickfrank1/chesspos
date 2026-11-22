@@ -1,4 +1,7 @@
 from bdd import given, then, when
+from src.modeling.autoencoder import AttentionAutoencoderConfig
+from src.modeling.factory import build_model
+from src.modeling.transformer import TransformerConfig
 from src.modeling.masking import MaskingConfig
 from src.run.train_masked_transformer import (
     auxiliary_config,
@@ -6,6 +9,7 @@ from src.run.train_masked_transformer import (
     masking_config,
     parse_args,
     streaming_train_config,
+    view_helpers,
 )
 
 
@@ -663,4 +667,66 @@ class TestAttentionAutoencoderFlags:
 
         with then("full-sequence weighting reaches the dataset"):
             assert config.full_reconstruction_weights is True
+        return
+
+
+class TestViewHelpers:
+    def test_transformer_without_identity_loss_pools_views(self, monkeypatch):
+        with given("a transformer model and the default objectives"):
+            monkeypatch.setattr("sys.argv", ["train_masked_transformer"])
+            args = parse_args()
+            model = build_model(TransformerConfig(d_model=16, n_heads=2, n_layers=1))
+
+        with when("the view helpers are resolved"):
+            content_hidden, encode_views, alone = view_helpers(model, args)
+
+        with then("the content-only helper stays unset and views are pooled"):
+            assert content_hidden is None
+            assert encode_views is not None
+            assert alone is not None
+        return
+
+    def test_identity_objective_uses_the_content_trunk(self, monkeypatch):
+        with given("a transformer model and a positive visible-identity weight"):
+            monkeypatch.setattr(
+                "sys.argv",
+                ["train_masked_transformer", "--visible-identity-weight", "0.5"],
+            )
+            args = parse_args()
+            model = build_model(TransformerConfig(d_model=16, n_heads=2, n_layers=1))
+
+        with when("the view helpers are resolved"):
+            content_hidden, encode_views, alone = view_helpers(model, args)
+
+        with then("the content helper is used and the view pools are disabled"):
+            assert content_hidden is not None
+            assert encode_views is None
+            assert alone is not None
+        return
+
+    def test_autoencoder_has_no_view_helpers(self, monkeypatch):
+        with given("an autoencoder model without encode_views"):
+            monkeypatch.setattr(
+                "sys.argv",
+                ["train_masked_transformer", "--model-arch", "attention_autoencoder"],
+            )
+            args = parse_args()
+            model = build_model(
+                AttentionAutoencoderConfig(
+                    d_model=16,
+                    n_heads=2,
+                    n_layers=1,
+                    d_ff=32,
+                    latent_dim=8,
+                    n_decoder_layers=1,
+                )
+            )
+
+        with when("the view helpers are resolved"):
+            content_hidden, encode_views, alone = view_helpers(model, args)
+
+        with then("every view helper is unset instead of raising"):
+            assert content_hidden is None
+            assert encode_views is None
+            assert alone is None
         return

@@ -3,10 +3,12 @@ from __future__ import annotations
 import argparse
 import json
 import time
+from collections.abc import Callable
 from dataclasses import asdict
 from pathlib import Path
 
 import torch
+from torch import nn
 from torch.utils.data import DataLoader
 
 from src.dataset.token_stream import resolve_max_segments
@@ -478,6 +480,37 @@ def full_reconstruction_weights(args: argparse.Namespace) -> bool:
     return getattr(args, "model_arch", None) == ARCH_ATTENTION_AUTOENCODER
 
 
+def view_helpers(
+    raw_model: nn.Module, args: argparse.Namespace
+) -> tuple[Callable | None, Callable | None, Callable | None]:
+    """Resolve the pooled-view callables used by the training objectives.
+
+    Returns ``(content_hidden_fn, encode_views_fn, encode_views_alone_fn)``.
+    The visible-identity objective trains on the content trunk and disables
+    the view pools; architectures without ``encode_views`` (the window
+    autoencoder) leave them unset so the reconstruction-only objective cannot
+    call a missing helper.
+    """
+    encode_views = getattr(raw_model, "encode_views", None)
+    content_hidden_fn = None
+    if args.visible_identity_weight > 0:
+        content_hidden = raw_model.content_hidden_states
+        content_hidden_fn = (
+            torch.compile(content_hidden, dynamic=True)
+            if args.compile
+            else content_hidden
+        )
+        encode_views_fn = None
+    elif encode_views is None:
+        encode_views_fn = None
+    else:
+        encode_views_fn = (
+            torch.compile(encode_views, dynamic=True) if args.compile else encode_views
+        )
+    encode_views_alone_fn = getattr(raw_model, "encode_views_alone", encode_views)
+    return content_hidden_fn, encode_views_fn, encode_views_alone_fn
+
+
 def masking_config(args: argparse.Namespace) -> MaskingConfig:
     """Build the MaskingConfig implied by the parsed masking args.
 
@@ -726,23 +759,9 @@ def main() -> None:
     model = build_model(model_config).to(device)
     raw_model = model
     model = apply_compile(model, args.compile)
-    raw_encode_views = getattr(raw_model, "encode_views", None)
-    if args.visible_identity_weight > 0:
-        content_hidden_fn = (
-            torch.compile(raw_model.content_hidden_states, dynamic=True)
-            if args.compile
-            else raw_model.content_hidden_states
-        )
-        encode_views_fn = None
-    elif raw_encode_views is None:
-        encode_views_fn = None
-    else:
-        encode_views_fn = (
-            torch.compile(raw_encode_views, dynamic=True)
-            if args.compile
-            else raw_encode_views
-        )
-    encode_views_alone_fn = getattr(raw_model, "encode_views_alone", raw_encode_views)
+    content_hidden_fn, encode_views_fn, encode_views_alone_fn = view_helpers(
+        raw_model, args
+    )
     n_params = sum(p.numel() for p in model.parameters())
     log(
         f"device={device} params={n_params / 1e6:.2f}M bf16={bf16} compile={args.compile}"
