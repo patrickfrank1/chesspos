@@ -30,6 +30,7 @@ from src.training.objectives import (
     select_target_segments,
     select_target_segments_multi,
     vicreg_terms,
+    visible_content_identity_loss,
     visible_content_segment_mask,
 )
 
@@ -346,6 +347,58 @@ class TestContextViews:
         return
 
 
+class TestVisibleContentIdentity:
+    def test_ignores_masked_state_and_padding_positions(self):
+        with given("one visible content token and several non-visible positions"):
+            hidden = torch.zeros(1, 4, 20)
+            hidden[0, 0, 5] = 100.0
+            tokens = torch.tensor([[5, MASK, TURN_WHITE, 5]])
+            targets = torch.tensor([[IGNORE_INDEX, 6, IGNORE_INDEX, IGNORE_INDEX]])
+            padding = torch.tensor([[True, True, True, False]])
+
+        with when("the visible-content identity loss is computed"):
+            loss = visible_content_identity_loss(
+                hidden, tokens, targets, padding, torch.nn.Identity()
+            )
+
+        with then("only the visible content position contributes"):
+            assert loss.item() == pytest.approx(0.0)
+        return
+
+    def test_penalizes_wrong_visible_content_prediction(self):
+        with given("a visible content token with an incorrect logit"):
+            hidden = torch.zeros(1, 2, 20)
+            hidden[0, 0, 0] = 1.0
+            tokens = torch.tensor([[5, MASK]])
+            targets = torch.tensor([[IGNORE_INDEX, 6]])
+            padding = torch.tensor([[True, True]])
+
+        with when("the visible-content identity loss is computed"):
+            loss = visible_content_identity_loss(
+                hidden, tokens, targets, padding, torch.nn.Identity()
+            )
+
+        with then("the wrong visible token is penalised"):
+            assert loss.item() > 0.0
+        return
+
+    def test_returns_zero_without_visible_content(self):
+        with given("a fully masked content batch"):
+            hidden = torch.zeros(1, 2, 20)
+            tokens = torch.tensor([[MASK, MASK]])
+            targets = torch.tensor([[5, 6]])
+            padding = torch.tensor([[True, True]])
+
+        with when("the visible-content identity loss is computed"):
+            loss = visible_content_identity_loss(
+                hidden, tokens, targets, padding, torch.nn.Identity()
+            )
+
+        with then("there is nothing to supervise"):
+            assert loss.item() == pytest.approx(0.0)
+        return
+
+
 class TestAuxiliaryLosses:
     def test_default_weights_match_the_objective_sweep(self):
         with given("a default auxiliary loss configuration"):
@@ -524,6 +577,67 @@ class TestComputeTrainingLoss:
                 )["loss"]
             assert total.item() == pytest.approx(reference.item())
             assert set(components) == {"mlm"}
+        return
+
+    def test_visible_identity_loss_is_added_to_the_objective(self):
+        with given("a tiny model and a positive visible-identity weight"):
+            model = tiny_model()
+            batch = tiny_batch()
+            config = AuxiliaryLossConfig(
+                mlm_weight=1.0,
+                inv_weight=0.0,
+                var_weight=0.0,
+                cov_weight=0.0,
+                nce_weight=0.0,
+                alone_var_weight=0.0,
+                alone_cov_weight=0.0,
+                visible_identity_weight=0.5,
+                warmup_steps=0,
+            )
+
+        with when("the training loss is computed and backpropagated"):
+            total, components = compute_training_loss(model, batch, config)
+            total.backward()
+
+        with then("the visible-identity term is weighted and included"):
+            assert set(components) == {"mlm", "visible_identity"}
+            assert total.item() == pytest.approx(
+                components["mlm"].item() + 0.5 * components["visible_identity"].item()
+            )
+            assert any(
+                parameter.grad is not None
+                for parameter in model.parameters()
+                if parameter.requires_grad
+            )
+        return
+
+    def test_injected_content_hidden_function_is_used_for_visible_identity(self):
+        with given("a model, batch, and spies on the isolated content path"):
+            model = tiny_model()
+            batch = tiny_batch()
+            config = AuxiliaryLossConfig(
+                mlm_weight=1.0,
+                inv_weight=0.0,
+                var_weight=0.0,
+                cov_weight=0.0,
+                nce_weight=0.0,
+                alone_var_weight=0.0,
+                alone_cov_weight=0.0,
+                visible_identity_weight=0.5,
+                warmup_steps=0,
+            )
+            hidden_calls: list[int] = []
+            original_hidden = model.content_hidden_states
+
+            def hidden_spy(tokens, segment_ids, padding_mask=None):
+                hidden_calls.append(tokens.shape[0])
+                return original_hidden(tokens, segment_ids, padding_mask)
+
+        with when("the training loss is computed with the injected hidden path"):
+            compute_training_loss(model, batch, config, content_hidden_fn=hidden_spy)
+
+        with then("the injected isolated trunk is used once"):
+            assert hidden_calls == [batch["tokens"].shape[0]]
         return
 
     def test_injected_encode_views_function_is_used_for_window_and_alone(self):

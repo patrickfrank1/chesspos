@@ -22,14 +22,18 @@ from src.modeling.puzzle_classifier import (
 from src.modeling.transformer import MaskedStreamTransformer, TransformerConfig
 
 
-def tiny_encoder() -> MaskedStreamTransformer:
+def tiny_encoder(
+    d_model: int = 1,
+    n_layers: int = 1,
+    d_ff: int = 2,
+) -> MaskedStreamTransformer:
     return MaskedStreamTransformer(
         TransformerConfig(
             vocab_size=VOCAB_SIZE,
-            d_model=1,
+            d_model=d_model,
             n_heads=1,
-            n_layers=1,
-            d_ff=2,
+            n_layers=n_layers,
+            d_ff=d_ff,
             dropout=0.0,
             max_seq_len=256,
             max_segments=8,
@@ -148,6 +152,173 @@ class TestFrozenEncoderClassifier:
 
         with then("the deterministic output is identical"):
             torch.testing.assert_close(first, second)
+        return
+
+    def test_full_feature_uses_the_non_isolated_trunk(self):
+        with given("a frozen classifier using the full-trunk feature recipe"):
+            encoder = tiny_encoder()
+            head = PoolingClassifier(PoolingClassifierConfig(d_model=1))
+            model = FrozenEncoderClassifier(encoder, head, feature="full")
+            tokens, segment_ids, padding_mask = batch_from_boards()
+            calls = []
+            original_embed = encoder.embed
+            original_encode = encoder.encode
+
+            def embed(*args, **kwargs):
+                calls.append("embed")
+                return original_embed(*args, **kwargs)
+
+            def encode(*args, **kwargs):
+                calls.append("encode")
+                return original_encode(*args, **kwargs)
+
+            encoder.embed = embed
+            encoder.encode = encode
+
+        with when("the classifier scores a batch"):
+            model(tokens, segment_ids, padding_mask)
+
+        with then("encode is used instead of embed"):
+            assert calls == ["encode"]
+        return
+
+    def test_rejects_an_unknown_feature_recipe(self):
+        with given("an unsupported feature name"):
+            encoder = tiny_encoder()
+            head = PoolingClassifier(PoolingClassifierConfig(d_model=1))
+
+        with when("the frozen classifier is constructed"):
+            error = None
+            try:
+                FrozenEncoderClassifier(encoder, head, feature="content_state")
+            except ValueError as exc:
+                error = exc
+
+        with then("a ValueError is raised"):
+            assert isinstance(error, ValueError)
+        return
+
+
+class TestFineTuning:
+    def test_unfreezing_the_last_block_requires_the_full_feature(self):
+        with given("an unfrozen last block and the native feature recipe"):
+            encoder = tiny_encoder()
+            head = PoolingClassifier(PoolingClassifierConfig(d_model=1))
+
+        with when("the classifier is constructed"):
+            error = None
+            try:
+                FrozenEncoderClassifier(
+                    encoder, head, feature="native", unfreeze_last_block=True
+                )
+            except ValueError as exc:
+                error = exc
+
+        with then("a ValueError explains the incompatible combination"):
+            assert isinstance(error, ValueError)
+        return
+
+    def test_full_fine_tuning_requires_the_full_feature(self):
+        with given("every encoder parameter unfrozen with the native recipe"):
+            encoder = tiny_encoder()
+            head = PoolingClassifier(PoolingClassifierConfig(d_model=1))
+
+        with when("the classifier is constructed"):
+            error = None
+            try:
+                FrozenEncoderClassifier(
+                    encoder, head, feature="native", unfreeze_all=True
+                )
+            except ValueError as exc:
+                error = exc
+
+        with then("a ValueError is raised"):
+            assert isinstance(error, ValueError)
+        return
+
+    def test_unfreezing_trains_only_the_last_block(self):
+        with given("a two-layer encoder with the last block unfrozen"):
+            encoder = tiny_encoder(n_layers=2)
+            head = PoolingClassifier(PoolingClassifierConfig(d_model=1))
+            model = FrozenEncoderClassifier(
+                encoder, head, feature="full", unfreeze_last_block=True
+            )
+
+        with when("the trainable parameters are inspected"):
+            trainable = {
+                name
+                for name, parameter in model.named_parameters()
+                if parameter.requires_grad
+            }
+
+        with then("only the last block, final norm, and head remain trainable"):
+            assert any(name.startswith("encoder.blocks.1.") for name in trainable)
+            assert "encoder.ln_final.weight" in trainable
+            assert not any(name.startswith("encoder.blocks.0.") for name in trainable)
+            assert any(name.startswith("head.") for name in trainable)
+            assert model.encoder.training is True
+        return
+
+    def test_all_encoder_parameters_are_trainable(self):
+        with given("a fully unfrozen encoder with the full feature recipe"):
+            encoder = tiny_encoder(d_model=4, n_layers=2, d_ff=8)
+            head = PoolingClassifier(PoolingClassifierConfig(d_model=4))
+            model = FrozenEncoderClassifier(
+                encoder, head, feature="full", unfreeze_all=True
+            )
+            tokens, segment_ids, padding_mask = batch_from_boards()
+
+        with when("a training step is run"):
+            model.train()
+            logits = model(tokens, segment_ids, padding_mask)
+            logits.sum().backward()
+
+        with then("the first block and embeddings receive gradients"):
+            assert all(p.requires_grad for p in model.encoder.parameters())
+            assert model.encoder.training is True
+            assert encoder.blocks[0].qkv.weight.grad is not None
+            assert encoder.blocks[0].qkv.weight.grad.abs().sum() > 0
+        return
+
+    def test_eval_mode_restores_the_frozen_behaviour_of_the_encoder(self):
+        with given("a fully unfrozen classifier"):
+            encoder = tiny_encoder(d_model=4, n_layers=2, d_ff=8)
+            head = PoolingClassifier(PoolingClassifierConfig(d_model=4))
+            model = FrozenEncoderClassifier(
+                encoder, head, feature="full", unfreeze_all=True
+            )
+
+        with when("the model is switched to train and then eval"):
+            model.train()
+            train_mode = model.encoder.training
+            model.eval()
+            eval_mode = model.encoder.training
+
+        with then("the encoder follows the requested mode"):
+            assert train_mode is True
+            assert eval_mode is False
+        return
+
+    def test_cannot_be_combined_with_last_block_unfreezing(self):
+        with given("both unfreeze options enabled"):
+            encoder = tiny_encoder()
+            head = PoolingClassifier(PoolingClassifierConfig(d_model=1))
+
+        with when("the classifier is constructed"):
+            error = None
+            try:
+                FrozenEncoderClassifier(
+                    encoder,
+                    head,
+                    feature="full",
+                    unfreeze_last_block=True,
+                    unfreeze_all=True,
+                )
+            except ValueError as exc:
+                error = exc
+
+        with then("a ValueError is raised"):
+            assert isinstance(error, ValueError)
         return
 
 

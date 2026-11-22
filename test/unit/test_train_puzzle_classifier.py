@@ -8,6 +8,7 @@ import chess
 import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
+import pytest
 import torch
 
 from bdd import given, then, when
@@ -28,6 +29,7 @@ from src.modeling.puzzle_classifier import (
 from src.modeling.transformer import MaskedStreamTransformer, TransformerConfig
 from src.run.classify_position import classify_fen, load_classifier
 from src.run.train_puzzle_classifier import (
+    build_optimizer,
     build_validation_plan,
     parse_args,
     train_epoch,
@@ -434,6 +436,63 @@ class TestPoolingOption:
             assert args.pooling == "mean"
         return
 
+    def test_defaults_to_the_native_embedding_recipe(self):
+        with given("no feature recipe on the command line"):
+            argv = ["train_puzzle_classifier.py"]
+
+        with when("the arguments are parsed"):
+            with patch("sys.argv", argv):
+                args = parse_args()
+
+        with then("the frozen encoder native embed is the default"):
+            assert args.feature == "native"
+        return
+
+    def test_accepts_the_full_trunk_recipe_for_the_alternative(self):
+        with given("an explicit full-trunk feature recipe"):
+            argv = ["train_puzzle_classifier.py", "--feature", "full"]
+
+        with when("the arguments are parsed"):
+            with patch("sys.argv", argv):
+                args = parse_args()
+
+        with then("the alternative recipe is available to the classifier"):
+            assert args.feature == "full"
+        return
+
+    def test_chance_abort_is_opt_in(self):
+        with given("no chance guard and an explicit guard"):
+            default_argv = ["train_puzzle_classifier.py"]
+            guarded_argv = ["train_puzzle_classifier.py", "--abort-if-chance"]
+
+        with when("the arguments are parsed"):
+            with patch("sys.argv", default_argv):
+                default = parse_args()
+            with patch("sys.argv", guarded_argv):
+                guarded = parse_args()
+
+        with then("the guard is disabled by default"):
+            assert default.abort_if_chance is False
+            assert guarded.abort_if_chance is True
+            assert guarded.chance_margin_z == 1.645
+        return
+
+    def test_defaults_to_no_autocast_and_accepts_bf16(self):
+        with given("no autocast flag and an explicit bf16 flag"):
+            default_argv = ["train_puzzle_classifier.py"]
+            bf16_argv = ["train_puzzle_classifier.py", "--amp", "bf16"]
+
+        with when("the arguments are parsed"):
+            with patch("sys.argv", default_argv):
+                default = parse_args()
+            with patch("sys.argv", bf16_argv):
+                bf16 = parse_args()
+
+        with then("autocast is opt-in"):
+            assert default.amp == "none"
+            assert bf16.amp == "bf16"
+        return
+
 
 class TestFocalLossWiring:
     def test_main_passes_the_focal_config_to_train_epoch(self, tmp_path, monkeypatch):
@@ -632,4 +691,201 @@ class TestRetrievalBenchmarkHub:
         with then("the loader receives the repo id and the revision"):
             assert exit_code == 0
             assert calls == {"source": "org/chesspos", "revision": "v1"}
+        return
+
+
+class TestFineTuneOptions:
+    def test_parse_args_exposes_the_fine_tuning_flags(self):
+        with given("last-block and full-encoder fine-tuning flags"):
+            last_argv = [
+                "train_puzzle_classifier.py",
+                "--feature",
+                "full",
+                "--unfreeze-last-block",
+                "--encoder-lr",
+                "2e-5",
+            ]
+            all_argv = [
+                "train_puzzle_classifier.py",
+                "--feature",
+                "full",
+                "--unfreeze-all",
+            ]
+
+        with when("the arguments are parsed"):
+            with patch("sys.argv", last_argv):
+                last = parse_args()
+            with patch("sys.argv", all_argv):
+                all_parameters = parse_args()
+
+        with then("the selected freeze level and encoder LR reach the trainer"):
+            assert last.unfreeze_last_block is True
+            assert last.unfreeze_all is False
+            assert last.encoder_lr == 2e-5
+            assert all_parameters.unfreeze_all is True
+            assert all_parameters.unfreeze_last_block is False
+        return
+
+    def test_unfreeze_flags_are_mutually_exclusive(self):
+        with given("both fine-tuning flags on the command line"):
+            argv = [
+                "train_puzzle_classifier.py",
+                "--unfreeze-last-block",
+                "--unfreeze-all",
+            ]
+
+        with when("the arguments are parsed"):
+            with patch("sys.argv", argv):
+                with pytest.raises(SystemExit):
+                    parse_args()
+
+        with then("argparse rejects the pair"):
+            assert True
+        return
+
+    def test_frozen_model_has_a_single_head_group(self):
+        with given("a frozen classifier with no trainable encoder parameters"):
+            encoder = MaskedStreamTransformer(tiny_config())
+            head = PoolingClassifier(PoolingClassifierConfig(d_model=1))
+            model = FrozenEncoderClassifier(encoder, head)
+
+        with when("the optimizer is built"):
+            optimizer = build_optimizer(
+                model, lr=1e-3, encoder_lr=1e-5, weight_decay=0.01
+            )
+
+        with then("only the head is optimized at the head LR"):
+            assert len(optimizer.param_groups) == 1
+            assert optimizer.param_groups[0]["lr"] == 1e-3
+            group_params = {id(p) for p in optimizer.param_groups[0]["params"]}
+            assert group_params == {
+                id(p) for p in model.head.parameters() if p.requires_grad
+            }
+        return
+
+    def test_unfrozen_encoder_gets_its_own_group(self):
+        with given("a classifier with the last block unfrozen"):
+            config = TransformerConfig(
+                vocab_size=VOCAB_SIZE,
+                d_model=1,
+                n_heads=1,
+                n_layers=2,
+                d_ff=2,
+                dropout=0.0,
+                max_seq_len=512,
+                max_segments=8,
+            )
+            encoder = MaskedStreamTransformer(config)
+            head = PoolingClassifier(PoolingClassifierConfig(d_model=1))
+            model = FrozenEncoderClassifier(
+                encoder, head, feature="full", unfreeze_last_block=True
+            )
+
+        with when("the optimizer is built"):
+            optimizer = build_optimizer(
+                model, lr=1e-3, encoder_lr=1e-5, weight_decay=0.0
+            )
+
+        with then("the encoder uses the small LR and the head the large one"):
+            assert len(optimizer.param_groups) == 2
+            assert sorted(group["lr"] for group in optimizer.param_groups) == [
+                1e-5,
+                1e-3,
+            ]
+        return
+
+    def test_train_epoch_reaches_unfrozen_encoder_parameters(self):
+        with given("a fully unfrozen classifier and a small plan"):
+            encoder = MaskedStreamTransformer(tiny_config())
+            head = PoolingClassifier(PoolingClassifierConfig(d_model=1))
+            model = FrozenEncoderClassifier(
+                encoder, head, feature="full", unfreeze_all=True
+            )
+            records = [make_record(f"p-{i}", 2, i % 2) for i in range(8)]
+            plan = EpochPlan(
+                puzzle_index=np.arange(8, dtype=np.int32),
+                start=np.zeros(8, dtype=np.int16),
+                end=np.zeros(8, dtype=np.int16),
+                label=np.array([i % 2 for i in range(8)], dtype=np.int8),
+            )
+            loader = torch.utils.data.DataLoader(
+                PuzzleVariantDataset(records, plan),
+                batch_size=2,
+                collate_fn=collate_variants,
+            )
+            optimizer = build_optimizer(
+                model, lr=1e-3, encoder_lr=1e-3, weight_decay=0.0
+            )
+
+        with when("one training epoch runs"):
+            train_epoch(
+                model,
+                loader,
+                optimizer,
+                torch.device("cpu"),
+                pos_weight=None,
+                epoch=1,
+                log_every=0,
+            )
+
+        with then("the encoder parameters receive gradients"):
+            gradients = [
+                parameter.grad
+                for parameter in model.encoder.parameters()
+                if parameter.requires_grad
+            ]
+            assert any(
+                gradient is not None and gradient.abs().sum() > 0
+                for gradient in gradients
+            )
+        return
+
+    def test_fine_tuned_training_writes_the_ablation_flags(self, tmp_path):
+        with given("a tiny shard trained with full-encoder fine-tuning"):
+            save_encoder_checkpoint(tmp_path / "encoder.pt")
+            make_training_parquet(tmp_path / "part.parquet")
+            argv = [
+                "train_puzzle_classifier.py",
+                "--data-dir",
+                str(tmp_path),
+                "--theme",
+                "sacrifice",
+                "--checkpoint",
+                str(tmp_path / "encoder.pt"),
+                "--output-dir",
+                str(tmp_path / "out"),
+                "--epochs",
+                "1",
+                "--batch-size",
+                "8",
+                "--num-workers",
+                "0",
+                "--device",
+                "cpu",
+                "--val-ratio",
+                "0.2",
+                "--feature",
+                "full",
+                "--unfreeze-all",
+                "--encoder-lr",
+                "1e-3",
+            ]
+
+        with when("the training entry point runs"):
+            import src.run.train_puzzle_classifier as cli
+
+            with patch("sys.argv", argv):
+                exit_code = cli.main()
+
+        with then("the checkpoint records the fine-tuning recipe"):
+            assert exit_code == 0
+            checkpoint = torch.load(
+                tmp_path / "out" / "best.pt",
+                map_location="cpu",
+                weights_only=False,
+            )
+            assert checkpoint["feature"] == "full"
+            assert checkpoint["unfreeze_all"] is True
+            assert checkpoint["unfreeze_last_block"] is False
+            assert checkpoint["encoder_lr"] == 1e-3
         return

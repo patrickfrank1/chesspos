@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import math
+from contextlib import nullcontext
 from dataclasses import dataclass
 
 import torch
 from torch import nn
 
+from src.modeling.frozen import FEATURE_RECIPES, encoder_embeddings, freeze_encoder
 from src.modeling.transformer import MaskedStreamTransformer
 
 
@@ -81,24 +83,66 @@ class PoolingClassifier(nn.Module):
 
 
 class FrozenEncoderClassifier(nn.Module):
-    """Frozen foundation encoder plus a trainable sequence classification head."""
+    """Foundation encoder plus a trainable sequence classification head.
+
+    The encoder is frozen by default. ``unfreeze_last_block`` trains the last
+    transformer block and final norm; ``unfreeze_all`` trains the whole
+    encoder. Fine-tuning requires ``feature="full"`` because ``embed()`` runs
+    under ``torch.no_grad()``.
+    """
 
     def __init__(
         self,
         encoder: MaskedStreamTransformer,
         head: PoolingClassifier,
+        feature: str = "native",
+        unfreeze_last_block: bool = False,
+        unfreeze_all: bool = False,
     ):
         super().__init__()
+        if feature not in FEATURE_RECIPES:
+            raise ValueError(
+                f"feature must be one of {FEATURE_RECIPES}, got {feature!r}"
+            )
+        if unfreeze_last_block and unfreeze_all:
+            raise ValueError(
+                "unfreeze_last_block and unfreeze_all are mutually exclusive"
+            )
+        if (unfreeze_last_block or unfreeze_all) and feature != "full":
+            raise ValueError(
+                "fine-tuning requires feature='full': the native embedding "
+                "runs under torch.no_grad()"
+            )
         self.encoder = encoder
         self.head = head
-        for parameter in self.encoder.parameters():
-            parameter.requires_grad = False
-        self.encoder.eval()
+        self.feature = feature
+        self.unfreeze_last_block = unfreeze_last_block
+        self.unfreeze_all = unfreeze_all
+        freeze_encoder(self.encoder)
+        if unfreeze_all:
+            for parameter in self.encoder.parameters():
+                parameter.requires_grad = True
+            self.encoder.train()
+        elif unfreeze_last_block:
+            for parameter in self.encoder.blocks[-1].parameters():
+                parameter.requires_grad = True
+            for parameter in self.encoder.ln_final.parameters():
+                parameter.requires_grad = True
+            self.encoder.train()
+        else:
+            self.encoder.eval()
         return
+
+    @property
+    def is_fine_tuning(self) -> bool:
+        return self.unfreeze_last_block or self.unfreeze_all
 
     def train(self, mode: bool = True) -> "FrozenEncoderClassifier":
         super().train(mode)
-        self.encoder.eval()
+        if self.is_fine_tuning:
+            self.encoder.train(mode)
+        else:
+            self.encoder.eval()
         return self
 
     def forward(
@@ -107,8 +151,13 @@ class FrozenEncoderClassifier(nn.Module):
         segment_ids: torch.Tensor,
         padding_mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        with torch.no_grad():
-            embeddings, mask = self.encoder.embed(
-                tokens, segment_ids, padding_mask=padding_mask
+        grad_context = nullcontext() if self.is_fine_tuning else torch.no_grad()
+        with grad_context:
+            embeddings, mask = encoder_embeddings(
+                self.encoder,
+                tokens,
+                segment_ids,
+                padding_mask=padding_mask,
+                feature=self.feature,
             )
         return self.head(embeddings, mask)

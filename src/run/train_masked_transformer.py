@@ -327,6 +327,13 @@ def parse_args() -> argparse.Namespace:
         help="Fraction of boards left visible in skip-gram mode (must be < 0.30)",
     )
     parser.add_argument("--mlm-weight", type=float, default=1.0)
+    parser.add_argument(
+        "--visible-identity-weight",
+        type=float,
+        default=0.0,
+        help="Weight for predicting visible content tokens from the isolated "
+        "content trunk (practical alternative; 0 disables)",
+    )
     parser.add_argument("--inv-weight", type=float, default=0.5)
     parser.add_argument("--var-weight", type=float, default=1.0)
     parser.add_argument("--cov-weight", type=float, default=0.1)
@@ -432,6 +439,7 @@ def auxiliary_config(args: argparse.Namespace) -> AuxiliaryLossConfig:
     """Build the weighted loss configuration from parsed args."""
     return AuxiliaryLossConfig(
         mlm_weight=args.mlm_weight,
+        visible_identity_weight=args.visible_identity_weight,
         inv_weight=args.inv_weight,
         var_weight=args.var_weight,
         cov_weight=args.cov_weight,
@@ -596,11 +604,20 @@ def main() -> None:
     model = build_model(model_config).to(device)
     raw_model = model
     model = apply_compile(model, args.compile)
-    encode_views_fn = (
-        torch.compile(raw_model.encode_views, dynamic=True)
-        if args.compile
-        else raw_model.encode_views
-    )
+    content_hidden_fn = None
+    if args.visible_identity_weight > 0:
+        content_hidden_fn = (
+            torch.compile(raw_model.content_hidden_states, dynamic=True)
+            if args.compile
+            else raw_model.content_hidden_states
+        )
+        encode_views_fn = None
+    else:
+        encode_views_fn = (
+            torch.compile(raw_model.encode_views, dynamic=True)
+            if args.compile
+            else raw_model.encode_views
+        )
     encode_views_alone_fn = getattr(
         raw_model, "encode_views_alone", raw_model.encode_views
     )
@@ -849,7 +866,9 @@ def main() -> None:
     )
     log(
         "loss weights: "
-        f"mlm={loss_config.mlm_weight:.3f} inv={loss_config.inv_weight:.3f} "
+        f"mlm={loss_config.mlm_weight:.3f} "
+        f"visible_identity={loss_config.visible_identity_weight:.3f} "
+        f"inv={loss_config.inv_weight:.3f} "
         f"var={loss_config.var_weight:.3f} cov={loss_config.cov_weight:.3f} "
         f"nce={loss_config.nce_weight:.3f} warmup={loss_config.warmup_steps}"
     )
@@ -885,6 +904,7 @@ def main() -> None:
                 generator=target_generator,
                 encode_views_fn=encode_views_fn,
                 encode_views_alone_fn=encode_views_alone_fn,
+                content_hidden_fn=content_hidden_fn,
             )
         optimizer.zero_grad()
         loss.backward()
