@@ -413,6 +413,14 @@ Also add the eval-time correction `argmax(logits − log w)` and report both raw
 and calibrated accuracy. With the proposed weights the two should be close;
 with the current weights they differ by 21 points.
 
+**Status:** the table is implemented as
+`--token-weight-preset balanced-v1` (default `invfreq` preserves the old
+behaviour). `balanced-v1` returns the table above, zeroes
+`PAD`/`MASK`/`CLS`/`SEP`, and **skips the unigram count pass entirely**.
+BDD coverage:
+`test/unit/test_window_dataset.py::TestTokenWeightPresets` and
+`test/unit/test_train_masked_cli.py::TestTokenWeightPreset`.
+
 ## Chinchilla sizing
 
 The corpus is 2,602,026,504 positions; each contributes 68.05 tokens (64
@@ -483,8 +491,9 @@ Training changes to pair with it:
   the 6M run, similar total time). 150k gives ~22B. Keep `max_seq_len 2048` and
   `max_segments 30` for comparability; the pack-size sweep should be logged
   every evaluation.
-- **Loss:** the proposed weight table above; zero CLS/SEP; log raw **and**
-  calibrated accuracy, per-class accuracy, occupancy AUC, latent-swap delta.
+- **Loss:** run with `--token-weight-preset balanced-v1` (implemented; see
+  above); log raw **and** calibrated accuracy, per-class accuracy, occupancy
+  AUC, latent-swap delta.
 - **Metadata fix:** store the resolved `AuxiliaryLossConfig`/weight vector in
   the checkpoint metadata, not the raw CLI args.
 - **Then** the InfoNCE ablation, now on a model whose reconstruction channel is

@@ -85,6 +85,7 @@ Attention autoencoder runs:
 ## Next experiment checklist
 
 - [x] Post-mortem the 6M plateau and stop the run (42k/100k).
+- [x] Add the `balanced-v1` per-token weight preset (`--token-weight-preset balanced-v1`).
 - [ ] 20M run: d512 / 4+3 / latent 1024 / rebalanced token weights.
 - [ ] Memory probe for the 20M batch size before launching.
 - [x] Add visible-content identity loss (implemented in `e0941d8`; not trained yet).

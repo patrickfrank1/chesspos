@@ -1,10 +1,17 @@
+import numpy as np
+import pytest
+
 from bdd import given, then, when
+from src.dataset.token_stream import CLS, EMPTY, PIECE_BASE, VOCAB_SIZE
 from src.modeling.autoencoder import AttentionAutoencoderConfig
 from src.modeling.factory import build_model
 from src.modeling.transformer import TransformerConfig
 from src.modeling.masking import MaskingConfig
+from src.training.window_dataset import balanced_v1_weights
 from src.run.train_masked_transformer import (
     auxiliary_config,
+    dataset_token_weights,
+    describe_token_weights,
     full_reconstruction_weights,
     masking_config,
     parse_args,
@@ -729,4 +736,113 @@ class TestViewHelpers:
             assert content_hidden is None
             assert encode_views is None
             assert alone is None
+        return
+
+
+class TestTokenWeightPreset:
+    def test_default_preset_is_inverse_frequency(self, monkeypatch):
+        with given("no preset flag"):
+            monkeypatch.setattr("sys.argv", ["train_masked_transformer"])
+
+        with when("the arguments are parsed"):
+            args = parse_args()
+
+        with then("the historical inverse-frequency scheme is used"):
+            assert args.token_weight_preset == "invfreq"
+        return
+
+    def test_balanced_v1_skips_unigram_counting(self, monkeypatch):
+        with given("the balanced-v1 preset"):
+            monkeypatch.setattr(
+                "sys.argv",
+                ["train_masked_transformer", "--token-weight-preset", "balanced-v1"],
+            )
+            args = parse_args()
+            calls = []
+
+            def counts_supplier():
+                calls.append(1)
+                return np.ones(VOCAB_SIZE)
+
+        with when("the dataset token weights are resolved"):
+            weights = dataset_token_weights(args, counts_supplier=counts_supplier)
+
+        with then("the fixed table is used without touching the counts"):
+            assert calls == []
+            assert weights is not None
+            assert weights[EMPTY] == pytest.approx(1.0)
+            assert weights[CLS] == 0.0
+        return
+
+    def test_invfreq_preset_uses_counts_and_cap(self, monkeypatch):
+        with given("the default preset with --freq-cap 5"):
+            monkeypatch.setattr(
+                "sys.argv", ["train_masked_transformer", "--freq-cap", "5"]
+            )
+            args = parse_args()
+            counts = np.zeros(VOCAB_SIZE)
+            counts[EMPTY] = 1_000_000
+            counts[PIECE_BASE] = 10
+
+        with when("the dataset token weights are resolved"):
+            weights = dataset_token_weights(args, counts_supplier=lambda: counts)
+
+        with then("the cap is applied to the inverse-frequency table"):
+            assert weights is not None
+            assert weights[EMPTY] == pytest.approx(1.0)
+            assert weights[PIECE_BASE] == pytest.approx(5.0)
+        return
+
+    def test_no_freq_weighting_takes_precedence(self, monkeypatch):
+        with given("both --no-freq-weighting and a preset"):
+            monkeypatch.setattr(
+                "sys.argv",
+                [
+                    "train_masked_transformer",
+                    "--no-freq-weighting",
+                    "--token-weight-preset",
+                    "balanced-v1",
+                ],
+            )
+            args = parse_args()
+            calls = []
+
+            def counts_supplier():
+                calls.append(1)
+                return np.ones(VOCAB_SIZE)
+
+        with when("the dataset token weights are resolved"):
+            weights = dataset_token_weights(args, counts_supplier=counts_supplier)
+
+        with then("weighting is disabled without touching the counts"):
+            assert weights is None
+            assert calls == []
+        return
+
+    def test_unknown_preset_is_rejected_by_the_cli(self, monkeypatch):
+        with given("an unrecognised preset on the command line"):
+            monkeypatch.setattr(
+                "sys.argv",
+                ["train_masked_transformer", "--token-weight-preset", "mystery"],
+            )
+
+        with when("the arguments are parsed"):
+            with then("argparse rejects the choice"):
+                with pytest.raises(SystemExit):
+                    parse_args()
+        return
+
+    def test_balanced_v1_summary_reports_the_table(self):
+        with given("the resolved balanced-v1 table"):
+            weights = balanced_v1_weights()
+
+        with when("the log summary is formatted"):
+            text = describe_token_weights("balanced-v1", weights)
+
+        with then("the preset and the key weights are visible"):
+            assert "preset=balanced-v1" in text
+            assert "empty=1.0" in text
+            assert "pawn=2.0" in text
+            assert "queen=4.0" in text
+            assert "cls=0.0" in text
         return

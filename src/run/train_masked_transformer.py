@@ -7,11 +7,18 @@ from collections.abc import Callable
 from dataclasses import asdict
 from pathlib import Path
 
+import numpy as np
 import torch
 from torch import nn
 from torch.utils.data import DataLoader
 
-from src.dataset.token_stream import resolve_max_segments
+from src.dataset.token_stream import (
+    CLS,
+    EMPTY,
+    PIECE_BASE,
+    TURN_WHITE,
+    resolve_max_segments,
+)
 from src.evaluation.eval_suite import full_eval
 from src.evaluation.retrieval import evaluate_retrieval, load_benchmark
 from src.modeling.autoencoder.config import AttentionAutoencoderConfig
@@ -58,11 +65,12 @@ from src.training.window_dataset import (
     StreamingWindowDataset,
     WindowDataset,
     WindowDatasetConfig,
+    TOKEN_WEIGHT_PRESETS,
     load_game_pool,
     collate_windows,
-    inverse_frequency_weights,
     remote_unigram_counts,
     streaming_unigram_counts,
+    token_weights,
     unigram_counts,
 )
 
@@ -328,6 +336,14 @@ def parse_args() -> argparse.Namespace:
         default=100.0,
         help="Cap on inverse-frequency loss weights (most frequent token = 1.0)",
     )
+    parser.add_argument(
+        "--token-weight-preset",
+        choices=TOKEN_WEIGHT_PRESETS,
+        default="invfreq",
+        help="Per-token loss weights: 'invfreq' uses unigram counts with "
+        "--freq-cap; 'balanced-v1' uses the fixed empty/piece/state table and "
+        "skips the count pass",
+    )
     parser.add_argument("--bf16", action="store_true")
     parser.add_argument("--compile", action="store_true")
     parser.add_argument("--log-file", default=None)
@@ -478,6 +494,36 @@ def parse_args() -> argparse.Namespace:
 def full_reconstruction_weights(args: argparse.Namespace) -> bool:
     """Whether the dataset should weight every position, not only masked ones."""
     return getattr(args, "model_arch", None) == ARCH_ATTENTION_AUTOENCODER
+
+
+def dataset_token_weights(
+    args: argparse.Namespace, *, counts_supplier: Callable[[], np.ndarray]
+) -> np.ndarray | None:
+    """Resolve the per-token loss weights for the training dataset.
+
+    Returns ``None`` when weighting is disabled. ``balanced-v1`` is a fixed
+    table, so its ``counts_supplier`` is never called — this skips the remote or
+    streaming unigram pass entirely.
+    """
+    if args.no_freq_weighting:
+        return None
+    if args.token_weight_preset == "invfreq":
+        return token_weights("invfreq", counts_supplier(), cap=args.freq_cap)
+    return token_weights(args.token_weight_preset)
+
+
+def describe_token_weights(preset: str, weights: np.ndarray) -> str:
+    """Compact log line for the resolved per-token table."""
+    return (
+        f"per-token loss weighting: preset={preset} "
+        f"empty={weights[EMPTY]:.1f} pawn={weights[PIECE_BASE]:.1f} "
+        f"knight={weights[PIECE_BASE + 1]:.1f} "
+        f"bishop={weights[PIECE_BASE + 2]:.1f} "
+        f"rook={weights[PIECE_BASE + 3]:.1f} "
+        f"queen={weights[PIECE_BASE + 4]:.1f} "
+        f"king={weights[PIECE_BASE + 5]:.1f} "
+        f"state={weights[TURN_WHITE]:.1f} cls={weights[CLS]:.1f}"
+    )
 
 
 def view_helpers(
@@ -772,25 +818,27 @@ def main() -> None:
         train_dataset = StreamingWindowDataset(
             streaming_train_config(args, data_dir=str(train_dir), start_step=start_step)
         )
-        if not args.no_freq_weighting:
-            if getattr(args, "stream_shards", False):
-                train_dataset.config.unigram_weights = inverse_frequency_weights(
-                    remote_unigram_counts(
-                        args.data_repo,
-                        split="train",
-                        cache_dir=args.stream_shard_cache,
-                        log=log,
-                        cache_path=Path(args.stream_shard_cache) / "unigram_counts.npz",
-                    ),
-                    cap=args.freq_cap,
-                )
-                log("frequency-aware loss weighting enabled (lazy remote counts)")
-            else:
-                train_dataset.config.unigram_weights = inverse_frequency_weights(
-                    streaming_unigram_counts(str(train_dir), log=log),
-                    cap=args.freq_cap,
-                )
-                log("frequency-aware loss weighting enabled (streaming counts)")
+        if getattr(args, "stream_shards", False):
+            weights = dataset_token_weights(
+                args,
+                counts_supplier=lambda: remote_unigram_counts(
+                    args.data_repo,
+                    split="train",
+                    cache_dir=args.stream_shard_cache,
+                    log=log,
+                    cache_path=Path(args.stream_shard_cache) / "unigram_counts.npz",
+                ),
+            )
+        else:
+            weights = dataset_token_weights(
+                args,
+                counts_supplier=lambda: streaming_unigram_counts(
+                    str(train_dir), log=log
+                ),
+            )
+        train_dataset.config.unigram_weights = weights
+        if weights is not None:
+            log(describe_token_weights(args.token_weight_preset, weights))
     else:
         train_dataset = WindowDataset(
             WindowDatasetConfig(
@@ -801,11 +849,12 @@ def main() -> None:
                 full_reconstruction_weights=full_reconstruction_weights(args),
             )
         )
-        if not args.no_freq_weighting:
-            train_dataset.config.unigram_weights = inverse_frequency_weights(
-                unigram_counts(train_dataset.games), cap=args.freq_cap
-            )
-            log("frequency-aware loss weighting enabled")
+        weights = dataset_token_weights(
+            args, counts_supplier=lambda: unigram_counts(train_dataset.games)
+        )
+        train_dataset.config.unigram_weights = weights
+        if weights is not None:
+            log(describe_token_weights(args.token_weight_preset, weights))
     log(f"loading val split from {val_dir} ...")
     val_games = load_game_pool(
         Path(val_dir),

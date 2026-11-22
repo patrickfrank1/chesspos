@@ -7,9 +7,17 @@ import torch
 
 from bdd import given, then, when
 from src.dataset.token_stream import (
+    CASTLE_BASE,
     CLS,
+    EMPTY,
+    EP_BASE,
+    MASK,
+    PAD,
+    PIECE_BASE,
     SEGMENT_LEN,
     SEP,
+    TURN_WHITE,
+    VOCAB_SIZE,
     TokenStreamEncoder,
     pack_stream,
 )
@@ -18,9 +26,11 @@ from src.training.window_dataset import (
     WindowDataset,
     WindowDatasetConfig,
     _load_game_segments,
+    balanced_v1_weights,
     build_mode_pattern,
     collate_windows,
     inverse_frequency_weights,
+    token_weights,
 )
 
 
@@ -621,4 +631,112 @@ class TestParallelShardLoading(TestNestedArchiveLayout):
 
         with then("no games are returned"):
             assert games == []
+        return
+
+
+class TestTokenWeightPresets:
+    """The fixed per-token table proposed in the 6M post-mortem."""
+
+    def test_balanced_v1_matches_the_post_mortem_table(self):
+        with given("the balanced-v1 preset"):
+            weights = balanced_v1_weights()
+
+        with then("each token group carries the proposed weight"):
+            assert weights.shape == (VOCAB_SIZE,)
+            assert weights[EMPTY] == pytest.approx(1.0)
+            assert weights[PIECE_BASE + 0] == pytest.approx(2.0)  # pawn
+            assert weights[PIECE_BASE + 1] == pytest.approx(3.0)  # knight
+            assert weights[PIECE_BASE + 2] == pytest.approx(3.0)  # bishop
+            assert weights[PIECE_BASE + 3] == pytest.approx(3.5)  # rook
+            assert weights[PIECE_BASE + 4] == pytest.approx(4.0)  # queen
+            assert weights[PIECE_BASE + 5] == pytest.approx(3.0)  # king
+            assert np.allclose(
+                weights[PIECE_BASE + 6 : PIECE_BASE + 12],
+                [2.0, 3.0, 3.0, 3.5, 4.0, 3.0],
+            )
+            assert np.all(weights[TURN_WHITE : TURN_WHITE + 2] == 2.0)
+            assert np.all(weights[CASTLE_BASE:EP_BASE] == 2.0)
+            assert np.all(weights[EP_BASE:VOCAB_SIZE] == 2.0)
+        return
+
+    def test_balanced_v1_zeroes_uninformative_tokens(self):
+        with given("the balanced-v1 preset"):
+            weights = balanced_v1_weights()
+
+        with then("padding, mask, CLS and SEP carry no loss weight"):
+            assert weights[PAD] == 0.0
+            assert weights[MASK] == 0.0
+            assert weights[CLS] == 0.0
+            assert weights[SEP] == 0.0
+        return
+
+    def test_balanced_v1_returns_a_fresh_array(self):
+        with given("a caller that mutates the returned table"):
+            first = balanced_v1_weights()
+            first[:] = -1.0
+
+        with when("the preset is requested again"):
+            second = balanced_v1_weights()
+
+        with then("the shared table was not mutated"):
+            assert second[EMPTY] == 1.0
+        return
+
+    def test_token_weights_dispatches_on_preset(self):
+        with given("counts where EMPTY is frequent and a pawn is rare"):
+            counts = np.zeros(VOCAB_SIZE)
+            counts[EMPTY] = 1_000_000
+            counts[PIECE_BASE] = 10
+
+        with when("both presets are resolved"):
+            invfreq = token_weights("invfreq", counts, cap=50.0)
+            balanced = token_weights("balanced-v1")
+
+        with then("invfreq uses counts and cap, balanced-v1 uses the table"):
+            assert invfreq[EMPTY] == pytest.approx(1.0)
+            assert invfreq[PIECE_BASE] == pytest.approx(50.0)
+            assert balanced[EMPTY] == pytest.approx(1.0)
+            assert balanced[PIECE_BASE] == pytest.approx(2.0)
+        return
+
+    def test_invfreq_preset_requires_unigram_counts(self):
+        with given("the invfreq preset without a count vector"):
+            with then("resolving it raises a clear error"):
+                with pytest.raises(ValueError):
+                    token_weights("invfreq")
+        return
+
+    def test_unknown_preset_is_rejected(self):
+        with given("an unrecognised preset name"):
+            with then("resolving it raises a clear error"):
+                with pytest.raises(ValueError):
+                    token_weights("balanced-v2")
+        return
+
+    def test_dataset_applies_the_balanced_v1_table(self, data_dir):
+        with given("a dataset using the balanced-v1 table"):
+            dataset = WindowDataset(
+                config(
+                    data_dir,
+                    seed=12,
+                    max_seq_len=2048,
+                    unigram_weights=balanced_v1_weights(),
+                    full_reconstruction_weights=True,
+                )
+            )
+
+        with when("a window is sampled and its gold sequence recovered"):
+            sample = dataset[0]
+            gold = np.where(
+                sample["targets"] != IGNORE_INDEX,
+                sample["targets"],
+                sample["tokens"],
+            )
+
+        with then("structural tokens are free and pieces outweigh empties"):
+            assert np.all(sample["weights"][gold == CLS] == 0.0)
+            assert np.all(sample["weights"][gold == SEP] == 0.0)
+            assert np.all(sample["weights"][gold == EMPTY] == pytest.approx(1.0))
+            piece = (gold >= PIECE_BASE) & (gold < TURN_WHITE)
+            assert np.all(sample["weights"][piece] >= 2.0)
         return

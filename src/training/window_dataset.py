@@ -15,9 +15,14 @@ import torch
 from torch.utils.data import Dataset, IterableDataset
 
 from src.dataset.token_stream import (
+    CASTLE_BASE,
     CLS,
+    EMPTY,
+    EP_BASE,
     PAD,
+    PIECE_BASE,
     SEP,
+    TURN_WHITE,
     VOCAB_SIZE,
     resolve_max_segments,
 )
@@ -121,6 +126,46 @@ def inverse_frequency_weights(
     w = 1.0 / p
     w /= w.min()
     return np.minimum(w, cap).astype(np.float32)
+
+
+TOKEN_WEIGHT_PRESETS = ("invfreq", "balanced-v1")
+
+# Per-colour piece order follows the token stream: pawn, knight, bishop, rook,
+# queen, king. Empty squares stay at 1.0; pieces remain above it so rare pieces
+# keep signal; the solved structural tokens are down-weighted and CLS/SEP are
+# dropped from the loss entirely.
+_BALANCED_V1_PIECE_WEIGHTS = (2.0, 3.0, 3.0, 3.5, 4.0, 3.0)
+
+
+def balanced_v1_weights() -> np.ndarray:
+    """Return the fixed per-token table proposed after the 6M run."""
+    weights = np.zeros(VOCAB_SIZE, dtype=np.float32)
+    weights[EMPTY] = 1.0
+    for offset, value in enumerate(_BALANCED_V1_PIECE_WEIGHTS):
+        weights[PIECE_BASE + offset] = value
+        weights[PIECE_BASE + 6 + offset] = value
+    weights[TURN_WHITE : TURN_WHITE + 2] = 2.0
+    weights[CASTLE_BASE:EP_BASE] = 2.0
+    weights[EP_BASE:VOCAB_SIZE] = 2.0
+    return weights
+
+
+def token_weights(
+    preset: str, counts: np.ndarray | None = None, cap: float = 100.0
+) -> np.ndarray:
+    """Resolve a per-token loss-weight table by preset name.
+
+    ``invfreq`` reproduces the historical unigram scheme; ``balanced-v1`` is a
+    fixed table that needs no corpus statistics. ``PAD``, ``MASK``, ``CLS`` and
+    ``SEP`` are zero in the fixed table so structural tokens carry no loss.
+    """
+    if preset == "balanced-v1":
+        return balanced_v1_weights()
+    if preset == "invfreq":
+        if counts is None:
+            raise ValueError("invfreq token weights require unigram counts")
+        return inverse_frequency_weights(counts, cap=cap)
+    raise ValueError(f"unknown token-weight preset: {preset!r}")
 
 
 class WindowDataset(Dataset):
