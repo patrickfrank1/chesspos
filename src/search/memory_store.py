@@ -25,8 +25,14 @@ class MemoryPositionStore:
         self._vectors = np.zeros((0, dim), dtype=np.float32)
         return
 
-    def add(self, rows: Sequence[PositionRow], *, partition: str | None = None) -> int:
-        del partition
+    def add(
+        self,
+        rows: Sequence[PositionRow],
+        *,
+        partition: str | None = None,
+        games: int = 0,
+    ) -> int:
+        del partition, games
         if not rows:
             return 0
         vectors = np.empty((len(rows), self.dim), dtype=np.float32)

@@ -135,7 +135,11 @@ class PositionStore(Protocol):
     dim: int
 
     def add(
-        self, rows: Sequence[PositionRow], *, partition: str | None = None
+        self,
+        rows: Sequence[PositionRow],
+        *,
+        partition: str | None = None,
+        games: int = 0,
     ) -> int: ...
 
     def count(self) -> int: ...

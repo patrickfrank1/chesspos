@@ -59,7 +59,14 @@ class LancePositionStore:
     def table(self):
         return self._table
 
-    def add(self, rows: Sequence[PositionRow], *, partition: str | None = None) -> int:
+    def add(
+        self,
+        rows: Sequence[PositionRow],
+        *,
+        partition: str | None = None,
+        games: int = 0,
+    ) -> int:
+        del games
         if partition is not None:
             raise ValueError("LancePositionStore does not support partitions")
         if not rows:

@@ -22,7 +22,7 @@ from src.search.schema import (
 )
 from src.search.store import PositionStore
 
-_YEAR = re.compile(r"((?:19|20)\d{2})")
+_YEAR = re.compile(r"(?<!\d)((?:19|20)\d{2})-\d{2}(?!\d)")
 _REQUIRED_COLUMNS = {
     "packed",
     "game_id",
@@ -150,9 +150,14 @@ def index_game_row(row: GameRow, embedder: PositionEmbedder) -> list[PositionRow
 
 
 def path_year(path: str | Path) -> int:
-    """Best-effort source year from an archive path."""
-    match = _YEAR.search(str(path))
-    return int(match.group(1)) if match else 0
+    """Best-effort source year from an archive path.
+
+    Archive directories are named ``<name>_YYYY-MM``; the pattern requires the
+    month suffix so hexadecimal snapshot hashes cannot be mistaken for years.
+    The last match wins when a cache path contains several dated components.
+    """
+    matches = _YEAR.findall(str(path))
+    return int(matches[-1]) if matches else 0
 
 
 def path_split(path: str | Path) -> str | None:
@@ -243,9 +248,13 @@ def build_position_index(
         if not rows:
             return
         if key is None:
-            store.add(rows)
+            store.add(rows, games=batch_counts.get(key, 0))
         else:
-            store.add(rows, partition=key)
+            store.add(
+                rows,
+                partition=key,
+                games=batch_counts.get(key, 0),
+            )
         batches[key] = []
         batch_counts[key] = 0
         return

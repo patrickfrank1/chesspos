@@ -10,8 +10,10 @@ from src.training.loop import (
     apply_compile,
     effective_rank_from_hidden,
     evaluate,
+    latent_swap_delta,
     lr_lambda,
     periodic_checkpoint_plan,
+    reconstruction_breakdown,
     scheduler_start_epoch,
     use_fused_adamw,
 )
@@ -396,4 +398,170 @@ class TestPeriodicCheckpointPlan:
             assert plan.save_before_eval is False
             assert plan.evaluate is False
             assert plan.save_after_eval is False
+        return
+
+
+class TestReconstructionBreakdown:
+    def _batch(self, gold: list[int], logits: torch.Tensor) -> dict:
+        from src.dataset.token_stream import CLS, SEP
+
+        tokens = torch.tensor([gold], dtype=torch.long)
+        tokens[0, 0] = CLS
+        tokens[0, -1] = SEP
+        return {
+            "tokens": tokens,
+            "segment_ids": torch.zeros_like(tokens),
+            "padding_mask": torch.ones_like(tokens, dtype=torch.bool),
+            "targets": torch.full_like(tokens, IGNORE_INDEX),
+            "hidden_states": logits,
+        }
+
+    def test_unweighted_equals_weighted_for_unit_weights(self):
+        from src.dataset.token_stream import (
+            CLS,
+            EMPTY,
+            PIECE_BASE,
+            SEP,
+            TURN_WHITE,
+            VOCAB_SIZE,
+        )
+
+        with given("a batch in which every prediction is correct"):
+            gold = [CLS, EMPTY, PIECE_BASE, TURN_WHITE, SEP]
+            logits = torch.full((1, 5, VOCAB_SIZE), -5.0)
+            for position, token in enumerate(gold):
+                logits[0, position, token] = 5.0
+            model = FakeModel(logits)
+            weights = torch.ones(VOCAB_SIZE)
+
+        with when("the breakdown is computed with unit weights"):
+            metrics = reconstruction_breakdown(
+                model,
+                [self._batch(gold, logits)],
+                torch.device("cpu"),
+                max_batches=1,
+                bf16=False,
+                token_weights=weights,
+            )
+
+        with then("the weighted and unweighted losses agree"):
+            assert metrics["reconstruction_loss_unweighted"] == pytest.approx(
+                metrics["reconstruction_loss_weighted"], rel=1e-6
+            )
+            assert metrics["reconstruction_accuracy"] == 1.0
+            assert metrics["reconstruction_accuracy_calibrated"] == 1.0
+            assert metrics["reconstruction_occupancy_auc"] == 1.0
+        return
+
+    def test_calibration_restores_the_prior_at_tied_logits(self):
+        from src.dataset.token_stream import (
+            CLS,
+            EMPTY,
+            PIECE_BASE,
+            SEP,
+            VOCAB_SIZE,
+        )
+
+        with given("a piece logit only marginally above the empty logit"):
+            gold = [CLS, PIECE_BASE, SEP]
+            logits = torch.full((1, 3, VOCAB_SIZE), -5.0)
+            logits[0, 0, CLS] = 5.0
+            logits[0, 1, PIECE_BASE] = 2.0
+            logits[0, 1, EMPTY] = 1.5
+            logits[0, 2, SEP] = 5.0
+            model = FakeModel(logits)
+            weights = torch.ones(VOCAB_SIZE)
+            weights[PIECE_BASE] = 4.0
+
+        with when("a high piece weight is applied for calibration"):
+            metrics = reconstruction_breakdown(
+                model,
+                [self._batch(gold, logits)],
+                torch.device("cpu"),
+                max_batches=1,
+                bf16=False,
+                token_weights=weights,
+            )
+
+        with then("the raw argmax is right but the calibrated one is not"):
+            assert metrics["reconstruction_accuracy"] == 1.0
+            assert metrics["reconstruction_accuracy_calibrated"] == pytest.approx(2 / 3)
+        return
+
+    def test_weighted_loss_downweights_excluded_classes(self):
+        from src.dataset.token_stream import (
+            CLS,
+            EMPTY,
+            PIECE_BASE,
+            SEP,
+            VOCAB_SIZE,
+        )
+
+        with given("an empty token scored badly and a piece scored well"):
+            gold = [CLS, EMPTY, PIECE_BASE, SEP]
+            logits = torch.full((1, 4, VOCAB_SIZE), -5.0)
+            logits[0, 0, CLS] = 5.0
+            logits[0, 1, PIECE_BASE] = 5.0  # empty predicted as piece: high CE
+            logits[0, 2, PIECE_BASE] = 5.0
+            logits[0, 3, SEP] = 5.0
+            model = FakeModel(logits)
+            weights = torch.ones(VOCAB_SIZE)
+            weights[EMPTY] = 0.0
+
+        with when("the empty class is excluded from the weighted loss"):
+            metrics = reconstruction_breakdown(
+                model,
+                [self._batch(gold, logits)],
+                torch.device("cpu"),
+                max_batches=1,
+                bf16=False,
+                token_weights=weights,
+            )
+
+        with then("the weighted loss is lower than the unweighted one"):
+            assert (
+                metrics["reconstruction_loss_weighted"]
+                < metrics["reconstruction_loss_unweighted"]
+            )
+        return
+
+
+class TestLatentSwapDelta:
+    def test_a_single_window_is_its_own_swap(self):
+        from src.dataset.token_stream import CLS, SEP
+        from src.modeling.autoencoder.config import AttentionAutoencoderConfig
+        from src.modeling.autoencoder.model import AttentionAutoencoderModel
+
+        with given("a batch with one window"):
+            model = AttentionAutoencoderModel(
+                AttentionAutoencoderConfig(
+                    d_model=2,
+                    n_heads=1,
+                    n_layers=1,
+                    d_ff=4,
+                    dropout=0.0,
+                    max_seq_len=256,
+                    max_segments=8,
+                    latent_dim=4,
+                    n_decoder_layers=1,
+                )
+            ).eval()
+            tokens = torch.randint(4, 50, (1, 69))
+            tokens[0, 0] = CLS
+            tokens[0, -1] = SEP
+            batch = {
+                "tokens": tokens,
+                "segment_ids": torch.zeros_like(tokens),
+                "padding_mask": torch.ones_like(tokens, dtype=torch.bool),
+                "targets": torch.full_like(tokens, IGNORE_INDEX),
+            }
+
+        with when("the latent swap is measured"):
+            metrics = latent_swap_delta(
+                model, [batch], torch.device("cpu"), max_batches=1, bf16=False
+            )
+
+        with then("the swapped loss equals the own loss"):
+            assert metrics["latent_swap_delta"] == pytest.approx(0.0, abs=1e-6)
+            assert metrics["latent_swap_own"] > 0.0
         return

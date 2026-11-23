@@ -9,7 +9,12 @@ import pytest
 
 from bdd import given, then, when
 from src.dataset.puzzle_variants import pack_segments
-from src.search.index import GameRow, build_position_index, index_game_row
+from src.search.index import (
+    GameRow,
+    build_position_index,
+    index_game_row,
+    path_year,
+)
 from src.search.memory_store import MemoryPositionStore
 from src.search.partitioned_store import PartitionedPositionStore
 from position_support import FakeEmbedder, game_segments
@@ -107,6 +112,25 @@ def test_index_game_row_rejects_an_incompatible_vocabulary():
 
     with then("no rows are produced"):
         pass
+    return
+
+
+def test_path_year_ignores_hash_digits(tmp_path):
+    with given("a snapshot path whose hash contains a year-like substring"):
+        path = (
+            tmp_path
+            / "snapshots"
+            / "ae022ef642e912013fcf6475ef139c8a42730feb"
+            / "train"
+            / "lichess_db_standard_rated_2021-01"
+            / "batch_0000.parquet"
+        )
+
+    with when("the source year is derived"):
+        year = path_year(path)
+
+    with then("the archive year wins over the hash digits"):
+        assert year == 2021
     return
 
 
