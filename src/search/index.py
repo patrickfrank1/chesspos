@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import datetime as dt
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Protocol, Sequence
 
@@ -63,6 +63,7 @@ class IndexStats:
     skipped: int
     files: int
     dated_positions: int
+    partitions: dict[str, int] = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         return {
@@ -71,6 +72,7 @@ class IndexStats:
             "skipped": self.skipped,
             "files": self.files,
             "dated_positions": self.dated_positions,
+            "partitions": self.partitions,
         }
 
 
@@ -163,6 +165,20 @@ def path_split(path: str | Path) -> str | None:
     return None
 
 
+def path_partition(path: str | Path, partition_by: str, year: int) -> str:
+    """Derive a partition label from a shard path."""
+    source_path = Path(path)
+    if partition_by == "year":
+        return f"year={int(year)}"
+    if partition_by == "source":
+        parent = source_path.parent
+        if parent.name in {"train", "test"}:
+            parent = parent.parent
+        source = parent.name or source_path.stem
+        return f"source={source}"
+    raise ValueError(f"Unsupported partition_by {partition_by!r}")
+
+
 def _parse_date(value) -> dt.date | None:
     if value is None:
         return None
@@ -195,6 +211,7 @@ def build_position_index(
     limit_games: int | None = None,
     source_year: int | None = None,
     default_split: str = "train",
+    partition_by: str | None = None,
     progress: Callable[[str], None] | None = None,
 ) -> IndexStats:
     """Index every packed game under ``data_dir`` into ``store``.
@@ -202,18 +219,36 @@ def build_position_index(
     Existing shards do not carry a per-game ``utc_date`` or ``split``. The split
     is taken from the path (or ``default_split``), the year from the path (or
     ``source_year``), and missing dates use :data:`UNKNOWN_DATE`.
+
+    With ``partition_by="year"`` or ``"source"``, rows are batched per shard's
+    partition and written through a :class:`PartitionedPositionStore`.
     """
     if batch_games <= 0:
         raise ValueError("batch_games must be positive")
+    if partition_by not in (None, "year", "source"):
+        raise ValueError("partition_by must be one of None, 'year', 'source'")
     paths = sorted(Path(data_dir).rglob("*.parquet"))
     if not paths:
         raise ValueError(f"No parquet shards found under {data_dir}")
 
     games = positions = skipped = dated_positions = 0
-    batch: list[PositionRow] = []
-    batch_game_count = 0
     files = 0
     stop = False
+    batches: dict[str | None, list[PositionRow]] = {}
+    batch_counts: dict[str | None, int] = {}
+    partition_positions: dict[str, int] = {}
+
+    def flush(key: str | None) -> None:
+        rows = batches.get(key)
+        if not rows:
+            return
+        if key is None:
+            store.add(rows)
+        else:
+            store.add(rows, partition=key)
+        batches[key] = []
+        batch_counts[key] = 0
+        return
 
     for path in paths:
         if stop:
@@ -240,6 +275,11 @@ def build_position_index(
         )
         file_split = path_split(path) or default_split
         file_year = source_year if source_year is not None else path_year(path)
+        key = (
+            None
+            if partition_by is None
+            else path_partition(path, partition_by, file_year)
+        )
 
         for row_index, game_id in enumerate(ids):
             if limit_games is not None and games >= limit_games:
@@ -262,21 +302,23 @@ def build_position_index(
             if not new_rows:
                 skipped += 1
                 continue
-            batch.extend(new_rows)
+            batches.setdefault(key, []).extend(new_rows)
             games += 1
             positions += len(new_rows)
             dated_positions += sum(
                 1 for position in new_rows if position.utc_date != UNKNOWN_DATE
             )
-            batch_game_count += 1
-            if batch_game_count >= batch_games:
-                store.add(batch)
-                batch = []
-                batch_game_count = 0
+            if key is not None:
+                partition_positions[key] = partition_positions.get(key, 0) + len(
+                    new_rows
+                )
+            batch_counts[key] = batch_counts.get(key, 0) + 1
+            if batch_counts[key] >= batch_games:
+                flush(key)
             if progress is not None and games % 1000 == 0:
                 progress(f"indexed {games} games / {positions} positions")
-    if batch:
-        store.add(batch)
+    for key in list(batches):
+        flush(key)
 
     return IndexStats(
         games=games,
@@ -284,4 +326,5 @@ def build_position_index(
         skipped=skipped,
         files=files,
         dated_positions=dated_positions,
+        partitions=partition_positions,
     )

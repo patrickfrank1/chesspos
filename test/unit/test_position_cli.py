@@ -39,6 +39,32 @@ def test_build_index_parser_has_safe_defaults():
         assert args.limit_games is None
         assert args.no_index is False
         assert args.overwrite is False
+        assert args.append is False
+        assert args.partition_by == "none"
+    return
+
+
+def test_build_index_parser_supports_partitioned_append():
+    with given("a yearly partitioned append build"):
+        argv = [
+            "--data-dir",
+            "data/processed/new-shards",
+            "--checkpoint",
+            "data/models/run/last.pt",
+            "--output",
+            "data/vector",
+            "--partition-by",
+            "year",
+            "--append",
+        ]
+
+    with when("the arguments are parsed"):
+        args = parse_build_args(argv)
+
+    with then("the partition mode and append flag are set"):
+        assert args.partition_by == "year"
+        assert args.append is True
+        assert args.overwrite is False
     return
 
 
@@ -89,6 +115,9 @@ def test_search_parser_builds_a_metadata_filter():
             "1-0",
             "--split",
             "test",
+            "--partitions",
+            "year=2024",
+            "year=2025",
         ]
 
     with when("the arguments are parsed"):
@@ -103,6 +132,7 @@ def test_search_parser_builds_a_metadata_filter():
         assert args.min_year == 2020
         assert args.result == "1-0"
         assert args.split == "test"
+        assert args.partitions == ["year=2024", "year=2025"]
         assert args.by == "game"
     return
 

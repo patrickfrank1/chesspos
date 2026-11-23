@@ -96,6 +96,7 @@ def search_games(
     nprobes: int | None = None,
     refine_factor: int | None = None,
     exact: bool = False,
+    partitions: Sequence[str] | None = None,
 ) -> list[GameHit]:
     """Embed a query position, search, and group the hits by game."""
     vectors = np.asarray(embedder.embed([segment]), dtype=np.float32)
@@ -110,6 +111,7 @@ def search_games(
         nprobes=nprobes,
         refine_factor=refine_factor,
         exact=exact,
+        partitions=partitions,
     )
     return group_position_hits(
         hits,

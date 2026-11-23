@@ -193,6 +193,7 @@ class IndexManifest:
     date_coverage: float
     lancedb_version: str
     created_at: str
+    partitions: dict[str, int] | None = None
 
     def to_dict(self) -> dict:
         return {
@@ -208,6 +209,7 @@ class IndexManifest:
             "date_coverage": self.date_coverage,
             "lancedb_version": self.lancedb_version,
             "created_at": self.created_at,
+            "partitions": self.partitions,
         }
 
     @classmethod

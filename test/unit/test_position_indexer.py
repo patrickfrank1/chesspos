@@ -11,6 +11,7 @@ from bdd import given, then, when
 from src.dataset.puzzle_variants import pack_segments
 from src.search.index import GameRow, build_position_index, index_game_row
 from src.search.memory_store import MemoryPositionStore
+from src.search.partitioned_store import PartitionedPositionStore
 from position_support import FakeEmbedder, game_segments
 
 
@@ -208,4 +209,108 @@ def test_empty_game_stream_is_skipped(tmp_path):
         assert stats.games == 1
         assert stats.skipped == 1
         assert store.count() == 3
+    return
+
+
+def test_build_position_index_partitioned_by_year(tmp_path):
+    with given("shards from 2024 and 2025"):
+        _write_games(
+            tmp_path / "lichess_elite_2024-05" / "train" / "batch_0000.parquet",
+            _packed_games(2),
+        )
+        _write_games(
+            tmp_path / "lichess_elite_2025-01" / "train" / "batch_0000.parquet",
+            _packed_games(2),
+        )
+        store = PartitionedPositionStore(
+            tmp_path / "index", dim=8, create=True, overwrite=True
+        )
+
+    with when("the index is built partitioned by year"):
+        stats = build_position_index(
+            store=store,
+            embedder=FakeEmbedder(dim=8),
+            data_dir=tmp_path,
+            partition_by="year",
+        )
+
+    with then("each year has its own partition and position count"):
+        assert set(store.partitions) == {"year=2024", "year=2025"}
+        assert stats.partitions == {"year=2024": 6, "year=2025": 6}
+        assert store.count() == 12
+    return
+
+
+def test_build_position_index_partitioned_by_source(tmp_path):
+    with given("shards from two archive sources"):
+        _write_games(
+            tmp_path / "lichess_elite_2024-05" / "train" / "batch_0000.parquet",
+            _packed_games(2),
+        )
+        _write_games(
+            tmp_path / "lichess_elite_2025-01" / "train" / "batch_0000.parquet",
+            _packed_games(2),
+        )
+        store = PartitionedPositionStore(
+            tmp_path / "index", dim=8, create=True, overwrite=True
+        )
+
+    with when("the index is built partitioned by source"):
+        stats = build_position_index(
+            store=store,
+            embedder=FakeEmbedder(dim=8),
+            data_dir=tmp_path,
+            partition_by="source",
+        )
+
+    with then("the source names become partition labels"):
+        assert set(store.partitions) == {
+            "source=lichess_elite_2024-05",
+            "source=lichess_elite_2025-01",
+        }
+        assert stats.partitions["source=lichess_elite_2024-05"] == 6
+        assert store.count() == 12
+    return
+
+
+def test_build_position_index_appends_to_an_existing_partition(tmp_path):
+    with given("an index already built from one 2024 shard"):
+        _write_games(
+            tmp_path
+            / "first"
+            / "lichess_elite_2024-05"
+            / "train"
+            / "batch_0000.parquet",
+            _packed_games(2),
+        )
+        store = PartitionedPositionStore(
+            tmp_path / "index", dim=8, create=True, overwrite=True
+        )
+        build_position_index(
+            store=store,
+            embedder=FakeEmbedder(dim=8),
+            data_dir=tmp_path / "first",
+            partition_by="year",
+        )
+
+    with when("a second 2024 shard is appended"):
+        _write_games(
+            tmp_path
+            / "second"
+            / "lichess_elite_2024-06"
+            / "train"
+            / "batch_0000.parquet",
+            _packed_games(2),
+        )
+        stats = build_position_index(
+            store=store,
+            embedder=FakeEmbedder(dim=8),
+            data_dir=tmp_path / "second",
+            partition_by="year",
+        )
+
+    with then("the same year partition grows instead of being replaced"):
+        assert stats.partitions == {"year=2024": 6}
+        assert store.partitions["year=2024"]["rows"] == 12
+        assert store.count() == 12
     return

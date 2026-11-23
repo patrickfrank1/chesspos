@@ -59,7 +59,9 @@ class LancePositionStore:
     def table(self):
         return self._table
 
-    def add(self, rows: Sequence[PositionRow]) -> int:
+    def add(self, rows: Sequence[PositionRow], *, partition: str | None = None) -> int:
+        if partition is not None:
+            raise ValueError("LancePositionStore does not support partitions")
         if not rows:
             return 0
         self._table.add(rows_to_table(rows, self.dim))
@@ -78,7 +80,9 @@ class LancePositionStore:
         nprobes: int | None = None,
         refine_factor: int | None = None,
         exact: bool = False,
+        partitions: Sequence[str] | None = None,
     ) -> list[PositionHit]:
+        del partitions
         if limit <= 0:
             return []
         query = np.asarray(vector, dtype=np.float16).ravel()

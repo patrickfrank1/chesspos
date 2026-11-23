@@ -82,6 +82,11 @@ including the InfoNCE ablation still queued.
   **0.750**, plateauing from ~56k. Capacity fixed the material axis; the
   apparent late-run decline in the 1,024-position probes was sampling noise.
   See *Full evaluation of the 20M bottleneck*.
+- **Frozen downstream probes** place the bottleneck ahead of every earlier
+  checkpoint: held-out score R² **0.051 / AUC 0.645** (previous frozen best
+  0.023 / 0.587; material baseline 0.068 / 0.655) and sacrifice PR-AUC
+  **0.288 / AUROC 0.745** (previous frozen best 0.203 / 0.697). One epoch is
+  optimal for the frozen score head.
 
 ## Architecture
 
@@ -659,6 +664,74 @@ still separating unrelated positions.
 6. **Side-to-move is linearly trivial** (accuracy 1.000) in both models: the
    turn token is recoverable from a clean direction, so it is not a useful
    discriminator between checkpoints.
+
+## Downstream probes on the bottleneck (2026-11-23)
+
+Protocol: `best_step80000.pt`, frozen encoder, only the head trains. The
+bottleneck vector is the `embed()` output. Score regression feeds one position
+per input (`CLS + segment + SEP`), 40k train games from the `train` split (the
+60 GB instance could not hold the full 56k-game split), 3 epochs, 3 seeds, MSE,
+batch 256, lr 1e-3, and evaluates on the held-out `test` split (20k games: 10k
+standard + 10k elite). Sacrifice classification packs a puzzle into a sequence,
+embeds each position as its own window (`--feature native_positions`) and
+pools the per-position bottlenecks with the existing sequence head (mean
+pooling); 1M puzzles (16% subset, 7.57% prevalence), 1 epoch, seed 17, BCE.
+
+### Position score regression (held-out test, mean ± std over 3 seeds)
+
+| model | R² | decisive AUC | MAE |
+|---|---:|---:|---:|
+| **20M AE bottleneck (frozen)** | **0.051 ± 0.004** | **0.645 ± 0.001** | **0.820** |
+| `run_20m_lazy` transformer (frozen) | 0.023 ± 0.001 | 0.587 ± 0.003 | 0.859 |
+| `run_6m_isolated` transformer (frozen) | 0.010 ± 0.002 | 0.571 ± 0.001 | 0.867 |
+| material baseline (affine, same data) | 0.0675 | 0.6549 | 0.829 |
+
+Validation R² on the best epoch was 0.0617 ± 0.0011, consistent with the
+held-out 0.051 after the known elite/standard distribution shift. **Epoch 1 is
+the best epoch for every seed**; epochs 2–3 overfit (val R² 0.061 → 0.036 /
+0.014), which is why the best checkpoint is always the first.
+
+### Sacrifice classification (validation, natural prevalence, 1M subset)
+
+| model | PR-AUC | AUROC | F1 |
+|---|---:|---:|---:|
+| **20M AE bottleneck (frozen)** | **0.288** | **0.745** | **0.322** |
+| `run_20m_lazy` transformer (frozen, 1M) | 0.203 | 0.697 | 0.262 |
+| `run_6m_isolated` transformer (frozen, 1M) | 0.200 | 0.685 | 0.254 |
+| `run_20m_lazy` transformer (frozen, full corpus) | 0.224 | 0.712 | 0.274 |
+
+Precision 0.269, recall 0.399, accuracy 0.840 (below the 0.925 always-negative
+baseline, so read PR-AUC/AUROC). Prevalence is 7.57%, so PR-AUC 0.288 is ~3.8×
+chance.
+
+### Findings
+
+1. **The bottleneck is the strongest frozen representation tested so far.**
+   Against the previous best frozen transformer it adds **+0.028 R² and +0.058
+   decisive AUC** on score regression, and **+0.085 PR-AUC / +0.048 AUROC** on
+   sacrifice. The reconstruction-only objective produces a more usable
+   position embedding than the masked-transformer trunk.
+2. **It nearly matches material-only scoring.** Score R² 0.051 vs 0.068 and
+   AUC 0.645 vs 0.655 for an affine function of material; its MAE is already
+   better (0.820 vs 0.829), because the bottleneck head predicts conservatively
+   and pays for it in R², not in absolute error. Given the same embedding
+   reaches R² 0.75 on a material probe, the remaining gap to material is the
+   realised-result target, not missing material information.
+3. **One epoch is enough for the frozen head.** The probe overfits quickly, so
+   longer schedules are wasted compute and would pick a worse checkpoint.
+4. **Sacrifice is where the bottleneck gains most.** PR-AUC 0.288 is the best
+   frozen number across all models/protocols in this report, and it is close to
+   the earlier *fine-tuned* 6M transformer (0.387) without adapting any encoder
+   parameters.
+5. **Caveats.** The score probe uses 40k rather than 56k games (disk-bound on
+   the 44 GB run) and the sacrifice cell is one seed; the earlier frozen
+   transformer rows used the same frozen-head protocol, so the ranking is
+   comparable, but absolute numbers may shift slightly with the larger split.
+
+Artifacts: `hf://buckets/patrickfrank1/chesspos-checkpoints/downstream/ae20m/`
+(`models/`, `evals/`; metrics JSON, predictions `.npz`, and probe
+checkpoints), plus the local `data/models/downstream/ae20m/` and
+`data/eval/downstream/ae20m/` trees.
 
 ## Operational notes (issues hit and fix)
 

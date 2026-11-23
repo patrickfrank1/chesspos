@@ -134,7 +134,9 @@ class PositionStore(Protocol):
 
     dim: int
 
-    def add(self, rows: Sequence[PositionRow]) -> int: ...
+    def add(
+        self, rows: Sequence[PositionRow], *, partition: str | None = None
+    ) -> int: ...
 
     def count(self) -> int: ...
 
@@ -148,6 +150,7 @@ class PositionStore(Protocol):
         nprobes: int | None = None,
         refine_factor: int | None = None,
         exact: bool = False,
+        partitions: Sequence[str] | None = None,
     ) -> list[PositionHit]: ...
 
     def create_index(

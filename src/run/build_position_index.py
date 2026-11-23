@@ -35,7 +35,18 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--num-partitions", type=int, default=None)
     parser.add_argument("--num-sub-vectors", type=int, default=None)
     parser.add_argument("--no-index", action="store_true")
-    parser.add_argument("--overwrite", action="store_true")
+    build_mode = parser.add_mutually_exclusive_group()
+    build_mode.add_argument("--overwrite", action="store_true")
+    build_mode.add_argument(
+        "--append",
+        action="store_true",
+        help="Append to an existing index instead of creating it",
+    )
+    parser.add_argument(
+        "--partition-by",
+        choices=("none", "year", "source"),
+        default="none",
+    )
     parser.add_argument("--source-year", type=int, default=None)
     parser.add_argument("--default-split", default="train")
     parser.add_argument("--table", default="positions")
@@ -47,10 +58,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     from src.search.embedder import CheckpointEmbedder, file_sha256
     from src.search.index import build_position_index as build_from_dir
     from src.search.lancedb_store import LancePositionStore
+    from src.search.partitioned_store import PartitionedPositionStore
 
     output = Path(args.output)
     output.mkdir(parents=True, exist_ok=True)
     embedder = CheckpointEmbedder(args.checkpoint, device=args.device)
+    partition_by = None if args.partition_by == "none" else args.partition_by
     if args.repo:
         from src.training.hf_data import download_split
 
@@ -64,10 +77,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
     else:
         data_dir = Path(args.data_dir)
-    store = LancePositionStore(
+    store_class = PartitionedPositionStore if partition_by else LancePositionStore
+    store = store_class(
         output,
         dim=embedder.dim,
-        create=True,
+        create=not args.append,
         overwrite=args.overwrite,
         table_name=args.table,
     )
@@ -79,6 +93,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         limit_games=args.limit_games,
         source_year=args.source_year,
         default_split=args.split if args.repo else args.default_split,
+        partition_by=partition_by,
         progress=print,
     )
     if stats.positions and not args.no_index:
@@ -107,6 +122,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         ),
         lancedb_version=lancedb.__version__,
         created_at=dt.datetime.now(dt.timezone.utc).isoformat(),
+        partitions=stats.partitions or None,
     )
     manifest_path = store.write_manifest(manifest)
     store.close()

@@ -47,6 +47,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--nprobes", type=int, default=None)
     parser.add_argument("--refine-factor", type=int, default=None)
     parser.add_argument("--exact", action="store_true")
+    parser.add_argument("--partitions", nargs="*", default=None)
     parser.add_argument("--device", default=None)
     parser.add_argument("--table", default="positions")
     parser.add_argument("--json", action="store_true")
@@ -137,6 +138,7 @@ def run_search(
             nprobes=args.nprobes,
             refine_factor=args.refine_factor,
             exact=args.exact,
+            partitions=args.partitions,
         )
         payload["positions"] = [_position_payload(hit) for hit in hits]
         return payload
@@ -151,6 +153,7 @@ def run_search(
         nprobes=args.nprobes,
         refine_factor=args.refine_factor,
         exact=args.exact,
+        partitions=args.partitions,
     )
     payload["games"] = [game.to_dict() for game in games]
     return payload
@@ -186,13 +189,12 @@ def format_text(payload: dict) -> str:
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
     from src.search.embedder import CheckpointEmbedder
-    from src.search.lancedb_store import LancePositionStore
+    from src.search.factory import open_position_store
 
     embedder = CheckpointEmbedder(args.checkpoint, device=args.device)
-    store = LancePositionStore(
+    store = open_position_store(
         Path(args.index),
         dim=embedder.dim,
-        create=False,
         table_name=args.table,
     )
     payload = run_search(args, store=store, embedder=embedder)

@@ -25,7 +25,8 @@ class MemoryPositionStore:
         self._vectors = np.zeros((0, dim), dtype=np.float32)
         return
 
-    def add(self, rows: Sequence[PositionRow]) -> int:
+    def add(self, rows: Sequence[PositionRow], *, partition: str | None = None) -> int:
+        del partition
         if not rows:
             return 0
         vectors = np.empty((len(rows), self.dim), dtype=np.float32)
@@ -56,8 +57,9 @@ class MemoryPositionStore:
         nprobes: int | None = None,
         refine_factor: int | None = None,
         exact: bool = False,
+        partitions: Sequence[str] | None = None,
     ) -> list[PositionHit]:
-        del nprobes, refine_factor, exact
+        del nprobes, refine_factor, exact, partitions
         if where is not None:
             raise ValueError("MemoryPositionStore only accepts PositionFilter")
         if limit <= 0:
