@@ -1,9 +1,11 @@
 # Attention autoencoder: one 512-d bottleneck per packed window
 
-**Run:** `run_ae_6m_100k` (stopped at step 42,000 on 2026-11-22)
+**Runs:** `run_ae_6m_100k` (stopped at step 42,000 on 2026-11-22);
+`run_ae_20m_100k` (stopped at step 81,600 on 2026-11-23)
 **Architecture:** `attention_autoencoder`
-**Parameters:** 6,068,276
+**Parameters:** 6,068,276 (6M) / 20.39M (20M)
 **Artifacts:** `hf://buckets/patrickfrank1/chesspos-checkpoints/run_ae_6m_100k/`
+and `…/run_ae_20m_100k/`
 
 ## Status
 
@@ -19,6 +21,15 @@ post-mortem (below) located the plateau in the combination of the loss
 weighting and the 512-d bottleneck, not in the data or the optimisation. It
 also changes the plan for the next run: a 20M-parameter model with a wider
 latent and a rebalanced loss, proposed at the end of this report.
+
+The **20M follow-up** then ran to step 81,600 and was **stopped by decision on
+2026-11-23**. Reconstruction continued to improve slowly (`val_loss` 0.5173 at
+60k → **0.5022** at 80k, `val_acc` 0.9055 → 0.9093), but the embedding probes
+had flattened: `test_r2_material` peaked at **0.7033** (56k) and was 0.6872 at
+80k, `mlm_board_piece_acc` stayed ~0.917 against a 0.953 prior baseline, and
+`mean_top10_cosine` only moved 0.546 → 0.570. More steps reconstruct empty
+squares and state tokens better; they do not add material geometry. The last
+checkpoint is step 81,000; best `val_loss` 0.5022 at step 80,000.
 
 This report records the design, the implementation surface, the training
 configuration, the measurements taken during the run, the plateau post-mortem,
@@ -64,6 +75,10 @@ including the InfoNCE ablation still queued.
 - The window latent already sits close to its own positions and far from other
   games (cos 0.52 vs 0.04) without any contrastive term. That emergent geometry
   motivates the planned NCE ablation.
+- The **20M/1024-d follow-up** (stopped at 81,600) lifted `val_acc` to 0.9093
+  and reached `test_r2_material` 0.7033 at 56k, but the probe metrics were flat
+  from 56k to 80k while `val_loss` kept creeping down. Scaling capacity fixed
+  the metric artefact, not the material axis; see *Results: 20M run*.
 
 ## Architecture
 
@@ -504,6 +519,47 @@ Training changes to pair with it:
   stay enabled at every evaluation.
 - **Then** the InfoNCE ablation, now on a model whose reconstruction channel is
   not the binding constraint.
+
+## Results: 20M run (stopped at 81,600)
+
+Run `run_ae_20m_100k`, launched 2026-11-22 and stopped by decision on
+2026-11-23 at step 81,600 (last checkpoint 81,000). Configuration: 20.39M
+params, `d_model 512`, 8 heads, `d_ff 1536`, 4 encoder + 3 decoder layers,
+1024-d latent, batch 128, lr 2e-4 with 2,000-step warmup and cosine decay over
+100,000 steps, `balanced-v1` token weighting, and a **50/50 rectangle/skip-gram**
+masking split (changed from the 6M run's 80/20 before launch).
+
+| step | val_loss | val_acc | piece acc | piece prior | `test_r2_material` | `mean_top10_cos` |
+|---:|---:|---:|---:|---:|---:|---:|
+| 2,000 | 0.7443 | 0.8087 | 0.8396 | 0.8807 | 0.5042 | 0.7292 |
+| 20,000 | 0.5488 | 0.8862 | 0.9002 | 0.9436 | 0.5482 | 0.5408 |
+| 40,000 | 0.5401 | 0.8980 | 0.9082 | 0.9497 | 0.6877 | 0.5452 |
+| 56,000 | 0.5193 | 0.9059 | 0.9168 | 0.9528 | **0.7033** | 0.5461 |
+| 68,000 | 0.5116 | 0.9069 | 0.9170 | 0.9533 | 0.6775 | 0.5620 |
+| 80,000 | **0.5022** | **0.9093** | 0.9168 | 0.9532 | 0.6872 | 0.5699 |
+
+What the numbers say:
+
+- **Reconstruction keeps improving, slowly.** `val_loss` fell 0.017 between
+  60k and 80k (≈0.00085 per 1k steps) and had not fully flattened, but
+  `val_acc` gained only 0.004 over the same span.
+- **The embedding geometry stopped improving at ~56k.** `test_r2_material`
+  peaked at 0.7033 and then drifted down/around zero trend through 80k;
+  `mlm_board_piece_acc` is flat at 0.917 (below the 0.953 prior baseline);
+  `pc1_piece_corr` is flat at ~0.87; `mean_top10_cosine` moved only 0.546 →
+  0.570 with `mean_random_pair_cosine` at ~0.15.
+- **The plateau is representational, not optimisation.** The 1024-d latent and
+  the rebalanced weights fixed the 6M run's headline-accuracy artefact (empty
+  squares are no longer 88% of the loss) and lifted masking accuracy, but the
+  remaining reconstruction gains are in token classes that do not change the
+  pooled vector's material axis.
+- **Raw `val_loss` is not comparable to the 6M run:** `balanced-v1` reweights
+  token classes and the masking mixture changed to 50/50, so only in-run trends
+  and the probe metrics are comparable.
+
+Artifacts: `run_ae_20m_100k/` (checkpoints, `last.pt` step 81,000,
+`best_step80000.pt`, `train.log`) and `run_ae_20m_100k_logs/` (train log, eval
+history/metrics, PCA plot, neighbour reports).
 
 ## Operational notes (issues hit and fix)
 

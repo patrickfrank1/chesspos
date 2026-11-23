@@ -7,7 +7,9 @@ import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import numpy as np
 import pyarrow as pa
+import pyarrow.parquet as pq
 import pytest
 import zstandard
 
@@ -76,6 +78,13 @@ def make_rows(num_games=5, game_ids=None):
     return rows
 
 
+def parquet_bytes(table: pa.Table) -> bytes:
+    """Serialise a table exactly as the pipeline writes a batch to disk."""
+    buf = io.BytesIO()
+    pq.write_table(table, buf)
+    return buf.getvalue()
+
+
 class TestBuildBatches:
     def test_batches_are_split_and_bounded(self):
         with given("250 extracted game rows and a batch size of 100"):
@@ -96,6 +105,46 @@ class TestBuildBatches:
             for batch in batches:
                 ids = batch.table.column("game_id").to_pylist()
                 assert ids == sorted(ids)
+        return
+
+    def test_int16_rows_keep_the_parquet_schema(self):
+        with given("extracted rows whose packed payload is a compact int16 array"):
+            rows = [
+                {**row, "packed": np.asarray(row["packed"], dtype=np.int16)}
+                for row in make_rows(4)
+            ]
+
+        with when("the rows are built into a batch"):
+            batches, _ = ArchivePipeline.build_batches(
+                rows=rows, batch_size=4, train_ratio=1.0, chunk_index=0
+            )
+
+        with then("the packed column is still list<int16> with the same values"):
+            column = batches[0].table.column("packed")
+            assert column.type == pa.list_(pa.int16())
+            assert column.to_pylist() == [[3, 4, 2, 5]] * 4
+        return
+
+    def test_int16_rows_produce_byte_identical_parquet(self):
+        with given("the same games represented as python lists and as int16 arrays"):
+            list_rows = make_rows(4)
+            array_rows = [
+                {**row, "packed": np.asarray(row["packed"], dtype=np.int16)}
+                for row in make_rows(4)
+            ]
+
+        with when("both representations are built and written as parquet"):
+            list_batches, _ = ArchivePipeline.build_batches(
+                rows=list_rows, batch_size=4, train_ratio=1.0, chunk_index=0
+            )
+            array_batches, _ = ArchivePipeline.build_batches(
+                rows=array_rows, batch_size=4, train_ratio=1.0, chunk_index=0
+            )
+
+        with then("the files are byte-identical so resume hashes stay stable"):
+            assert parquet_bytes(array_batches[0].table) == parquet_bytes(
+                list_batches[0].table
+            )
         return
 
     def test_carry_combines_with_next_chunk_rows_to_fill_a_batch(self):

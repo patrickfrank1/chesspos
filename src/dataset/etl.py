@@ -89,7 +89,7 @@ class ChessPositionDataset:
                 continue
             games.append(
                 {
-                    "packed": pack_stream(segments, add_cls=True).tolist(),
+                    "packed": pack_stream(segments, add_cls=True),
                     "n_positions": len(segments),
                     "game_id": ChessPositionDataset._game_id(game),
                     "white_elo": int(metadata.white_elo or 0),
