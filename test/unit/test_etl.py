@@ -47,6 +47,26 @@ class TestChessPositionDataset:
             assert len(game["game_id"]) == 16
         return
 
+    def test_extract_positions_returns_compact_int16_packed(self):
+        with given("a raw PGN row and permissive subsampling"):
+            row = {"bytes": SAMPLE_PGN, "path": "/fake/test.pgn"}
+            subsampling = GameSubsampling(
+                tiers=[GameSubsampleTier(min_elo=0, rate=1.0)]
+            )
+
+        with when("positions are extracted from the game"):
+            games = ChessPositionDataset._extract_positions(
+                row, subsampling, TimeControlFilter()
+            )
+
+        with then("packed is a compact int16 array instead of a python int list"):
+            packed = games[0]["packed"]
+            assert isinstance(packed, np.ndarray)
+            assert packed.dtype == np.int16
+            assert packed[0] == CLS
+            assert SEP in packed
+        return
+
     def test_game_id_is_deterministic(self):
         with given("a parsed PGN game"):
             pgn_file = chess.pgn.read_game(io.StringIO(SAMPLE_PGN.decode("utf-8")))

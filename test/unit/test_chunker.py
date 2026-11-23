@@ -40,6 +40,25 @@ def read_games_from_file(path):
 
 
 class TestPgnChunker:
+    def test_discarded_chunks_are_not_written(self, tmp_path):
+        with given("a 3-game stream and a chunker discarding the first chunk"):
+            stream = io.BytesIO(
+                b"".join(
+                    f'[Event "G{i}"]\n[Site "s"]\n\n1. e4 *\n\n'.encode()
+                    for i in range(3)
+                )
+            )
+            chunker = PgnChunker(10)
+
+        with when("chunks are iterated with discard_before=1"):
+            paths = list(chunker.iter_chunks(stream, str(tmp_path), discard_before=1))
+
+        with then("only the chunks after the resume index are written and yielded"):
+            assert [p.name for p in paths] == ["chunk_0001.pgn", "chunk_0002.pgn"]
+            assert not (tmp_path / "chunk_0000.pgn").exists()
+            assert all(p.exists() for p in paths)
+        return
+
     def test_split_preserves_all_games_and_bytes(self):
         with given("a PGN stream of three games and a small chunk target"):
             stream = io.BytesIO(GAME_A + GAME_B + GAME_C)

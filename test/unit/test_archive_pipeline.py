@@ -1,3 +1,4 @@
+import contextlib
 import hashlib
 import io
 import json
@@ -7,12 +8,15 @@ import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import numpy as np
 import pyarrow as pa
+import pyarrow.parquet as pq
 import pytest
 import zstandard
 
 from bdd import given, then, when
 from src.dataset.archive_pipeline import (
+    ArchiveCheckpoint,
     ArchivePipeline,
     Batch,
     BatchUploader,
@@ -76,6 +80,13 @@ def make_rows(num_games=5, game_ids=None):
     return rows
 
 
+def parquet_bytes(table: pa.Table) -> bytes:
+    """Serialise a table exactly as the pipeline writes a batch to disk."""
+    buf = io.BytesIO()
+    pq.write_table(table, buf)
+    return buf.getvalue()
+
+
 class TestBuildBatches:
     def test_batches_are_split_and_bounded(self):
         with given("250 extracted game rows and a batch size of 100"):
@@ -96,6 +107,68 @@ class TestBuildBatches:
             for batch in batches:
                 ids = batch.table.column("game_id").to_pylist()
                 assert ids == sorted(ids)
+        return
+
+    def test_int16_rows_keep_the_parquet_schema(self):
+        with given("extracted rows whose packed payload is a compact int16 array"):
+            rows = [
+                {**row, "packed": np.asarray(row["packed"], dtype=np.int16)}
+                for row in make_rows(4)
+            ]
+
+        with when("the rows are built into a batch"):
+            batches, _ = ArchivePipeline.build_batches(
+                rows=rows, batch_size=4, train_ratio=1.0, chunk_index=0
+            )
+
+        with then("the packed column is still list<int16> with the same values"):
+            column = batches[0].table.column("packed")
+            assert column.type == pa.list_(pa.int16())
+            assert column.to_pylist() == [[3, 4, 2, 5]] * 4
+        return
+
+    def test_variable_length_packed_rows_keep_each_games_tokens(self):
+        with given("rows whose packed payloads have different lengths"):
+            rows = make_rows(3)
+            rows[0]["packed"] = np.arange(7, dtype=np.int16)
+            rows[1]["packed"] = np.arange(2, dtype=np.int16)
+            rows[2]["packed"] = np.arange(11, dtype=np.int16)
+
+        with when("the rows are built into a batch"):
+            batches, _ = ArchivePipeline.build_batches(
+                rows=rows, batch_size=3, train_ratio=1.0, chunk_index=0
+            )
+
+        with then("each game keeps exactly its own token sequence"):
+            column = batches[0].table.column("packed")
+            assert column.type == pa.list_(pa.int16())
+            assert column.to_pylist() == [
+                list(range(7)),
+                list(range(2)),
+                list(range(11)),
+            ]
+        return
+
+    def test_int16_rows_produce_byte_identical_parquet(self):
+        with given("the same games represented as python lists and as int16 arrays"):
+            list_rows = make_rows(4)
+            array_rows = [
+                {**row, "packed": np.asarray(row["packed"], dtype=np.int16)}
+                for row in make_rows(4)
+            ]
+
+        with when("both representations are built and written as parquet"):
+            list_batches, _ = ArchivePipeline.build_batches(
+                rows=list_rows, batch_size=4, train_ratio=1.0, chunk_index=0
+            )
+            array_batches, _ = ArchivePipeline.build_batches(
+                rows=array_rows, batch_size=4, train_ratio=1.0, chunk_index=0
+            )
+
+        with then("the files are byte-identical so resume hashes stay stable"):
+            assert parquet_bytes(array_batches[0].table) == parquet_bytes(
+                list_batches[0].table
+            )
         return
 
     def test_carry_combines_with_next_chunk_rows_to_fill_a_batch(self):
@@ -1023,9 +1096,148 @@ class _DirRecordingChunker(PgnChunker):
         self.seen_dirs: list[Path] = []
         return
 
-    def iter_chunks(self, stream, out_dir):
+    def iter_chunks(self, stream, out_dir, discard_before=0):
         self.seen_dirs.append(Path(out_dir))
-        return super().iter_chunks(stream, out_dir)
+        return super().iter_chunks(stream, out_dir, discard_before=discard_before)
+
+
+class TestArchiveCheckpoint:
+    def _carry_row(self, game_id: str) -> dict:
+        return {
+            "packed": np.array([1, 2, 3], dtype=np.int16),
+            "n_positions": 2,
+            "game_id": game_id,
+            "white_elo": 2200,
+            "black_elo": 2100,
+            "result": "1-0",
+            "utc_date": "2023-01-15",
+        }
+
+    def _checkpoint(
+        self, archive_id: str = "a", signature: str = "sig"
+    ) -> ArchiveCheckpoint:
+        return ArchiveCheckpoint(
+            archive_id=archive_id,
+            signature=signature,
+            chunk_index=7,
+            counters={"train": 3, "test": 1},
+            carry={
+                "train": [self._carry_row("g1")],
+                "test": [self._carry_row("g2")],
+                "duplicates": 2,
+            },
+            batch_files=["train/a/batch_0000.parquet"],
+        )
+
+    def test_checkpoint_roundtrip_restores_carry_and_counters(self, tmp_path):
+        with given("a checkpoint holding carried rows as int16 arrays"):
+            checkpoint = self._checkpoint()
+
+        with when("it is saved and loaded again with the same signature"):
+            checkpoint.save(tmp_path)
+            restored = ArchiveCheckpoint.load(tmp_path, "a", "sig")
+
+        with then("counters, chunk index, batch files and carried rows are restored"):
+            assert restored is not None
+            assert restored.chunk_index == 7
+            assert restored.counters == {"train": 3, "test": 1}
+            assert restored.batch_files == ["train/a/batch_0000.parquet"]
+            assert restored.carry["duplicates"] == 2
+            assert [r["game_id"] for r in restored.carry["train"]] == ["g1"]
+            assert [r["game_id"] for r in restored.carry["test"]] == ["g2"]
+            packed = restored.carry["train"][0]["packed"]
+            assert packed.dtype == np.int16
+            np.testing.assert_array_equal(packed, np.array([1, 2, 3], dtype=np.int16))
+        return
+
+    def test_checkpoint_load_returns_none_for_a_different_signature(self, tmp_path):
+        with given("a checkpoint saved for one preprocessing config"):
+            self._checkpoint(signature="original").save(tmp_path)
+
+        with when("it is loaded with a different config signature"):
+            restored = ArchiveCheckpoint.load(tmp_path, "a", "changed")
+
+        with then("the stale checkpoint is ignored"):
+            assert restored is None
+        return
+
+    def test_checkpoint_load_returns_none_for_a_missing_file(self, tmp_path):
+        with given("an empty checkpoint directory"):
+            path = tmp_path
+
+        with when("a checkpoint is loaded"):
+            restored = ArchiveCheckpoint.load(path, "a", "sig")
+
+        with then("no state is returned"):
+            assert restored is None
+        return
+
+    def test_discard_removes_all_checkpoint_files(self, tmp_path):
+        with given("a saved checkpoint"):
+            checkpoint = self._checkpoint()
+            checkpoint.save(tmp_path)
+
+        with when("the checkpoint is discarded"):
+            checkpoint.discard(tmp_path)
+
+        with then("nothing is left behind"):
+            assert not list(tmp_path.iterdir())
+        return
+
+    def test_process_resumes_from_the_stored_checkpoint(self, tmp_path):
+        with given("a stored checkpoint that already committed two train batches"):
+            pipeline = make_pipeline(
+                data_path=None, archive_urls=["https://x/a.pgn.zst"]
+            )
+            pipeline.checkpoint_dir = tmp_path / "state"
+            item = WorkItem(
+                archive_id="a", provider="lichess", url="https://x/a.pgn.zst"
+            )
+            checkpoint = ArchiveCheckpoint(
+                archive_id="a",
+                signature=pipeline._checkpoint_signature(),
+                chunk_index=4,
+                counters={"train": 2, "test": 1},
+                carry={"train": [], "test": [], "duplicates": 0},
+                batch_files=["train/a/batch_0000.parquet"],
+            )
+            checkpoint.save(pipeline.checkpoint_dir)
+            captured = {}
+
+            def fake_loop(
+                self, pgn, chunker, extractor, max_inflight, on_chunk, start_chunk=0
+            ):
+                captured["start_chunk"] = start_chunk
+                return
+
+        with when("the archive is processed again"):
+            with patch.object(ArchivePipeline, "_run_chunk_loop", fake_loop):
+                with patch.object(
+                    ArchivePipeline,
+                    "_open_pgn_stream",
+                    lambda self, work_item: contextlib.nullcontext(io.BytesIO(b"")),
+                ):
+                    with patch.object(
+                        ArchivePipeline,
+                        "_extractor",
+                        lambda self: contextlib.nullcontext(_FakeExtractor()),
+                    ):
+                        pipeline._process(
+                            item,
+                            uploader=MagicMock(),
+                            dry_run=True,
+                            output_dir=str(tmp_path / "out"),
+                        )
+
+        with then("processing restarts at the first chunk after the checkpoint"):
+            assert captured["start_chunk"] == 5
+
+        with then("the completion marker lists the batches committed before the crash"):
+            marker = json.loads(
+                (tmp_path / "out" / "archives" / "a" / "_COMPLETE.json").read_text()
+            )
+            assert marker["batch_files"] == ["train/a/batch_0000.parquet"]
+        return
 
 
 class TestChunkPipeline:
@@ -1060,6 +1272,32 @@ class TestChunkPipeline:
                 "gid-G1",
                 "gid-G2",
             ]
+        return
+
+    def test_chunk_loop_skips_chunks_before_the_resume_index(self):
+        with given("a 3-chunk stream that resumes at chunk 2"):
+            pipeline = make_pipeline()
+            chunker = PgnChunker(10)
+            extractor = _FakeExtractor()
+            consumed = []
+
+        with when("the chunk loop runs with start_chunk=2"):
+            pipeline._run_chunk_loop(
+                _three_game_stream(),
+                chunker,
+                extractor,
+                max_inflight=1,
+                on_chunk=lambda index, rows: consumed.append(index),
+                start_chunk=2,
+            )
+
+        with then("only chunks from the resume index onwards are extracted"):
+            assert consumed == [2]
+            events = [
+                re.search(rb'\[Event "(.*)"\]', payload).group(1)
+                for payload in extractor.submit_order
+            ]
+            assert events == [b"G2"]
         return
 
     def test_in_flight_extractions_are_bounded(self):

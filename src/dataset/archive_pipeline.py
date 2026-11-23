@@ -30,6 +30,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import BinaryIO
 
+import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
 import zstandard
@@ -301,11 +302,164 @@ class BatchUploader:
         return
 
 
+def _packed_list_array(rows: list[dict]) -> pa.ListArray:
+    """Build the ``packed`` column directly from the int16 payloads.
+
+    ``pa.array`` promotes each element to int64 before casting it down to
+    int16, which quadruples peak memory for a full batch (~3.9GB instead
+    of ~1GB for 100k games) and fragments the allocator across batches,
+    eventually pushing the driver into Ray's OOM killer. Concatenating the
+    int16 payloads and describing them with offsets avoids that copy.
+    """
+    counts = np.fromiter(
+        (len(row["packed"]) for row in rows), dtype=np.int64, count=len(rows)
+    )
+    offsets = np.zeros(len(rows) + 1, dtype=np.int32)
+    offsets[1:] = np.cumsum(counts, dtype=np.int64)
+    if rows:
+        values = np.concatenate(
+            [np.asarray(row["packed"], dtype=np.int16) for row in rows]
+        )
+    else:
+        values = np.empty(0, dtype=np.int16)
+    return pa.ListArray.from_arrays(pa.array(offsets), pa.array(values))
+
+
+def _checkpoint_table(rows: list[dict]) -> pa.Table:
+    """Serialise carried game rows for a checkpoint (one row per game)."""
+    return pa.table(
+        {
+            "split": pa.array([r["split"] for r in rows], type=pa.string()),
+            "packed": _packed_list_array(rows),
+            "n_positions": pa.array([r["n_positions"] for r in rows], type=pa.int32()),
+            "game_id": pa.array([r["game_id"] for r in rows], type=pa.string()),
+            "white_elo": pa.array([r["white_elo"] for r in rows], type=pa.int32()),
+            "black_elo": pa.array([r["black_elo"] for r in rows], type=pa.int32()),
+            "result": pa.array([r["result"] for r in rows], type=pa.string()),
+            "utc_date": pa.array([r["utc_date"] for r in rows], type=pa.string()),
+        }
+    )
+
+
+@dataclass
+class ArchiveCheckpoint:
+    """Per-archive resume state persisted after every emitted batch.
+
+    The extraction loop only emits batches on chunk boundaries, so the
+    rows that belong to the next batch are carried between chunks. A
+    checkpoint stores that carry, the per-split batch counters, the files
+    already emitted and the last chunk folded into the state, which lets
+    a restarted process continue at ``chunk_index + 1`` instead of
+    re-extracting the whole archive.
+    """
+
+    archive_id: str
+    signature: str
+    chunk_index: int
+    counters: dict[str, int]
+    carry: dict
+    batch_files: list[str]
+
+    @staticmethod
+    def _meta_path(directory: str | Path, archive_id: str) -> Path:
+        return Path(directory) / f"{archive_id}.checkpoint.json"
+
+    @staticmethod
+    def _rows_path(directory: str | Path, archive_id: str) -> Path:
+        return Path(directory) / f"{archive_id}.checkpoint.parquet"
+
+    def save(self, directory: str | Path) -> None:
+        directory = Path(directory)
+        directory.mkdir(parents=True, exist_ok=True)
+        rows: list[dict] = []
+        for split in ("train", "test"):
+            for row in self.carry.get(split, []):
+                rows.append({**row, "split": split})
+        pq.write_table(
+            _checkpoint_table(rows), self._rows_path(directory, self.archive_id)
+        )
+        self._meta_path(directory, self.archive_id).write_text(
+            json.dumps(
+                {
+                    "archive_id": self.archive_id,
+                    "signature": self.signature,
+                    "chunk_index": self.chunk_index,
+                    "counters": self.counters,
+                    "duplicates": int(self.carry.get("duplicates", 0)),
+                    "batch_files": self.batch_files,
+                }
+            )
+        )
+        return
+
+    @classmethod
+    def load(
+        cls, directory: str | Path, archive_id: str, signature: str
+    ) -> ArchiveCheckpoint | None:
+        meta_path = cls._meta_path(directory, archive_id)
+        rows_path = cls._rows_path(directory, archive_id)
+        if not meta_path.exists() or not rows_path.exists():
+            return None
+        meta = json.loads(meta_path.read_text())
+        if meta.get("signature") != signature or meta.get("archive_id") != archive_id:
+            return None
+        carry: dict = {
+            "train": [],
+            "test": [],
+            "duplicates": int(meta.get("duplicates", 0)),
+        }
+        for row in pq.read_table(rows_path).to_pylist():
+            split = row.pop("split")
+            row["packed"] = np.asarray(row["packed"], dtype=np.int16)
+            carry.setdefault(split, []).append(row)
+        return cls(
+            archive_id=archive_id,
+            signature=signature,
+            chunk_index=int(meta["chunk_index"]),
+            counters=dict(meta.get("counters") or {"train": 0, "test": 0}),
+            carry=carry,
+            batch_files=list(meta.get("batch_files") or []),
+        )
+
+    def discard(self, directory: str | Path) -> None:
+        self.remove(directory, self.archive_id)
+        return
+
+    @classmethod
+    def remove(cls, directory: str | Path, archive_id: str) -> None:
+        cls._meta_path(directory, archive_id).unlink(missing_ok=True)
+        cls._rows_path(directory, archive_id).unlink(missing_ok=True)
+        return
+
+
+def _log_driver_memory(carried_games: int) -> None:
+    """Print driver memory when ``CHESS_POS_MEM_DEBUG`` is set."""
+    if not os.environ.get("CHESS_POS_MEM_DEBUG"):
+        return
+    rss_kb = 0
+    try:
+        with open("/proc/self/status") as status:
+            for line in status:
+                if line.startswith("VmRSS:"):
+                    rss_kb = int(line.split()[1])
+                    break
+    except OSError:
+        rss_kb = 0
+    print(
+        f"[mem] rss={rss_kb / 1048576:.2f}GB "
+        f"pyarrow={pa.total_allocated_bytes() / 1e9:.2f}GB "
+        f"carried_games={carried_games}",
+        flush=True,
+    )
+    return
+
+
 @dataclass
 class ArchivePipeline:
     dataset_config: DatasetConfig
     preprocessing_config: PreprocessingConfig
     source_config: SourceConfig
+    checkpoint_dir: Path | None = None
 
     @classmethod
     def build_batches(
@@ -361,9 +515,7 @@ class ArchivePipeline:
                 part = emit_rows[start : start + batch_size]
                 table = pa.table(
                     {
-                        "packed": pa.array(
-                            [r["packed"] for r in part], type=pa.list_(pa.int16())
-                        ),
+                        "packed": _packed_list_array(part),
                         "n_positions": pa.array(
                             [r["n_positions"] for r in part], type=pa.int32()
                         ),
@@ -460,6 +612,20 @@ class ArchivePipeline:
     def hf_api() -> HfApi:
         return HfApi()
 
+    def _checkpoint_signature(self) -> str:
+        """Identity of the preprocessing config a checkpoint is valid for."""
+        return "|".join(
+            [
+                config_fingerprint(
+                    self.preprocessing_config.subsampling,
+                    self.preprocessing_config.time_control_filter,
+                ),
+                f"batch_size={self.dataset_config.batch_size}",
+                f"train_ratio={self.dataset_config.train_ratio}",
+                f"chunk_target_mb={self.source_config.chunk_target_mb}",
+            ]
+        )
+
     def _process(
         self,
         item: WorkItem,
@@ -472,6 +638,7 @@ class ArchivePipeline:
             self.preprocessing_config.subsampling,
             self.preprocessing_config.time_control_filter,
         )
+        signature = self._checkpoint_signature()
         scratch = Path(tempfile.mkdtemp(prefix="chesspos-"))
         try:
             batch_files: list[str] = []
@@ -479,7 +646,23 @@ class ArchivePipeline:
             max_inflight = max(1, self.preprocessing_config.worker_count)
             carry: dict = {"train": [], "test": [], "duplicates": 0}
             counters: dict = {"train": 0, "test": 0}
-            last_chunk_index = -1
+            start_chunk = 0
+            if self.checkpoint_dir is not None:
+                state = ArchiveCheckpoint.load(
+                    self.checkpoint_dir, item.archive_id, signature
+                )
+                if state is not None:
+                    carry = state.carry
+                    counters = state.counters
+                    batch_files = state.batch_files
+                    start_chunk = state.chunk_index + 1
+                    print(
+                        f"Resuming {item.archive_id} at chunk {start_chunk}: "
+                        f"{len(carry['train']) + len(carry['test'])} carried games, "
+                        f"{counters['train']} train/{counters['test']} test batches done",
+                        flush=True,
+                    )
+            last_chunk_index = start_chunk - 1
 
             def emit(batches: list[Batch]) -> None:
                 for batch in batches:
@@ -497,6 +680,16 @@ class ArchivePipeline:
                     )
                     if repo_parquet:
                         batch_files.append(repo_parquet)
+                if batches and self.checkpoint_dir is not None:
+                    ArchiveCheckpoint(
+                        archive_id=item.archive_id,
+                        signature=signature,
+                        chunk_index=last_chunk_index,
+                        counters=dict(counters),
+                        carry=carry,
+                        batch_files=list(batch_files),
+                    ).save(self.checkpoint_dir)
+                _log_driver_memory(len(carry["train"]) + len(carry["test"]))
                 return
 
             stream_item = item
@@ -524,6 +717,7 @@ class ArchivePipeline:
                         extractor,
                         max_inflight=max_inflight,
                         on_chunk=on_chunk,
+                        start_chunk=start_chunk,
                     )
             final_batches, _ = self.build_batches(
                 rows=[],
@@ -535,6 +729,8 @@ class ArchivePipeline:
             )
             emit(final_batches)
             self._mark_complete(item, batch_files, uploader, dry_run, output_dir)
+            if self.checkpoint_dir is not None:
+                ArchiveCheckpoint.remove(self.checkpoint_dir, item.archive_id)
         finally:
             shutil.rmtree(scratch, ignore_errors=True)
         return
@@ -570,6 +766,7 @@ class ArchivePipeline:
         extractor,
         max_inflight: int,
         on_chunk,
+        start_chunk: int = 0,
     ) -> None:
         """Cut ``pgn`` into chunks and consume extractions in chunk order.
 
@@ -577,12 +774,15 @@ class ArchivePipeline:
         extraction of chunk N+1 overlaps with emission of chunk N. At most
         ``max_inflight`` extractions are outstanding at any time;
         ``on_chunk(chunk_index, rows)`` is called strictly in chunk order.
+        Chunks before ``start_chunk`` are skipped without being written or
+        extracted, which is how a checkpointed archive resumes.
         """
         max_inflight = max(1, max_inflight)
         pending: deque[tuple[int, object]] = deque()
         with tempfile.TemporaryDirectory(prefix="chesspos-chunks-") as chunk_dir:
             for chunk_index, chunk_path in enumerate(
-                chunker.iter_chunks(pgn, out_dir=chunk_dir)
+                chunker.iter_chunks(pgn, out_dir=chunk_dir, discard_before=start_chunk),
+                start=start_chunk,
             ):
                 handle = extractor.submit(chunk_path.read_bytes())
                 # The bytes are now in flight for extraction; the file is
