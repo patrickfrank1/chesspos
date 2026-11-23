@@ -11,7 +11,9 @@ packed token-stream shards and queried through a CLI.
 | `src/search/codec.py` | 34-byte lossless position codec |
 | `src/search/schema.py` | Arrow schema, compact value objects, manifest |
 | `src/search/store.py` | filter/hit interfaces |
-| `src/search/lancedb_store.py` | LanceDB table, search, indexes, manifest |
+| `src/search/lancedb_store.py` | single-table LanceDB store, indexes, manifest |
+| `src/search/partitioned_store.py` | one table per partition, fan-out search, roster |
+| `src/search/factory.py` | opens single or partitioned layout |
 | `src/search/memory_store.py` | brute-force oracle for tests and ANN recall |
 | `src/search/embedder.py` | checkpoint-backed `native_positions` embedder |
 | `src/search/index.py` | packed game → per-position rows; parquet/Hub builds |
@@ -67,11 +69,35 @@ uv run python -m src.run.build_position_index \
 
 Useful flags: `--limit-games`, `--batch-games`, `--no-index`,
 `--index-type ivf_pq|ivf_hnsw_sq|ivf_flat`, `--num-partitions`,
-`--num-sub-vectors`, `--overwrite`, `--revision`, `--cache-dir`.
+`--num-sub-vectors`, `--overwrite`, `--append`, `--partition-by none|year|source`,
+`--revision`, `--cache-dir`.
 
-The build writes `<output>/<table>.manifest.json` with the checkpoint hash,
-feature recipe, dimension, dtype, row/game counts, date coverage and LanceDB
-version.
+For a large corpus, build one table per year (or per archive source) and fan
+out queries across the partitions:
+
+```bash
+uv run python -m src.run.build_position_index \
+  --repo patrickfrank1/chess-positions \
+  --split train \
+  --max-bytes 5000000000 \
+  --checkpoint data/models/run_20m_lazy/last.pt \
+  --output data/vector/positions \
+  --partition-by year \
+  --device cuda
+
+# Later, append another source without rebuilding existing partitions:
+uv run python -m src.run.build_position_index \
+  --data-dir data/hf-cache/.../train/lichess_elite_2020-08 \
+  --checkpoint data/models/run_20m_lazy/last.pt \
+  --output data/vector/positions \
+  --partition-by year --append --device cuda
+```
+
+The partitioned layout writes `partitions.json` (a roster) next to
+`positions.manifest.json`; the manifest records cumulative rows/games and the
+partition row counts. `--append` opens an existing index and adds to it;
+`--overwrite` clears it first. Appending the same shard twice will duplicate
+rows, so shard selection remains the caller's responsibility.
 
 ## Search
 
@@ -92,16 +118,20 @@ game from the results.
 
 Filters: `--min-elo`, `--max-elo`, `--min-year`, `--max-year`, `--min-date`,
 `--max-date`, `--result`, `--split`, `--min-ply`, `--max-ply`,
-`--min-pieces`, `--max-pieces`. `--nprobes`, `--refine-factor` and `--exact`
-control the ANN/recall trade-off.
+`--min-pieces`, `--max-pieces`. `--partitions year=2020 year=2021` restricts a
+partitioned index to specific tables. `--nprobes`, `--refine-factor` and
+`--exact` control the ANN/recall trade-off.
 
 ## Data Caveats
 
 - **Vocabulary.** Shards written before the 52-token stream encoding contain
-  tokens up to 805 and cannot be embedded by current checkpoints. The builder
-  raises a clear error (`position token N exceeds the embedder vocabulary`)
-  instead of failing inside PyTorch. Rebuild those shards with the current
-  pipeline or use the newer archive shards under `train/{archive_id}/`.
+  tokens up to 805 and cannot be embedded by current checkpoints. The old local
+  `data/processed/hub` and `data/processed/dry_run` shards, plus the two
+  detached old HF cache revisions, have been removed. Use the newer archive
+  shards under `train/{archive_id}/` (for example via `--repo`) or regenerate
+  local shards with the current pipeline. The builder raises a clear error
+  (`position token N exceeds the embedder vocabulary`) instead of failing
+  inside PyTorch.
 - **Dates and splits.** Existing parquet shards do not carry per-game
   `utc_date` or `split` columns. The builder uses the path split
   (`train`/`test`), derives the year from the archive path (e.g.
@@ -114,9 +144,9 @@ control the ANN/recall trade-off.
 
 ## Scale Notes
 
-- The first build is one shard; the target is 1B+ positions. LanceDB is a
-  single-node embedded engine, so 1B is handled by partitioning (one table per
-  source/year/split) and fanning out queries, not by horizontal clustering.
+- The index supports a single table or a partitioned layout (one table per
+  year/source) with fan-out search. LanceDB is a single-node embedded engine,
+  so 1B is handled by partitioning, not by horizontal clustering.
 - Store `float16` vectors and build `IVF_PQ` (32 bytes/vector at 512-d); use
   `refine_factor` (10-50) to rerank candidates against the stored vectors.
 - Embedding 1B positions is a GPU batch job. Build partitions independently,
