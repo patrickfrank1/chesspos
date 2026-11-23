@@ -65,7 +65,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--pooling", choices=("mean", "attention"), default="attention")
     parser.add_argument(
         "--feature",
-        choices=("native", "full"),
+        choices=("native", "full", "native_positions"),
         default="native",
         help="Encoder embedding: native embed() or full-trunk encode()",
     )

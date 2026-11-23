@@ -63,7 +63,9 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--dropout", type=float, default=0.0)
     parser.add_argument("--head-hidden-dim", type=int, default=256)
     parser.add_argument("--pooling", choices=("mean", "attention"), default="mean")
-    parser.add_argument("--feature", choices=("native", "full"), default="native")
+    parser.add_argument(
+        "--feature", choices=("native", "full", "native_positions"), default="native"
+    )
     parser.add_argument("--loss", choices=("mse", "huber"), default="mse")
     parser.add_argument("--amp", choices=("none", "bf16"), default="none")
     parser.add_argument(

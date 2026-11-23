@@ -147,7 +147,7 @@ class FrozenEncoderScore(nn.Module):
         self.unfreeze_last_block = unfreeze_last_block
         self.unfreeze_all = unfreeze_all
         self.token_pooling = token_pooling
-        self.isolated = feature == "native" and bool(
+        self.isolated = feature in ("native", "native_positions") and bool(
             getattr(encoder.config, "content_pooling", False)
         )
         if token_pooling == "attention" and not hasattr(encoder, "token_states"):

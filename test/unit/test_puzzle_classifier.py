@@ -16,7 +16,7 @@ from src.dataset.token_stream import (
 )
 from src.modeling.autoencoder.config import AttentionAutoencoderConfig
 from src.modeling.autoencoder.model import AttentionAutoencoderModel
-from src.modeling.frozen import embedding_dim
+from src.modeling.frozen import embedding_dim, encoder_embeddings
 from src.modeling.puzzle_classifier import (
     FrozenEncoderClassifier,
     PoolingClassifier,
@@ -592,6 +592,67 @@ class TestAutoencoderBottleneck:
         with then("the bottleneck vectors are pooled by the head"):
             assert logits.shape == (2,)
             assert model.head.config.d_model == 4
+            assert model.head.classifier.weight.grad is not None
+            assert model.encoder.training is False
+        return
+
+
+class TestPerPositionRecipe:
+    def test_embeds_each_position_as_its_own_window(self):
+        with given("a two-position packed sequence and an autoencoder"):
+            encoder = tiny_autoencoder(latent_dim=4, d_model=2)
+            tokens, segment_ids, padding_mask = batch_from_boards()
+            packed = pack_stream(
+                [
+                    TokenStreamEncoder().encode(chess.Board()),
+                    TokenStreamEncoder().encode(chess.Board()),
+                ]
+            )
+            tokens = torch.from_numpy(packed.astype(np.int64)).unsqueeze(0)
+            segment_ids = torch.cumsum(tokens == SEP, dim=1)
+            padding_mask = tokens != PAD
+            single = [
+                torch.from_numpy(
+                    pack_stream([TokenStreamEncoder().encode(chess.Board())]).astype(
+                        np.int64
+                    )
+                ).unsqueeze(0)
+                for _ in range(2)
+            ]
+
+        with when("the per-position recipe runs"):
+            embeddings, mask = encoder_embeddings(
+                encoder, tokens, segment_ids, padding_mask, feature="native_positions"
+            )
+
+        with then("each position matches its own packed window"):
+            assert embeddings.shape == (1, 2, 4)
+            assert mask.tolist() == [[True, True]]
+            with torch.no_grad():
+                for index, window in enumerate(single):
+                    ids = torch.cumsum(window == SEP, dim=1)
+                    expected, _ = encoder.embed(window, ids)
+                    torch.testing.assert_close(
+                        embeddings[0, index], expected[0, 0], rtol=0, atol=1e-5
+                    )
+        return
+
+    def test_classifier_pools_all_positions_of_a_puzzle(self):
+        with given("a classifier using the per-position autoencoder recipe"):
+            encoder = tiny_autoencoder(latent_dim=4, d_model=2)
+            head = PoolingClassifier(
+                PoolingClassifierConfig(d_model=embedding_dim(encoder, "native"))
+            )
+            model = FrozenEncoderClassifier(encoder, head, feature="native_positions")
+            tokens, segment_ids, padding_mask = batch_from_boards()
+
+        with when("the classifier runs a training step"):
+            model.train()
+            logits = model(tokens, segment_ids, padding_mask)
+            logits.sum().backward()
+
+        with then("the head trains on the pooled position embeddings"):
+            assert logits.shape == (2,)
             assert model.head.classifier.weight.grad is not None
             assert model.encoder.training is False
         return
