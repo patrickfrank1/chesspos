@@ -24,12 +24,14 @@ latent and a rebalanced loss, proposed at the end of this report.
 
 The **20M follow-up** then ran to step 81,600 and was **stopped by decision on
 2026-11-23**. Reconstruction continued to improve slowly (`val_loss` 0.5173 at
-60k → **0.5022** at 80k, `val_acc` 0.9055 → 0.9093), but the embedding probes
-had flattened: `test_r2_material` peaked at **0.7033** (56k) and was 0.6872 at
-80k, `mlm_board_piece_acc` stayed ~0.917 against a 0.953 prior baseline, and
-`mean_top10_cosine` only moved 0.546 → 0.570. More steps reconstruct empty
-squares and state tokens better; they do not add material geometry. The last
-checkpoint is step 81,000; best `val_loss` 0.5022 at step 80,000.
+60k → **0.5022** at 80k, `val_acc` 0.9055 → 0.9093), while the embedding
+geometry plateaued: on a fixed 4,096-position pool `test_r2_material` was
+**0.745** at 56k and **0.750** at 80k (overlapping CIs), against **0.463**
+for the 6M/512-d model at the same protocol. The 1,024-position training
+probes that suggested a decline at 80k were sampling noise. More steps
+reconstruct empty squares and state tokens better; they do not move the
+material axis further. The last checkpoint is step 81,000; best `val_loss`
+0.5022 at step 80,000.
 
 This report records the design, the implementation surface, the training
 configuration, the measurements taken during the run, the plateau post-mortem,
@@ -76,9 +78,10 @@ including the InfoNCE ablation still queued.
   games (cos 0.52 vs 0.04) without any contrastive term. That emergent geometry
   motivates the planned NCE ablation.
 - The **20M/1024-d follow-up** (stopped at 81,600) lifted `val_acc` to 0.9093
-  and reached `test_r2_material` 0.7033 at 56k, but the probe metrics were flat
-  from 56k to 80k while `val_loss` kept creeping down. Scaling capacity fixed
-  the metric artefact, not the material axis; see *Results: 20M run*.
+  and, on a 4,096-position pool, `test_r2_material` from **0.463 (6M/512-d)** to
+  **0.750**, plateauing from ~56k. Capacity fixed the material axis; the
+  apparent late-run decline in the 1,024-position probes was sampling noise.
+  See *Full evaluation of the 20M bottleneck*.
 
 ## Architecture
 
@@ -527,7 +530,9 @@ Run `run_ae_20m_100k`, launched 2026-11-22 and stopped by decision on
 params, `d_model 512`, 8 heads, `d_ff 1536`, 4 encoder + 3 decoder layers,
 1024-d latent, batch 128, lr 2e-4 with 2,000-step warmup and cosine decay over
 100,000 steps, `balanced-v1` token weighting, and a **50/50 rectangle/skip-gram**
-masking split (changed from the 6M run's 80/20 before launch).
+masking split (changed from the 6M run's 80/20 before launch). The probe
+columns are 1,024-position estimates; the 4,096-position re-evaluation is in
+the next section.
 
 | step | val_loss | val_acc | piece acc | piece prior | `test_r2_material` | `mean_top10_cos` |
 |---:|---:|---:|---:|---:|---:|---:|
@@ -538,21 +543,25 @@ masking split (changed from the 6M run's 80/20 before launch).
 | 68,000 | 0.5116 | 0.9069 | 0.9170 | 0.9533 | 0.6775 | 0.5620 |
 | 80,000 | **0.5022** | **0.9093** | 0.9168 | 0.9532 | 0.6872 | 0.5699 |
 
-What the numbers say:
+What the numbers say (all probe values below use the training-time 1,024
+positions; the 4,096-position re-evaluation is in the next section):
 
 - **Reconstruction keeps improving, slowly.** `val_loss` fell 0.017 between
   60k and 80k (≈0.00085 per 1k steps) and had not fully flattened, but
   `val_acc` gained only 0.004 over the same span.
-- **The embedding geometry stopped improving at ~56k.** `test_r2_material`
-  peaked at 0.7033 and then drifted down/around zero trend through 80k;
-  `mlm_board_piece_acc` is flat at 0.917 (below the 0.953 prior baseline);
-  `pc1_piece_corr` is flat at ~0.87; `mean_top10_cosine` moved only 0.546 →
-  0.570 with `mean_random_pair_cosine` at ~0.15.
+- **Embedding geometry plateaus from ~56k.** On a fixed 4,096-position pool
+  `test_r2_material` moves 0.745 (56k) → 0.750 (80k) with overlapping
+  confidence intervals; the 1,024-pool dip to 0.687 at 80k is sampling noise.
+  `pc1_piece_corr` is flat at ~0.87 and `mean_top10_cosine` at 0.59–0.61.
 - **The plateau is representational, not optimisation.** The 1024-d latent and
   the rebalanced weights fixed the 6M run's headline-accuracy artefact (empty
   squares are no longer 88% of the loss) and lifted masking accuracy, but the
   remaining reconstruction gains are in token classes that do not change the
   pooled vector's material axis.
+- **Scaling the bottleneck did add material information.** At the same
+  4,096-position protocol the 6M/512-d model scores R² 0.463 and the
+  20M/1024-d model 0.750; the earlier "capacity did not help" reading came
+  from the noisy 1,024 pool.
 - **Raw `val_loss` is not comparable to the 6M run:** `balanced-v1` reweights
   token classes and the masking mixture changed to 50/50, so only in-run trends
   and the probe metrics are comparable.
@@ -560,6 +569,96 @@ What the numbers say:
 Artifacts: `run_ae_20m_100k/` (checkpoints, `last.pt` step 81,000,
 `best_step80000.pt`, `train.log`) and `run_ae_20m_100k_logs/` (train log, eval
 history/metrics, PCA plot, neighbour reports).
+
+## Full evaluation of the 20M bottleneck (2026-11-23)
+
+Protocol: `best_step80000.pt` (best `val_loss`), 8,192-game validation pool
+from the `test` split, CPU (8 threads). The training-time `full_eval` suite was
+run at its usual 1,024-position pool (`windows=20`, `batch_size=8`,
+`counterfactual_n=256`, `seed=17`), then the embedding probes were repeated on
+a fixed 4,096-position pool with 10 material-probe splits and 50 phase
+bootstraps. Total wall time ≈2 min. The suite is reproducible with
+`scripts/eval_bottleneck_embeddings.py`; raw outputs are under
+`hf://buckets/patrickfrank1/chesspos-checkpoints/run_ae_20m_100k_logs/evals/`.
+
+```bash
+python scripts/eval_bottleneck_embeddings.py \
+  --checkpoint data/models/ae_20m_100k/best_step80000.pt \
+  --data-dir data/hf-cache/datasets--patrickfrank1--chess-positions/snapshots/<hash>/test \
+  --out-dir data/eval/ae_20m_80000
+```
+
+### Reconstruction by masking mode (1,024 pool)
+
+| mode | accuracy | piece acc | prior baseline | turn | castle | scalar |
+|---|---:|---:|---:|---:|---:|---:|
+| board (rect) | 0.9194 | 0.9160 | 0.9529 | 1.000 | 0.975 | 0.992 |
+| random | 0.9312 | 0.9282 | 0.9621 | 1.000 | 1.000 | 1.000 |
+| span | 0.9306 | 0.9273 | 0.9613 | 1.000 | 1.000 | 1.000 |
+
+Piece accuracy sits *below* the unigram prior baseline. That is expected under
+`balanced-v1`: the model is trained on a reweighted loss in which empty squares
+are no longer nearly free, so the unweighted argmax metric is no longer the
+objective. Turn, castling, and scalar attributes are effectively solved.
+
+### Embedding probes (same checkpoint, two pool sizes)
+
+| metric | 1,024 positions | 4,096 positions |
+|---|---:|---:|
+| `test_r2_material` | 0.687 [0.655, 0.720] | **0.742 [0.726, 0.757]** |
+| `test_acc_side_to_move` | 1.000 | 1.000 |
+| `mean_top10_cosine` | 0.570 | 0.614 |
+| `mean_random_pair_cosine` | 0.149 | 0.149 |
+| `top5_material_delta` | 2.00 | 1.81 |
+| `random_pair_material_delta` | 2.35 | 2.24 |
+| `pc1_piece_corr` | 0.874 [0.858, 0.888] | 0.875 [0.869, 0.882] |
+| `pc2_piece_corr` | 0.372 [0.340, 0.406] | 0.372 [0.357, 0.385] |
+
+Counterfactual probes (1,024 pool): cosine to the move-child **0.933**, to a
+second child **0.914**, to a corrupted board **0.938**, to a random position
+**0.160**. The bottleneck therefore carries a strong position identity while
+still separating unrelated positions.
+
+### Checkpoint sweep (fixed 4,096-position pool)
+
+| model | step | `test_r2_material` | 95% CI | `mean_top10_cos` | random-pair cos | top-5 Δmaterial | PC1 corr | PC2 corr |
+|---|---:|---:|---|---:|---:|---:|---:|---:|
+| 20M | 2,000 | 0.5774 | [0.553, 0.602] | 0.776 | 0.282 | 1.88 | 0.862 | 0.352 |
+| 20M | 10,000 | 0.5056 | [0.477, 0.534] | 0.594 | 0.143 | 1.85 | 0.814 | 0.435 |
+| 20M | 34,000 | 0.7101 | [0.688, 0.732] | 0.586 | 0.143 | 1.81 | 0.866 | 0.395 |
+| 20M | 56,000 | 0.7452 | [0.727, 0.764] | 0.593 | 0.130 | 1.79 | 0.862 | 0.399 |
+| 20M | 66,000 | 0.7306 | [0.713, 0.748] | 0.605 | 0.149 | 1.81 | 0.875 | 0.368 |
+| 20M | 76,000 | 0.7489 | [0.735, 0.763] | 0.605 | 0.141 | 1.81 | 0.873 | 0.374 |
+| 20M | 80,000 | **0.7503** | [0.736, 0.765] | 0.614 | 0.149 | 1.81 | 0.875 | 0.372 |
+| 6M | 42,000 | **0.4626** | [0.447, 0.479] | 0.624 | 0.159 | 1.75 | 0.815 | 0.138 |
+
+### Findings
+
+1. **The apparent late-run decline was pool noise.** At 1,024 positions
+   `test_r2_material` reads 0.703 at 56k and 0.687 at 80k; on the same 4,096
+   positions it reads 0.745 and 0.750 with overlapping CIs. Material geometry
+   **plateaus at ≈0.75** from ~56k rather than degrading.
+2. **The wider bottleneck substantially improved the material axis.** At the
+   same 4,096-position protocol the 6M/512-d checkpoint scores **0.463** and
+   the 20M/1024-d checkpoint **0.750** — +0.29 R². The 6M latent width was a
+   real binding constraint, so the 20M run fixed more than the metric artefact.
+3. **Pool size biases the ridge probe.** With 1,024 positions only ~819 rows
+   remain for training a 1,024-d ridge, which under-estimates R² (0.69 vs 0.74
+   at 80k; 0.26 vs 0.46 at 6M). Only compare probe values measured on the same
+   pool size.
+4. **What saturates at ~0.75.** Reconstruction still improves in empty and
+   state tokens between 60k and 80k, but those do not move the material axis.
+   The remaining material error is consistent with within-position crowding in
+   a single 1,024-d vector. The next levers are supervision (InfoNCE or an
+   explicit material head) or a wider latent — not more steps at this size.
+5. **Position identity dominates similarity; capacity did not tighten
+   neighbourhoods.** Child similarity is 0.93 against 0.16 for random
+   positions, and `mean_top10_cosine` is essentially unchanged from the 6M run
+   (0.614 vs 0.624). The 20M gain is specifically along the linear material
+   axis (R² 0.46 → 0.75) and PC2 (0.14 → 0.37), not more isotropic clustering.
+6. **Side-to-move is linearly trivial** (accuracy 1.000) in both models: the
+   turn token is recoverable from a clean direction, so it is not a useful
+   discriminator between checkpoints.
 
 ## Operational notes (issues hit and fix)
 
