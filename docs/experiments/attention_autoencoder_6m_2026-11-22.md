@@ -733,6 +733,61 @@ Artifacts: `hf://buckets/patrickfrank1/chesspos-checkpoints/downstream/ae20m/`
 checkpoints), plus the local `data/models/downstream/ae20m/` and
 `data/eval/downstream/ae20m/` trees.
 
+## Fine-tuned downstream arms (2026-11-24)
+
+The frozen probes above adapt only the head. These arms unfreeze the whole
+autoencoder (encoder + bottleneck) for one epoch, keeping the same heads:
+score on 40k games (batch 128, encoder LR 1e-5 / head LR 1e-3, seed 17) with a
+20k-game held-out test, and sacrifice on the 1M-puzzle subset (batch 128, same
+LRs, per-position bottleneck pooling, seed 17).
+
+### Position score regression
+
+| recipe | R² | decisive AUC | MAE |
+|---|---:|---:|---:|
+| frozen bottleneck (3 seeds) | 0.0510 ± 0.0043 | 0.6448 ± 0.0006 | 0.820 |
+| **fine-tuned bottleneck** | **0.0681** | **0.6662** | **0.7982** |
+| material baseline (affine) | 0.0675 | 0.6549 | 0.829 |
+| 20M transformer, full fine-tune | 0.131 | 0.713 | 0.773 |
+
+Validation for the fine-tuned arm: R² 0.0731, AUC 0.6702, MAE 0.8045. The arm
+now clears the material-only baseline on all three metrics, but the gain over
+the frozen bottleneck is modest (**+0.017 R², +0.021 AUC, −0.022 MAE**).
+
+### Sacrifice classification (1M subset, natural prevalence)
+
+| recipe | PR-AUC | AUROC | F1 |
+|---|---:|---:|---:|
+| frozen bottleneck | 0.288 | 0.745 | 0.322 |
+| **fine-tuned bottleneck** | **0.341** | **0.775** | **0.361** |
+| 20M transformer, full fine-tune | 0.455 | 0.834 | 0.449 |
+
+Precision 0.323, recall 0.410, accuracy 0.862. Fine-tuning adds **+0.053
+PR-AUC / +0.030 AUROC / +0.039 F1** over the frozen bottleneck.
+
+### Findings
+
+1. **Fine-tuning helps, but the bottleneck has less headroom than the
+   transformer trunk.** The transformer's full fine-tune moved score R²
+   0.023 → 0.131 and sacrifice PR-AUC 0.203 → 0.455; the bottleneck moves
+   0.051 → 0.068 and 0.288 → 0.341. It starts much stronger frozen, and the
+   remaining gap is not recoverable by adapting the same one-epoch recipe.
+2. **The fine-tuned bottleneck beats material-only scoring.** This is the
+   first checkpoint in the project to clear the affine material baseline on
+   score R², decisive AUC, and MAE simultaneously.
+3. **The transformer remains the better fine-tuning base for sacrifice**
+   (PR-AUC 0.455 vs 0.341), even though the bottleneck is the better frozen
+   representation. The two recipes measure different ceilings: retrieval-style
+   reconstruction vs task-adapted supervision.
+4. **Operational:** flash-attn is required on the GPU box. Without it the
+   varlen fallback is a per-segment SDPA loop — a 128×5-position batch took
+   **3.4 s/step** instead of **62 ms** after installing the matching wheel.
+   Batch 256 OOMs on the longest (22-position) puzzles; 128 fits at ~15 GB.
+
+Artifacts: `hf://buckets/patrickfrank1/chesspos-checkpoints/downstream/ae20m_finetune/`
+(`models/`, `evals/`), plus the box-local `data/models/downstream_finetune/`
+and `data/eval/downstream_finetune/` trees.
+
 ## Clean pack-size sweep on the 20M bottleneck (2026-11-23)
 
 The 6M post-mortem measured the latent's information limit by reconstructing
