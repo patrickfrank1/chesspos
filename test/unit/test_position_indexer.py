@@ -262,6 +262,7 @@ def test_build_position_index_partitioned_by_year(tmp_path):
         assert set(store.partitions) == {"year=2024", "year=2025"}
         assert stats.partitions == {"year=2024": 6, "year=2025": 6}
         assert store.count() == 12
+        assert store.games_count() == 4
     return
 
 
@@ -336,5 +337,7 @@ def test_build_position_index_appends_to_an_existing_partition(tmp_path):
     with then("the same year partition grows instead of being replaced"):
         assert stats.partitions == {"year=2024": 6}
         assert store.partitions["year=2024"]["rows"] == 12
+        assert store.partitions["year=2024"]["games"] == 4
         assert store.count() == 12
+        assert store.games_count() == 4
     return

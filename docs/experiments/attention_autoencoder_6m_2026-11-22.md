@@ -861,15 +861,13 @@ positions).
 
 ### 2. Metric and tooling fixes
 
-- Log the **unweighted** reconstruction loss alongside the weighted one, and
-  pass the training weights into `evaluate()`, so train/val are comparable.
-- Log **per-class accuracy** (empty / pieces / state), the **calibrated**
-  accuracy `argmax(logits − log w)`, and the **occupancy AUC** — the three
-  numbers that would have made this plateau obvious during training.
-- Store the **resolved** loss weights (not raw CLI args) in checkpoint
-  metadata.
-- Add the latent-swap delta to the periodic evaluation output.
-- Wire the retrieval benchmark for this architecture.
+- **Done (2026-11-23):** the periodic autoencoder evaluation now logs the
+  **unweighted** reconstruction loss next to the weighted one, per-class
+  accuracy (empty / pieces / state), the **calibrated** accuracy
+  `argmax(logits − log w)`, the **occupancy AUC**, and the **latent-swap**
+  delta. The resolved token weights and preset are stored in checkpoint
+  metadata (`token_weights`, `token_weight_preset`).
+- Still open: wire the retrieval benchmark for this architecture.
 
 ### 3. Capacity and data questions
 

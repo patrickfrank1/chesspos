@@ -107,6 +107,22 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     import lancedb
 
+    previous = store.read_manifest() if args.append else None
+    total_rows = store.count()
+    previous_rows = max(0, total_rows - stats.positions)
+    previous_dated = (
+        previous.date_coverage * previous_rows if previous is not None else 0.0
+    )
+    total_games = (
+        store.games_count()
+        if hasattr(store, "games_count")
+        else (previous.games if previous is not None else 0) + stats.games
+    )
+    partitions = (
+        {name: int(info.get("rows", 0)) for name, info in store.partitions.items()}
+        if hasattr(store, "partitions")
+        else None
+    )
     manifest = IndexManifest(
         index_version=1,
         checkpoint=args.checkpoint,
@@ -115,14 +131,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         dim=embedder.dim,
         dtype="float16",
         schema_version=1,
-        rows=stats.positions,
-        games=stats.games,
+        rows=total_rows,
+        games=total_games,
         date_coverage=(
-            stats.dated_positions / stats.positions if stats.positions else 0.0
+            (previous_dated + stats.dated_positions) / total_rows if total_rows else 0.0
         ),
         lancedb_version=lancedb.__version__,
         created_at=dt.datetime.now(dt.timezone.utc).isoformat(),
-        partitions=stats.partitions or None,
+        partitions=partitions or None,
     )
     manifest_path = store.write_manifest(manifest)
     store.close()
