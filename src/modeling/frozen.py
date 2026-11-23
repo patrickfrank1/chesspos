@@ -6,6 +6,26 @@ from torch import nn
 FEATURE_RECIPES = ("native", "full", "native_positions")
 
 
+def _native_embed(
+    encoder: nn.Module,
+    tokens: torch.Tensor,
+    segment_ids: torch.Tensor,
+    padding_mask: torch.Tensor | None,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Call the native embedding, bypassing embed()'s inference decorator.
+
+    The autoencoder's ``embed`` is decorated with ``torch.no_grad`` for
+    retrieval. When the probe is fine-tuning, use the undecorated
+    ``encode_content`` so gradients reach the bottleneck.
+    """
+    if (
+        getattr(encoder, "supports_native_finetuning", False)
+        and torch.is_grad_enabled()
+    ):
+        return encoder.encode_content(tokens, segment_ids, padding_mask=padding_mask)
+    return encoder.embed(tokens, segment_ids, padding_mask=padding_mask)
+
+
 def encoder_embeddings(
     encoder: nn.Module,
     tokens: torch.Tensor,
@@ -21,7 +41,7 @@ def encoder_embeddings(
     every pooled segment carries the turn/castling/en-passant tokens.
     """
     if feature == "native":
-        return encoder.embed(tokens, segment_ids, padding_mask=padding_mask)
+        return _native_embed(encoder, tokens, segment_ids, padding_mask)
     if feature == "full":
         return encoder.encode(tokens, segment_ids, padding_mask=padding_mask)
     if feature == "native_positions":
@@ -92,7 +112,7 @@ def embed_per_position(
         packed[index, : window.numel()] = window
     window_mask = packed.ne(PAD)
     window_ids = torch.cumsum(packed == SEP, dim=1)
-    vectors, _ = encoder.embed(packed, window_ids, padding_mask=window_mask)
+    vectors, _ = _native_embed(encoder, packed, window_ids, window_mask)
     embeddings = vectors.new_zeros((batch, max_positions, vectors.shape[-1]))
     mask = torch.zeros((batch, max_positions), dtype=torch.bool, device=device)
     for index, (row, position) in enumerate(owners):

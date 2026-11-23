@@ -656,3 +656,32 @@ class TestPerPositionRecipe:
             assert model.head.classifier.weight.grad is not None
             assert model.encoder.training is False
         return
+
+
+class TestAutoencoderFineTuning:
+    def test_native_position_fine_tuning_trains_the_autoencoder(self):
+        with given("an autoencoder classifier with every encoder parameter unfrozen"):
+            encoder = tiny_autoencoder(latent_dim=4, d_model=2)
+            head = PoolingClassifier(
+                PoolingClassifierConfig(d_model=embedding_dim(encoder, "native"))
+            )
+            model = FrozenEncoderClassifier(
+                encoder,
+                head,
+                feature="native_positions",
+                unfreeze_all=True,
+            )
+            tokens, segment_ids, padding_mask = batch_from_boards()
+
+        with when("a training step runs"):
+            model.train()
+            logits = model(tokens, segment_ids, padding_mask)
+            logits.sum().backward()
+
+        with then("gradients reach the per-position bottleneck path"):
+            assert logits.shape == (2,)
+            assert model.encoder.training is True
+            assert any(
+                parameter.grad is not None for parameter in model.encoder.parameters()
+            )
+        return
