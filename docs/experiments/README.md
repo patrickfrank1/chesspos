@@ -24,7 +24,9 @@ to step 81,600 and was **stopped on 2026-11-23**. A full re-evaluation on a
 1,024-position training probes that suggested a late decline were noise. A
 frozen downstream evaluation then placed the bottleneck ahead of every earlier
 frozen checkpoint: score R² **0.051 vs 0.023**, decisive AUC **0.645 vs 0.587**;
-sacrifice PR-AUC **0.288 vs 0.203**, AUROC **0.745 vs 0.697**. See
+sacrifice PR-AUC **0.288 vs 0.203**, AUROC **0.745 vs 0.697**. A clean
+pack-size sweep reconstructs 30 positions at **0.969** (6M: 0.753), so the
+1,024-d latent is not the remaining constraint. See
 [attention_autoencoder_6m_2026-11-22.md](attention_autoencoder_6m_2026-11-22.md).
 
 ## Experiment reports
@@ -72,6 +74,8 @@ Attention autoencoder runs:
   4,096-position probes, metrics JSON, neighbour reports, PCA plot)
 - `run_ae_20m_100k_logs/evals/sweep/` — 6M-vs-20M checkpoint sweep on a fixed
   4,096-position pool
+- `run_ae_20m_100k_logs/evals/pack_size/` — clean 1–30 position reconstruction
+  sweep on the 20M bottleneck
 - `downstream/ae20m/` — frozen bottleneck probes: score (`models/`, `evals/`),
   sacrifice classifier, metrics JSON and predictions
 

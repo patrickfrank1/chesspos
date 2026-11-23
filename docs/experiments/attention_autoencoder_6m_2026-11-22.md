@@ -733,6 +733,37 @@ Artifacts: `hf://buckets/patrickfrank1/chesspos-checkpoints/downstream/ae20m/`
 checkpoints), plus the local `data/models/downstream/ae20m/` and
 `data/eval/downstream/ae20m/` trees.
 
+## Clean pack-size sweep on the 20M bottleneck (2026-11-23)
+
+The 6M post-mortem measured the latent's information limit by reconstructing
+clean gold windows while varying how many consecutive positions share the
+latent (192 windows, no `MASK` tokens). Repeating it on `best_step80000` with
+`scripts/eval/pack_size_sweep.py`:
+
+| context positions | accuracy | empty recall | piece accuracy |
+|---:|---:|---:|---:|
+| 1 | 1.000 | 1.000 | 1.000 |
+| 2 | 1.000 | 1.000 | 1.000 |
+| 3 | 1.000 | 1.000 | 1.000 |
+| 5 | 1.000 | 1.000 | 1.000 |
+| 8 | 0.998 | 0.996 | 0.999 |
+| 12 | 0.992 | 0.989 | 0.996 |
+| 16 | 0.988 | 0.982 | 0.993 |
+| 19 | 0.984 | 0.975 | 0.991 |
+| 24 | 0.978 | 0.968 | 0.988 |
+| 30 | **0.969** | **0.955** | 0.982 |
+
+The 6M curve over the same sizes was 0.929 / 0.870 / 0.790 / **0.753** (1 / 8 /
+19 / 30). The 20M model's 1,024-d bottleneck is therefore **not close to its
+information limit at the training pack size**: it reconstructs 30 positions at
+0.969 with 0.955 empty recall, where the 6M model managed 0.753 / 0.595.
+
+This reframes the earlier plateau: what remains at 30 positions is no longer a
+capacity story. The downstream probes already showed that a linear material
+probe reaches R² 0.75 while the realised-result head reaches only 0.051, so the
+next lever is supervision/task adaptation (or a larger latent only if longer
+windows become a goal), not more reconstruction capacity at 1,024-d.
+
 ## Operational notes (issues hit and fix)
 
 | Symptom | Cause | Fix |
