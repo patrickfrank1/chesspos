@@ -19,6 +19,8 @@ from src.dataset.game_outcomes import (
 )
 from src.dataset.puzzle_variants import pack_segments
 from src.dataset.token_stream import VOCAB_SIZE, TokenStreamEncoder
+from src.modeling.autoencoder.config import AttentionAutoencoderConfig
+from src.modeling.autoencoder.model import AttentionAutoencoderModel
 from src.modeling.score_head import (
     FrozenEncoderScore,
     ScoreHead,
@@ -54,6 +56,27 @@ def tiny_config() -> TransformerConfig:
 def save_encoder_checkpoint(path: Path) -> None:
     config = tiny_config()
     encoder = MaskedStreamTransformer(config)
+    torch.save(
+        {"model_config": asdict(config), "model_state": encoder.state_dict()},
+        path,
+    )
+    return
+
+
+def save_autoencoder_checkpoint(path: Path) -> None:
+    config = AttentionAutoencoderConfig(
+        vocab_size=VOCAB_SIZE,
+        d_model=2,
+        n_heads=1,
+        n_layers=1,
+        d_ff=4,
+        dropout=0.0,
+        max_seq_len=512,
+        max_segments=8,
+        latent_dim=4,
+        n_decoder_layers=1,
+    )
+    encoder = AttentionAutoencoderModel(config)
     torch.save(
         {"model_config": asdict(config), "model_state": encoder.state_dict()},
         path,
@@ -395,6 +418,50 @@ class TestMain:
             assert (output_dir / "metrics.json").exists()
             assert (output_dir / "predictions.npz").exists()
             assert (output_dir / "best.pt").exists()
+        return
+
+
+class TestMainAutoencoder:
+    def test_bottleneck_checkpoint_sizes_the_score_head(self, tmp_path):
+        with given("a shard of games and an autoencoder checkpoint"):
+            make_score_parquet(tmp_path / "games.parquet", n_games=20)
+            encoder_path = tmp_path / "encoder.pt"
+            save_autoencoder_checkpoint(encoder_path)
+            output_dir = tmp_path / "run"
+
+        with when("the score CLI runs for one epoch"):
+            exit_code = main(
+                [
+                    "--data-dir",
+                    str(tmp_path),
+                    "--checkpoint",
+                    str(encoder_path),
+                    "--output-dir",
+                    str(output_dir),
+                    "--epochs",
+                    "1",
+                    "--batch-size",
+                    "4",
+                    "--num-workers",
+                    "0",
+                    "--device",
+                    "cpu",
+                    "--positions-per-game",
+                    "2",
+                    "--val-ratio",
+                    "0.5",
+                    "--log-every",
+                    "0",
+                ]
+            )
+
+        with then("the head is sized to the bottleneck and artifacts are written"):
+            assert exit_code == 0
+            checkpoint = torch.load(
+                output_dir / "best.pt", map_location="cpu", weights_only=False
+            )
+            assert checkpoint["head_config"]["d_model"] == 4
+            assert (output_dir / "metrics.json").exists()
         return
 
 

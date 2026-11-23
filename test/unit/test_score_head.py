@@ -6,6 +6,9 @@ import torch
 from bdd import given, then, when
 from src.dataset.token_stream import VOCAB_SIZE, TokenStreamEncoder
 from src.dataset.puzzle_variants import pack_segments
+from src.modeling.autoencoder.config import AttentionAutoencoderConfig
+from src.modeling.autoencoder.model import AttentionAutoencoderModel
+from src.modeling.frozen import embedding_dim
 from src.modeling.score_head import (
     FrozenEncoderScore,
     ScoreHead,
@@ -38,6 +41,25 @@ def batch_from_fen(fen: str = "") -> tuple[torch.Tensor, torch.Tensor, torch.Ten
     tokens = torch.from_numpy(tokens_np.astype(np.int64)).unsqueeze(0)
     segment_ids = torch.from_numpy(segment_ids_np.astype(np.int64)).unsqueeze(0)
     return tokens, segment_ids, tokens.ne(0)
+
+
+def tiny_autoencoder(
+    latent_dim: int = 4, d_model: int = 2
+) -> AttentionAutoencoderModel:
+    return AttentionAutoencoderModel(
+        AttentionAutoencoderConfig(
+            vocab_size=VOCAB_SIZE,
+            d_model=d_model,
+            n_heads=1,
+            n_layers=1,
+            d_ff=4,
+            dropout=0.0,
+            max_seq_len=256,
+            max_segments=8,
+            latent_dim=latent_dim,
+            n_decoder_layers=1,
+        )
+    )
 
 
 class TestScoreHead:
@@ -401,4 +423,37 @@ class TestFullFineTune:
 
         with then("a ValueError is raised"):
             assert isinstance(error, ValueError)
+        return
+
+
+class TestAutoencoderBottleneck:
+    def test_embedding_dim_returns_the_bottleneck_width(self):
+        with given("an autoencoder and a transformer encoder"):
+            autoencoder = tiny_autoencoder(latent_dim=4, d_model=2)
+            transformer = tiny_encoder()
+
+        with when("the native embedding width is resolved"):
+            autoencoder_width = embedding_dim(autoencoder, "native")
+            transformer_width = embedding_dim(transformer, "native")
+
+        with then("the autoencoder reports its latent width"):
+            assert autoencoder_width == 4
+            assert transformer_width == 1
+        return
+
+    def test_native_score_wrapper_accepts_the_bottleneck_width(self):
+        with given("an autoencoder whose bottleneck is wider than d_model"):
+            encoder = tiny_autoencoder(latent_dim=4, d_model=2)
+            head = ScoreHead(ScoreHeadConfig(d_model=embedding_dim(encoder, "native")))
+            model = FrozenEncoderScore(encoder, head, feature="native")
+            tokens, segment_ids, padding_mask = batch_from_fen()
+
+        with when("the frozen wrapper scores a batch"):
+            model.train()
+            score = model(tokens, segment_ids, padding_mask)
+
+        with then("the bottleneck vector feeds the head"):
+            assert score.shape == (1,)
+            assert model.head.config.d_model == 4
+            assert model.encoder.training is False
         return

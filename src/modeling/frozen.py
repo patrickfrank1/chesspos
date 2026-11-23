@@ -32,3 +32,12 @@ def freeze_encoder(encoder: nn.Module) -> None:
     for parameter in encoder.parameters():
         parameter.requires_grad = False
     return
+
+
+def embedding_dim(encoder: nn.Module, feature: str = "native") -> int:
+    """Return the width of the vectors produced by the feature recipe."""
+    if feature == "native":
+        return int(getattr(encoder.config, "latent_dim", encoder.config.d_model))
+    if feature == "full":
+        return int(encoder.config.d_model)
+    raise ValueError(f"feature must be one of {FEATURE_RECIPES}, got {feature!r}")

@@ -125,6 +125,28 @@ class TestBuildBatches:
             assert column.to_pylist() == [[3, 4, 2, 5]] * 4
         return
 
+    def test_variable_length_packed_rows_keep_each_games_tokens(self):
+        with given("rows whose packed payloads have different lengths"):
+            rows = make_rows(3)
+            rows[0]["packed"] = np.arange(7, dtype=np.int16)
+            rows[1]["packed"] = np.arange(2, dtype=np.int16)
+            rows[2]["packed"] = np.arange(11, dtype=np.int16)
+
+        with when("the rows are built into a batch"):
+            batches, _ = ArchivePipeline.build_batches(
+                rows=rows, batch_size=3, train_ratio=1.0, chunk_index=0
+            )
+
+        with then("each game keeps exactly its own token sequence"):
+            column = batches[0].table.column("packed")
+            assert column.type == pa.list_(pa.int16())
+            assert column.to_pylist() == [
+                list(range(7)),
+                list(range(2)),
+                list(range(11)),
+            ]
+        return
+
     def test_int16_rows_produce_byte_identical_parquet(self):
         with given("the same games represented as python lists and as int16 arrays"):
             list_rows = make_rows(4)

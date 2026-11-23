@@ -14,6 +14,9 @@ from src.dataset.token_stream import (
     TokenStreamEncoder,
     pack_stream,
 )
+from src.modeling.autoencoder.config import AttentionAutoencoderConfig
+from src.modeling.autoencoder.model import AttentionAutoencoderModel
+from src.modeling.frozen import embedding_dim
 from src.modeling.puzzle_classifier import (
     FrozenEncoderClassifier,
     PoolingClassifier,
@@ -549,4 +552,46 @@ class TestAttentionPooling:
 
         with then("the mode is rejected"):
             assert error is not None
+        return
+
+
+def tiny_autoencoder(
+    latent_dim: int = 4, d_model: int = 2
+) -> AttentionAutoencoderModel:
+    return AttentionAutoencoderModel(
+        AttentionAutoencoderConfig(
+            vocab_size=VOCAB_SIZE,
+            d_model=d_model,
+            n_heads=1,
+            n_layers=1,
+            d_ff=4,
+            dropout=0.0,
+            max_seq_len=256,
+            max_segments=8,
+            latent_dim=latent_dim,
+            n_decoder_layers=1,
+        )
+    )
+
+
+class TestAutoencoderBottleneck:
+    def test_native_classifier_accepts_the_bottleneck_width(self):
+        with given("an autoencoder whose bottleneck is wider than d_model"):
+            encoder = tiny_autoencoder(latent_dim=4, d_model=2)
+            head = PoolingClassifier(
+                PoolingClassifierConfig(d_model=embedding_dim(encoder, "native"))
+            )
+            model = FrozenEncoderClassifier(encoder, head, feature="native")
+            tokens, segment_ids, padding_mask = batch_from_boards()
+
+        with when("the frozen classifier runs a training step"):
+            model.train()
+            logits = model(tokens, segment_ids, padding_mask)
+            logits.sum().backward()
+
+        with then("the bottleneck vectors are pooled by the head"):
+            assert logits.shape == (2,)
+            assert model.head.config.d_model == 4
+            assert model.head.classifier.weight.grad is not None
+            assert model.encoder.training is False
         return
