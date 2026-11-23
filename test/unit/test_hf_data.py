@@ -33,6 +33,7 @@ def hub_calls(monkeypatch, tmp_path):
                 "repo_type": repo_type,
                 "allow_patterns": allow_patterns,
                 "cache_dir": cache_dir,
+                "revision": kwargs.get("revision"),
             }
         )
         return str(make_snapshot(tmp_path / "snapshot"))
@@ -72,6 +73,7 @@ class TestDownloadSplit:
                     "repo_type": "dataset",
                     "allow_patterns": ["train/**"],
                     "cache_dir": None,
+                    "revision": None,
                 }
             ]
         return
@@ -297,6 +299,17 @@ class TestDownloadSplitWithLimit:
 
         with then("the split-wide allow pattern is used, no shard listing happens"):
             assert hub_calls[0]["allow_patterns"] == ["train/**"]
+        return
+
+    def test_revision_is_forwarded(self, hub_calls):
+        with given("a pinned dataset revision"):
+            pass
+
+        with when("the train split is downloaded at that revision"):
+            hf_data.download_split("user/chesspos", "train", revision="abc123")
+
+        with then("the snapshot download receives the revision"):
+            assert hub_calls[0]["revision"] == "abc123"
         return
 
 
