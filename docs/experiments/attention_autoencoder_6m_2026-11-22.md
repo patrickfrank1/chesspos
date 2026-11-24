@@ -713,8 +713,8 @@ python3 -m src.run.train_masked_transformer \
 ```
 
 `--model-arch attention_autoencoder` alone selects the current deep-narrow
-preset (d 512, 6 encoder / 3 decoder layers, 16 heads, `d_ff` 1536, latent
-512). The explicit size flags above reproduce the 6M run.
+preset (d 512, 6 encoder / 3 decoder layers, 8 heads, `d_ff` 1024, latent
+512, 20.4M params). The explicit size flags above reproduce the 6M run.
 
 Pull artifacts:
 

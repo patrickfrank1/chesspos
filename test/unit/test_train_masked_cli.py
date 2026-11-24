@@ -570,9 +570,9 @@ class TestAttentionAutoencoderFlags:
 
         with then("the deep, narrow-bottleneck preset is selected"):
             assert args.d_model == 512
-            assert args.n_heads == 16
+            assert args.n_heads == 8
             assert args.n_layers == 6
-            assert args.d_ff == 1536
+            assert args.d_ff == 1024
             assert args.n_decoder_layers == 3
             assert args.latent_dim == 512
         return

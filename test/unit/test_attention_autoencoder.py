@@ -322,10 +322,10 @@ class TestConfiguration:
             parameters = sum(p.numel() for p in model.parameters())
 
         with then("it lands in the intended deep-narrow parameter range"):
-            assert 24_000_000 <= parameters <= 26_000_000
+            assert 20_000_000 <= parameters <= 21_000_000
             assert config.latent_dim == 512
             assert config.n_layers == 6
-            assert config.n_heads == 16
+            assert config.n_heads == 8
         return
 
     def test_config_validation(self):

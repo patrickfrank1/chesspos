@@ -95,8 +95,8 @@ _ARCH_MODEL_DEFAULTS = {
     ARCH_ATTENTION_AUTOENCODER: {
         "d_model": 512,
         "n_layers": 6,
-        "n_heads": 16,
-        "d_ff": 1536,
+        "n_heads": 8,
+        "d_ff": 1024,
         "n_decoder_layers": 3,
         "latent_dim": 512,
     },
@@ -241,7 +241,7 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=None,
         help="Feed-forward width (default: 2048 transformer/perceiver, "
-        "1536 autoencoder)",
+        "1024 autoencoder)",
     )
     parser.add_argument("--dropout", type=float, default=0.1)
     parser.add_argument("--max-seq-len", type=int, default=2048)
