@@ -292,21 +292,27 @@ def evaluate(
         with torch.autocast(
             device_type=device.type, dtype=torch.bfloat16, enabled=bf16
         ):
-            output = model(
-                batch["tokens"],
-                batch["segment_ids"],
-                padding_mask=batch["padding_mask"],
-                targets=batch["targets"],
-            )
+            if full_reconstruction:
+                output = model(
+                    batch["tokens"],
+                    batch["segment_ids"],
+                    padding_mask=batch["padding_mask"],
+                )
+            else:
+                output = model(
+                    batch["tokens"],
+                    batch["segment_ids"],
+                    padding_mask=batch["padding_mask"],
+                    targets=batch["targets"],
+                )
         gold = torch.where(
             batch["targets"].ne(IGNORE_INDEX), batch["targets"], batch["tokens"]
         )
         content = content_token_mask(gold, batch["padding_mask"].bool())
         masked = batch["targets"].ne(IGNORE_INDEX) & content
         if full_reconstruction:
-            with torch.autocast(
-                device_type=device.type, dtype=torch.bfloat16, enabled=bf16
-            ):
+            logits = output.get("logits")
+            if logits is None:
                 logits = model.head(output["hidden_states"])
             if content.any():
                 loss_total += torch.nn.functional.cross_entropy(
