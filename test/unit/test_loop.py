@@ -1,9 +1,12 @@
+import math
+
 import pytest
 import torch
 from torch import nn
 from torch.optim.lr_scheduler import LambdaLR
 
 from bdd import given, then, when
+from src.dataset.token_stream import CLS, EMPTY, MASK, PIECE_BASE, SEP
 from src.modeling.masking import IGNORE_INDEX
 from src.training.loop import (
     NceCollapseGuard,
@@ -16,9 +19,15 @@ from src.training.loop import (
     use_fused_adamw,
 )
 
+VOCAB_SIZE = 8
+
 
 class FakeModel(nn.Module):
-    """Stub with an identity head so argmax predictions are hand-crafted."""
+    """Stub with an identity head so argmax predictions are hand-crafted.
+
+    The returned loss is a sentinel: full-reconstruction evaluation must derive
+    its own loss from the hidden states instead of trusting the training loss.
+    """
 
     def __init__(self, hidden: torch.Tensor):
         super().__init__()
@@ -33,41 +42,123 @@ class FakeModel(nn.Module):
         targets: torch.Tensor | None = None,
         weights: torch.Tensor | None = None,
     ) -> dict[str, torch.Tensor]:
-        return {"loss": torch.tensor(0.25), "hidden_states": self.hidden}
+        return {"loss": torch.tensor(999.0), "hidden_states": self.hidden}
 
 
-def fake_batch(hidden: torch.Tensor, targets: torch.Tensor) -> dict[str, torch.Tensor]:
-    shape = targets.shape
-    ones = torch.ones(shape, dtype=torch.long)
+def make_batch(
+    tokens: list[int],
+    targets: list[int],
+    padding_mask: list[bool] | None = None,
+) -> dict[str, torch.Tensor]:
+    """Build a collated batch for evaluation helpers."""
+    token_tensor = torch.tensor([tokens], dtype=torch.long)
+    target_tensor = torch.tensor([targets], dtype=torch.long)
+    if padding_mask is None:
+        padding_mask = [token != 0 for token in tokens]
     return {
-        "tokens": ones,
-        "segment_ids": torch.zeros(shape, dtype=torch.long),
-        "padding_mask": targets.ne(IGNORE_INDEX),
-        "targets": targets,
-    }, hidden
+        "tokens": token_tensor,
+        "segment_ids": torch.zeros_like(token_tensor),
+        "padding_mask": torch.tensor([padding_mask]),
+        "targets": target_tensor,
+    }
+
+
+def one_hot_hidden(predictions: list[int], vocab: int = VOCAB_SIZE) -> torch.Tensor:
+    """Hidden states whose identity-head logits predict ``predictions``."""
+    hidden = torch.full((1, len(predictions), vocab), -10.0)
+    for position, token in enumerate(predictions):
+        hidden[0, position, token] = 10.0
+    return hidden
 
 
 class TestEvaluate:
-    def test_accuracy_without_full_logits(self):
-        with given(
-            "a stub model whose identity head turns one-hot hidden states into logits"
-        ):
-            vocab = 4
-            hidden = torch.zeros(1, 3, vocab)
-            hidden[0, 0, 2] = 1.0  # correct prediction for target 2
-            hidden[0, 2, 1] = 1.0  # wrong prediction for target 3
+    def test_accuracy_counts_masked_positions_only(self):
+        with given("two masked positions, one predicted correctly and one not"):
+            hidden = one_hot_hidden([EMPTY, EMPTY, EMPTY])
             model = FakeModel(hidden)
-            targets = torch.tensor([[2, IGNORE_INDEX, 3]])
-            batch, _ = fake_batch(hidden, targets)
+            batch = make_batch(
+                [MASK, CLS, MASK],
+                [EMPTY, IGNORE_INDEX, PIECE_BASE],
+            )
 
         with when("evaluate runs over a single batch"):
-            loss, accuracy = evaluate(
+            _, accuracy = evaluate(
+                model,
+                [batch],
+                torch.device("cpu"),
+                max_batches=1,
+                bf16=False,
+                full_reconstruction=True,
+            )
+
+        with then("accuracy counts only the masked targets"):
+            assert accuracy == 0.5
+        return
+
+    def test_masked_loss_uses_the_model_reported_loss_by_default(self):
+        with given("a masked-token model that reports its own loss"):
+            hidden = one_hot_hidden([EMPTY, EMPTY, EMPTY])
+            model = FakeModel(hidden)
+            batch = make_batch(
+                [MASK, CLS, MASK],
+                [EMPTY, IGNORE_INDEX, PIECE_BASE],
+            )
+
+        with when("evaluate runs without full reconstruction"):
+            loss, _ = evaluate(
                 model, [batch], torch.device("cpu"), max_batches=1, bf16=False
             )
 
-        with then("the stub loss is averaged and accuracy counts valid positions only"):
-            assert loss == 0.25
-            assert accuracy == 0.5
+        with then("the model's own masked-token loss is returned"):
+            assert loss == 999.0
+        return
+
+
+class TestEvaluateContentLoss:
+    def test_loss_excludes_structural_tokens(self):
+        with given("a model that is confidently wrong on CLS and SEP"):
+            hidden = one_hot_hidden([EMPTY, EMPTY, EMPTY, EMPTY])
+            model = FakeModel(hidden)
+            batch = make_batch(
+                [MASK, CLS, SEP, EMPTY],
+                [EMPTY, IGNORE_INDEX, IGNORE_INDEX, IGNORE_INDEX],
+            )
+
+        with when("evaluate computes the unweighted reconstruction loss"):
+            loss, _ = evaluate(
+                model,
+                [batch],
+                torch.device("cpu"),
+                max_batches=1,
+                bf16=False,
+                full_reconstruction=True,
+            )
+
+        with then("only the content tokens contribute to the loss"):
+            assert loss < 0.01
+        return
+
+    def test_loss_is_the_mean_cross_entropy_over_content_tokens(self):
+        with given("a uniform distribution over the vocabulary for one content token"):
+            hidden = torch.zeros(1, 3, VOCAB_SIZE)
+            model = FakeModel(hidden)
+            batch = make_batch(
+                [MASK, CLS, SEP],
+                [EMPTY, IGNORE_INDEX, IGNORE_INDEX],
+            )
+
+        with when("evaluate computes the unweighted reconstruction loss"):
+            loss, _ = evaluate(
+                model,
+                [batch],
+                torch.device("cpu"),
+                max_batches=1,
+                bf16=False,
+                full_reconstruction=True,
+            )
+
+        with then("the loss is the cross entropy of the single content token"):
+            assert loss == pytest.approx(math.log(VOCAB_SIZE), rel=1e-5)
         return
 
 

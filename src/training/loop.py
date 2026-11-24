@@ -18,7 +18,7 @@ from typing import NamedTuple
 import torch
 from torch.utils.data import DataLoader
 
-from src.dataset.token_stream import CLS, MASK, SEP
+from src.dataset.token_stream import CLS, MASK, PAD, SEP
 from src.evaluation.retrieval import effective_rank
 from src.modeling.masking import IGNORE_INDEX
 from src.modeling.transformer import MaskedStreamTransformer, TransformerConfig
@@ -252,6 +252,17 @@ def save_checkpoint(
     return
 
 
+def content_token_mask(gold: torch.Tensor, valid: torch.Tensor) -> torch.Tensor:
+    """Select board/state tokens, excluding PAD, CLS and SEP.
+
+    The evaluation loss must match the information the objective can act on.
+    ``CLS`` and ``SEP`` are structural and either carry zero training weight
+    (``balanced-v1``) or are trivial for the model; including them inflates the
+    reported loss with tokens that are not reconstruction targets.
+    """
+    return valid & gold.ne(PAD) & gold.ne(CLS) & gold.ne(SEP)
+
+
 @torch.no_grad()
 def evaluate(
     model: MaskedStreamTransformer,
@@ -259,9 +270,19 @@ def evaluate(
     device: torch.device,
     max_batches: int,
     bf16: bool,
+    full_reconstruction: bool = False,
 ) -> tuple[float, float]:
+    """Return validation loss and masked-token accuracy.
+
+    ``full_reconstruction`` selects the autoencoder objective: an unweighted
+    cross entropy over every content token (board and state), excluding the
+    structural ``CLS``/``SEP`` tokens. Without it the model's own masked-token
+    loss is used, which is the transformer objective.
+    """
     model.eval()
-    losses = []
+    loss_total = 0.0
+    loss_count = 0
+    loss_tokens = 0
     correct = 0
     total = 0
     for i, batch in enumerate(loader):
@@ -277,13 +298,31 @@ def evaluate(
                 padding_mask=batch["padding_mask"],
                 targets=batch["targets"],
             )
-        losses.append(output["loss"].item())
-        valid = batch["targets"].ne(IGNORE_INDEX)
-        predictions = model.head(output["hidden_states"][valid]).argmax(-1)
-        correct += (predictions == batch["targets"][valid]).sum().item()
-        total += valid.sum().item()
+        gold = torch.where(
+            batch["targets"].ne(IGNORE_INDEX), batch["targets"], batch["tokens"]
+        )
+        content = content_token_mask(gold, batch["padding_mask"].bool())
+        masked = batch["targets"].ne(IGNORE_INDEX) & content
+        if full_reconstruction:
+            with torch.autocast(
+                device_type=device.type, dtype=torch.bfloat16, enabled=bf16
+            ):
+                logits = model.head(output["hidden_states"])
+            if content.any():
+                loss_total += torch.nn.functional.cross_entropy(
+                    logits[content].float(), gold[content], reduction="sum"
+                ).item()
+                loss_tokens += int(content.sum().item())
+            predictions = logits[masked].argmax(-1)
+        else:
+            loss_total += output["loss"].item()
+            loss_count += 1
+            predictions = model.head(output["hidden_states"][masked]).argmax(-1)
+        correct += (predictions == batch["targets"][masked]).sum().item()
+        total += int(masked.sum().item())
     model.train()
-    loss = sum(losses) / max(1, len(losses))
+    denominator = loss_tokens if full_reconstruction else max(1, loss_count)
+    loss = loss_total / max(1, denominator)
     accuracy = correct / max(1, total)
     return loss, accuracy
 

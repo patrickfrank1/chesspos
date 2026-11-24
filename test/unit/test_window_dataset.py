@@ -375,10 +375,10 @@ class TestModeAssignment:
         with when("the mode pattern is built"):
             pattern = build_mode_pattern(masking)
 
-        with then("the period-20 pattern is 16 rect and 4 skip-gram"):
-            assert len(pattern) == 20
-            assert pattern.count("rect") == 16
-            assert pattern.count("skip_gram") == 4
+        with then("the period-50 pattern is 17 rect and 33 skip-gram"):
+            assert len(pattern) == 50
+            assert pattern.count("rect") == 17
+            assert pattern.count("skip_gram") == 33
         return
 
     def test_mode_pattern_reflects_explicit_probabilities(self):
@@ -392,7 +392,7 @@ class TestModeAssignment:
             )
 
         with when("the mode pattern is built"):
-            pattern = build_mode_pattern(masking)
+            pattern = build_mode_pattern(masking, period=20)
 
         with then("the period-20 pattern contains 9 random, 6 board, and 5 span"):
             assert len(pattern) == 20

@@ -190,11 +190,11 @@ class TestStreamingFlag:
 
         with then("rectangle masking is the default and legacy modes are off"):
             reference = MaskingConfig()
-            assert config.p_rect == 0.8
+            assert config.p_rect == 0.34
             assert config.p_random == 0.0
             assert config.p_board == 0.0
             assert config.p_span == 0.0
-            assert config.p_skip_gram == 0.2
+            assert config.p_skip_gram == 0.66
             assert config.skip_gram_unmask_rate == reference.skip_gram_unmask_rate
             assert config.rect_min_rate == reference.rect_min_rate
             assert config.rect_max_rate == reference.rect_max_rate
@@ -558,7 +558,7 @@ class TestStreamShardsFlags:
 
 
 class TestAttentionAutoencoderFlags:
-    def test_autoencoder_preset_matches_the_six_million_recipe(self, monkeypatch):
+    def test_autoencoder_preset_matches_the_deep_narrow_recipe(self, monkeypatch):
         with given("the attention autoencoder architecture and no size flags"):
             monkeypatch.setattr(
                 "sys.argv",
@@ -568,11 +568,11 @@ class TestAttentionAutoencoderFlags:
         with when("the arguments are parsed"):
             args = parse_args()
 
-        with then("the compact six-million-parameter preset is selected"):
-            assert args.d_model == 256
-            assert args.n_heads == 8
-            assert args.n_layers == 4
-            assert args.d_ff == 1024
+        with then("the deep, narrow-bottleneck preset is selected"):
+            assert args.d_model == 512
+            assert args.n_heads == 16
+            assert args.n_layers == 6
+            assert args.d_ff == 1536
             assert args.n_decoder_layers == 3
             assert args.latent_dim == 512
         return

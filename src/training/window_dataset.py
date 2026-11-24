@@ -85,8 +85,14 @@ def worker_skip_windows(
     return batches * batch_size
 
 
-def build_mode_pattern(masking: MaskingConfig, period: int = 20) -> list[str]:
-    """Deterministic per-index mode pattern approximating the mode probabilities."""
+def build_mode_pattern(masking: MaskingConfig, period: int = 50) -> list[str]:
+    """Deterministic per-index mode pattern matching the mode probabilities.
+
+    Modes are interleaved with a largest-deficit schedule instead of being
+    grouped in blocks. The period is a multiple of the 0.34/0.66 default
+    mixture, so the default pattern contains exactly 17 rectangle and 33
+    skip-gram slots while every short prefix stays close to the mixture.
+    """
     probs = {
         "random": masking.p_random,
         "board": masking.p_board,
@@ -97,16 +103,18 @@ def build_mode_pattern(masking: MaskingConfig, period: int = 20) -> list[str]:
     total = sum(probs.values())
     if total <= 0:
         return ["random"] * period
-    scaled = {mode: p / total * period for mode, p in probs.items()}
-    counts = {mode: int(value) for mode, value in scaled.items()}
-    order = sorted(scaled, key=lambda mode: scaled[mode] - counts[mode], reverse=True)
-    fill = 0
-    while sum(counts.values()) < period:
-        counts[order[fill % len(order)]] += 1
-        fill += 1
+    probabilities = {mode: value / total for mode, value in probs.items()}
+    taken = {mode: 0 for mode in probs}
     pattern: list[str] = []
-    for mode in ("random", "board", "span", "rect", "skip_gram"):
-        pattern.extend([mode] * counts[mode])
+    for index in range(period):
+        mode = max(
+            probs,
+            key=lambda candidate: (
+                (index + 1) * probabilities[candidate] - taken[candidate]
+            ),
+        )
+        pattern.append(mode)
+        taken[mode] += 1
     return pattern
 
 

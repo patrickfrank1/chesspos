@@ -313,7 +313,7 @@ class TestEmbeddingInterface:
 
 
 class TestConfiguration:
-    def test_default_config_is_the_six_million_recipe(self):
+    def test_default_config_is_the_deep_narrow_recipe(self):
         with given("the default autoencoder configuration"):
             config = AttentionAutoencoderConfig()
 
@@ -321,8 +321,11 @@ class TestConfiguration:
             model = build_attention_autoencoder(config)
             parameters = sum(p.numel() for p in model.parameters())
 
-        with then("it lands in the intended six-million parameter range"):
-            assert 5_000_000 <= parameters <= 7_000_000
+        with then("it lands in the intended deep-narrow parameter range"):
+            assert 24_000_000 <= parameters <= 26_000_000
+            assert config.latent_dim == 512
+            assert config.n_layers == 6
+            assert config.n_heads == 16
         return
 
     def test_config_validation(self):
