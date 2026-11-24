@@ -359,6 +359,34 @@ class TestBatchUploader:
             assert [op.path_in_repo for op in ops] == ["archives/arch/_COMPLETE.json"]
         return
 
+    def test_flush_pending_commits_batches_without_the_completion_marker(
+        self, tmp_path
+    ):
+        with given("a queued batch and an uploader that has not committed yet"):
+            parquet_path = tmp_path / "batch_0000_0000.parquet"
+            parquet_path.write_bytes(b"parquet")
+            meta = self._meta(parquet_path, hashlib.sha256(b"parquet").hexdigest())
+            uploader, api, patcher = self._uploader_with_existing(None)
+
+        with when("the pending batches are flushed mid-archive"):
+            with patcher:
+                uploader.queue_batch(parquet_path, meta)
+                uploader.flush_pending()
+
+        with then("the batch is committed but no completion marker is written"):
+            api.create_commit.assert_called_once()
+            ops = api.create_commit.call_args.kwargs["operations"]
+            paths = sorted(op.path_in_repo for op in ops)
+            assert paths == [
+                "train/arch/batch_0000_0000.meta.json",
+                "train/arch/batch_0000_0000.parquet",
+            ]
+
+        with then("a second flush has nothing left to commit"):
+            uploader.flush_pending()
+            api.create_commit.assert_called_once()
+        return
+
     def test_queue_batch_queued_when_content_differs(self, tmp_path):
         with given("a batch on the hub with a different content hash"):
             parquet_path = tmp_path / "batch_0000_0000.parquet"
@@ -1237,6 +1265,68 @@ class TestArchiveCheckpoint:
                 (tmp_path / "out" / "archives" / "a" / "_COMPLETE.json").read_text()
             )
             assert marker["batch_files"] == ["train/a/batch_0000.parquet"]
+        return
+
+    def test_emitted_batches_are_committed_before_the_checkpoint_is_saved(
+        self, tmp_path
+    ):
+        with given("a checkpointing pipeline whose process dies mid-archive"):
+            pipeline = make_pipeline(
+                data_path=None, archive_urls=["https://x/a.pgn.zst"]
+            )
+            pipeline.checkpoint_dir = tmp_path / "state"
+            item = WorkItem(
+                archive_id="a", provider="lichess", url="https://x/a.pgn.zst"
+            )
+            api = MagicMock()
+            committed: list[str] = []
+
+            def record_commit(**kwargs):
+                committed.extend(op.path_in_repo for op in kwargs["operations"])
+
+            api.create_commit.side_effect = record_commit
+            uploader = BatchUploader(hf_api=api, repo_id="test/repo")
+
+            def crashing_loop(
+                self, pgn, chunker, extractor, max_inflight, on_chunk, start_chunk=0
+            ):
+                on_chunk(0, make_rows(40))
+                raise RuntimeError("process killed before the archive ended")
+
+        with when("the chunk emits batches and the run crashes"):
+            with patch(
+                "src.dataset.archive_pipeline.hf_hub_download", return_value=None
+            ):
+                with patch.object(ArchivePipeline, "_run_chunk_loop", crashing_loop):
+                    with patch.object(
+                        ArchivePipeline,
+                        "_open_pgn_stream",
+                        lambda self, work_item: contextlib.nullcontext(io.BytesIO(b"")),
+                    ):
+                        with patch.object(
+                            ArchivePipeline,
+                            "_extractor",
+                            lambda self: contextlib.nullcontext(_FakeExtractor()),
+                        ):
+                            with pytest.raises(RuntimeError):
+                                pipeline._process(
+                                    item,
+                                    uploader=uploader,
+                                    dry_run=False,
+                                    output_dir=None,
+                                )
+
+        with then("every batch the checkpoint counts is already on the hub"):
+            state = ArchiveCheckpoint.load(
+                pipeline.checkpoint_dir, "a", pipeline._checkpoint_signature()
+            )
+            assert state is not None
+            parquet_on_hub = [p for p in committed if p.endswith(".parquet")]
+            assert state.counters["train"] + state.counters["test"] == len(
+                parquet_on_hub
+            )
+            assert state.counters["train"] > 0
+            assert len(state.batch_files) == len(parquet_on_hub)
         return
 
 

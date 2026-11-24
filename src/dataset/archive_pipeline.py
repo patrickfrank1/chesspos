@@ -271,6 +271,20 @@ class BatchUploader:
         )
         return True
 
+    def flush_pending(self) -> None:
+        """Commit queued batches without writing the completion marker.
+
+        Used before a checkpoint is persisted: a checkpoint may only
+        advance past batches that are actually on the hub, otherwise a
+        crash would resume at the next batch number and silently skip
+        the batches that were still queued.
+        """
+        if not self._pending:
+            return
+        pending, self._pending = self._pending, []
+        self._commit_operations(pending)
+        return
+
     def flush(self, archive_id: str, batch_files: list[str]) -> None:
         """Commit pending operations together with the completion marker.
 
@@ -681,6 +695,10 @@ class ArchivePipeline:
                     if repo_parquet:
                         batch_files.append(repo_parquet)
                 if batches and self.checkpoint_dir is not None:
+                    # Commit before checkpointing: the checkpoint stores the
+                    # batch counter, so any still-queued batch would be
+                    # skipped after a crash instead of re-emitted.
+                    uploader.flush_pending()
                     ArchiveCheckpoint(
                         archive_id=item.archive_id,
                         signature=signature,
