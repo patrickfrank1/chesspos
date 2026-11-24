@@ -122,6 +122,21 @@ Filters: `--min-elo`, `--max-elo`, `--min-year`, `--max-year`, `--min-date`,
 partitioned index to specific tables. `--nprobes`, `--refine-factor` and
 `--exact` control the ANN/recall trade-off.
 
+## Web UI
+
+```bash
+uv run python -m src.run.serve_position_search \
+  --index data/vector/ae-20k \
+  --checkpoint data/models/run_ae_20m_100k/last.pt
+# open http://127.0.0.1:8000
+```
+
+The page accepts any FEN or one of the built-in examples, searches the index,
+and shows the query board plus one board per matching game. `GET
+/api/examples`, `GET /api/info` and `POST /api/search`
+(`{"fen": ..., "n_games": 10, "k": 500}`) are the JSON endpoints behind it. The
+server binds to `127.0.0.1` by default; pass `--host 0.0.0.0` to expose it.
+
 ## Data Caveats
 
 - **Vocabulary.** Shards written before the 52-token stream encoding contain

@@ -1,0 +1,349 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>chesspos · position search</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #101418;
+        --panel: #171d23;
+        --panel-2: #1e262e;
+        --border: #2b3641;
+        --text: #e6edf3;
+        --muted: #8b9bab;
+        --accent: #6ee7b7;
+        --accent-dim: #2f6f5b;
+        --danger: #f87171;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        background: radial-gradient(1200px 600px at 50% -200px, #1b2a33 0%, var(--bg) 60%);
+        color: var(--text);
+        font: 15px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+      }
+      .wrap { max-width: 1180px; margin: 0 auto; padding: 32px 20px 64px; }
+      header { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+      h1 { margin: 0; font-size: 22px; letter-spacing: 0.01em; }
+      h1 span { color: var(--accent); }
+      .badge { color: var(--muted); font-size: 13px; font-variant-numeric: tabular-nums; }
+      .lede { color: var(--muted); margin: 8px 0 24px; max-width: 70ch; }
+      form {
+        display: grid;
+        gap: 12px;
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 14px;
+        padding: 16px;
+      }
+      .row { display: flex; gap: 10px; flex-wrap: wrap; }
+      .row > .grow { flex: 1 1 260px; min-width: 0; }
+      label { display: block; font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); margin-bottom: 6px; }
+      input, select, button {
+        font: inherit;
+        color: var(--text);
+        background: var(--panel-2);
+        border: 1px solid var(--border);
+        border-radius: 9px;
+        padding: 10px 12px;
+        width: 100%;
+      }
+      input:focus, select:focus, button:focus-visible { outline: 2px solid var(--accent-dim); outline-offset: 1px; }
+      input { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; }
+      button {
+        cursor: pointer;
+        background: var(--accent);
+        color: #06251c;
+        border-color: transparent;
+        font-weight: 650;
+        width: auto;
+        padding: 10px 20px;
+        align-self: end;
+      }
+      button:disabled { opacity: 0.55; cursor: progress; }
+      button.secondary {
+        background: transparent;
+        color: var(--accent);
+        border: 1px solid var(--accent-dim);
+        font-weight: 550;
+        padding: 7px 12px;
+        font-size: 13px;
+        width: 100%;
+        margin-top: 10px;
+      }
+      .status { min-height: 22px; margin: 14px 2px 18px; font-size: 13px; color: var(--muted); }
+      .status.error { color: var(--danger); }
+      .status.ok { color: var(--accent); }
+      .layout { display: grid; grid-template-columns: minmax(240px, 320px) 1fr; gap: 20px; align-items: start; }
+      @media (max-width: 760px) { .layout { grid-template-columns: 1fr; } }
+      .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 14px; padding: 14px; }
+      .panel h2 { margin: 0 0 10px; font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); }
+      .board svg { width: 100%; height: auto; border-radius: 8px; display: block; }
+      .board.empty { color: var(--muted); font-size: 13px; padding: 40px 10px; text-align: center; border: 1px dashed var(--border); border-radius: 8px; }
+      .results { display: grid; gap: 14px; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); }
+      .game {
+        display: grid;
+        grid-template-columns: 150px 1fr;
+        gap: 12px;
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 14px;
+        padding: 12px;
+      }
+      .game .board svg { border-radius: 6px; }
+      .game-body { min-width: 0; display: flex; flex-direction: column; }
+      .game-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
+      .rank { font-size: 12px; color: var(--muted); letter-spacing: 0.06em; }
+      .score { font-variant-numeric: tabular-nums; color: var(--accent); font-weight: 650; font-size: 13px; background: rgba(110, 231, 183, 0.1); border-radius: 999px; padding: 2px 9px; }
+      .meta-row { display: flex; justify-content: space-between; gap: 10px; font-size: 12.5px; padding: 2px 0; }
+      .meta-key { color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; font-size: 10.5px; padding-top: 2px; }
+      .meta-row > span:last-child { text-align: right; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+      .empty { color: var(--muted); padding: 28px; text-align: center; border: 1px dashed var(--border); border-radius: 14px; }
+      .footer { margin-top: 28px; color: var(--muted); font-size: 12px; }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <header>
+        <h1>chess<span>pos</span> · position search</h1>
+        <div class="badge" id="index-info">loading index…</div>
+      </header>
+      <p class="lede">
+        Enter any legal position as a FEN, or pick an example, to retrieve games
+        whose positions are closest in the autoencoder embedding space.
+      </p>
+
+      <form id="search-form" autocomplete="off">
+        <div class="row">
+          <div class="grow">
+            <label for="examples">Example position</label>
+            <select id="examples">
+              <option value="">Select an example…</option>
+            </select>
+          </div>
+          <div>
+            <label for="n-games">Games</label>
+            <select id="n-games">
+              <option value="5">5</option>
+              <option value="10" selected>10</option>
+              <option value="25">25</option>
+            </select>
+          </div>
+        </div>
+        <div class="row">
+          <div class="grow">
+            <label for="fen">FEN</label>
+            <input
+              id="fen"
+              name="fen"
+              type="text"
+              spellcheck="false"
+              placeholder="rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
+            />
+          </div>
+          <button id="search" type="submit">Search</button>
+        </div>
+      </form>
+
+      <div class="status" id="status" role="status" aria-live="polite"></div>
+
+      <div class="layout">
+        <section class="panel">
+          <h2>Query position</h2>
+          <div id="query-board" class="board empty">No position selected</div>
+        </section>
+        <section>
+          <div id="results" class="results"></div>
+        </section>
+      </div>
+
+      <p class="footer">
+        Vectors come from the frozen autoencoder bottleneck; scores are cosine
+        similarity (higher is closer).
+      </p>
+    </div>
+
+    <script>
+      const fenInput = document.getElementById("fen");
+      const exampleSelect = document.getElementById("examples");
+      const searchButton = document.getElementById("search");
+      const statusEl = document.getElementById("status");
+      const queryBoard = document.getElementById("query-board");
+      const resultsEl = document.getElementById("results");
+      const infoEl = document.getElementById("index-info");
+
+      let inFlight = false;
+
+      function setStatus(message, kind) {
+        statusEl.textContent = message || "";
+        statusEl.className = kind ? "status " + kind : "status";
+      }
+
+      function metaRow(label, value) {
+        const row = document.createElement("div");
+        row.className = "meta-row";
+        const key = document.createElement("span");
+        key.className = "meta-key";
+        key.textContent = label;
+        const val = document.createElement("span");
+        val.textContent = value;
+        row.append(key, val);
+        return row;
+      }
+
+      function renderGame(game, rank) {
+        const card = document.createElement("article");
+        card.className = "game";
+
+        const board = document.createElement("div");
+        board.className = "board";
+        board.innerHTML = game.svg;
+        card.appendChild(board);
+
+        const body = document.createElement("div");
+        body.className = "game-body";
+
+        const head = document.createElement("div");
+        head.className = "game-head";
+        const name = document.createElement("span");
+        name.className = "rank";
+        name.textContent = "#" + rank;
+        const score = document.createElement("span");
+        score.className = "score";
+        score.textContent = game.score.toFixed(3);
+        head.append(name, score);
+        body.appendChild(head);
+
+        const matches = game.match_count === 1 ? "1 match" : game.match_count + " matches";
+        body.appendChild(metaRow("ply", game.ply + " · " + matches));
+        body.appendChild(metaRow("elo", game.white_elo + " / " + game.black_elo));
+        body.appendChild(metaRow("game", game.result + " · " + game.year));
+        body.appendChild(metaRow("id", game.game_id));
+
+        const use = document.createElement("button");
+        use.type = "button";
+        use.className = "secondary";
+        use.textContent = "Search this position";
+        use.addEventListener("click", () => {
+          fenInput.value = game.fen;
+          fenInput.scrollIntoView({ behavior: "smooth", block: "center" });
+          search(game.fen);
+        });
+        body.appendChild(use);
+
+        card.appendChild(body);
+        return card;
+      }
+
+      function renderResults(payload) {
+        queryBoard.classList.remove("empty");
+        queryBoard.innerHTML = payload.query.svg;
+        resultsEl.replaceChildren();
+        if (!payload.games.length) {
+          const empty = document.createElement("div");
+          empty.className = "empty";
+          empty.textContent = "No similar games found for this position.";
+          resultsEl.appendChild(empty);
+          return;
+        }
+        payload.games.forEach((game, index) => {
+          resultsEl.appendChild(renderGame(game, index + 1));
+        });
+      }
+
+      function errorDetail(payload, status) {
+        if (Array.isArray(payload.detail)) {
+          return payload.detail.map((item) => item.msg || "invalid request").join("; ");
+        }
+        return payload.detail || "request failed (" + status + ")";
+      }
+
+      async function search(explicitFen) {
+        const fen = String(explicitFen ?? fenInput.value).trim();
+        if (!fen) {
+          setStatus("Enter a FEN or pick an example first.", "error");
+          return;
+        }
+        if (inFlight) {
+          return;
+        }
+        inFlight = true;
+        searchButton.disabled = true;
+        setStatus("Searching…", "");
+        const nGames = Number(document.getElementById("n-games").value) || 10;
+        try {
+          const response = await fetch("/api/search", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ fen: fen, n_games: nGames }),
+          });
+          const payload = await response.json();
+          if (!response.ok) {
+            setStatus(errorDetail(payload, response.status), "error");
+            return;
+          }
+          renderResults(payload);
+          setStatus(payload.games.length + " games matched", "ok");
+        } catch (error) {
+          setStatus("Network error: " + error.message, "error");
+        } finally {
+          inFlight = false;
+          searchButton.disabled = false;
+        }
+      }
+
+      async function loadExamples() {
+        try {
+          const response = await fetch("/api/examples");
+          if (!response.ok) {
+            return;
+          }
+          const payload = await response.json();
+          for (const example of payload.examples) {
+            const option = document.createElement("option");
+            option.value = example.fen;
+            option.textContent = example.label;
+            exampleSelect.appendChild(option);
+          }
+        } catch (error) {
+          setStatus("Could not load examples: " + error.message, "error");
+        }
+      }
+
+      async function loadInfo() {
+        try {
+          const response = await fetch("/api/info");
+          if (!response.ok) {
+            infoEl.textContent = "";
+            return;
+          }
+          const info = await response.json();
+          infoEl.textContent =
+            info.rows.toLocaleString() + " positions · " + info.dim + "-d";
+        } catch (error) {
+          infoEl.textContent = "";
+        }
+      }
+
+      exampleSelect.addEventListener("change", () => {
+        if (!exampleSelect.value) {
+          return;
+        }
+        fenInput.value = exampleSelect.value;
+        search(exampleSelect.value);
+      });
+
+      document.getElementById("search-form").addEventListener("submit", (event) => {
+        event.preventDefault();
+        search();
+      });
+
+      loadExamples();
+      loadInfo();
+      fenInput.focus();
+    </script>
+  </body>
+</html>
