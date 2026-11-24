@@ -288,6 +288,185 @@ def evaluate(
     return loss, accuracy
 
 
+def reconstruction_breakdown(
+    model,
+    loader,
+    device: torch.device,
+    max_batches: int,
+    bf16: bool,
+    token_weights: torch.Tensor | list[float] | None = None,
+    occupancy_max: int = 8192,
+) -> dict[str, float]:
+    """Diagnose the full-reconstruction objective beyond the weighted loss.
+
+    Reports the unweighted and weighted cross entropy, raw and
+    prior-calibrated accuracy, per-class accuracy for empty / piece / state
+    tokens, and the occupancy AUC that separates empty from piece squares.
+    ``token_weights`` is the resolved per-token-id weight vector; when it is
+    omitted the weighted loss falls back to the unweighted one.
+    """
+    from src.dataset.token_stream import EMPTY, PAD, PIECE_BASE, TURN_WHITE
+    from src.modeling.autoencoder.model import restoration_targets
+    from src.training.puzzle_metrics import auroc
+
+    model.eval()
+    weight_tensor = None
+    if token_weights is not None:
+        weight_tensor = torch.as_tensor(
+            token_weights, dtype=torch.float32, device=device
+        )
+    unweighted_total = 0.0
+    weighted_total = 0.0
+    weight_sum = 0.0
+    tokens_seen = 0
+    correct = 0
+    calibrated_correct = 0
+    class_correct = {"empty": 0, "piece": 0, "state": 0}
+    class_total = {"empty": 0, "piece": 0, "state": 0}
+    occupancy_scores: list[torch.Tensor] = []
+    occupancy_labels: list[torch.Tensor] = []
+
+    for index, batch in enumerate(loader):
+        if index >= max_batches:
+            break
+        batch = {key: value.to(device) for key, value in batch.items()}
+        with torch.autocast(
+            device_type=device.type, dtype=torch.bfloat16, enabled=bf16
+        ):
+            output = model(
+                batch["tokens"],
+                batch["segment_ids"],
+                padding_mask=batch["padding_mask"],
+                targets=batch["targets"],
+                weights=None,
+            )
+        hidden = output["hidden_states"]
+        gold = restoration_targets(batch["tokens"], batch["targets"])
+        valid = batch["padding_mask"].bool() & gold.ne(PAD)
+        if not valid.any():
+            continue
+        logits = model.head(hidden[valid]).float()
+        flat_gold = gold[valid]
+        per_token = torch.nn.functional.cross_entropy(
+            logits, flat_gold, reduction="none"
+        )
+        unweighted_total += per_token.sum().item()
+        tokens_seen += per_token.numel()
+
+        if weight_tensor is None:
+            weighted_total += per_token.sum().item()
+            weight_sum += per_token.numel()
+        else:
+            flat_weights = weight_tensor[flat_gold]
+            weighted_total += (per_token * flat_weights).sum().item()
+            weight_sum += flat_weights.sum().item()
+            adjusted = logits - torch.log(weight_tensor.clamp_min(1e-8)).unsqueeze(0)
+            calibrated_correct += (adjusted.argmax(dim=-1) == flat_gold).sum().item()
+
+        predictions = logits.argmax(dim=-1)
+        correct += (predictions == flat_gold).sum().item()
+        empty = flat_gold == EMPTY
+        piece = (flat_gold >= PIECE_BASE) & (flat_gold < TURN_WHITE)
+        state = flat_gold >= TURN_WHITE
+        for name, mask in (("empty", empty), ("piece", piece), ("state", state)):
+            class_total[name] += int(mask.sum().item())
+            class_correct[name] += int((predictions[mask] == flat_gold[mask]).sum())
+
+        occupancy = empty | piece
+        if occupancy.any() and len(occupancy_labels) < occupancy_max:
+            remaining = occupancy_max - sum(len(item) for item in occupancy_labels)
+            probabilities = torch.softmax(logits[occupancy], dim=-1)[:, EMPTY]
+            occupancy_scores.append(probabilities[:remaining].cpu())
+            occupancy_labels.append(empty[occupancy][:remaining].cpu())
+
+    model.train()
+    weights_count = max(1, int(weight_sum))
+    metrics = {
+        "reconstruction_loss_unweighted": unweighted_total / max(1, tokens_seen),
+        "reconstruction_loss_weighted": weighted_total / weights_count,
+        "reconstruction_accuracy": correct / max(1, tokens_seen),
+        "reconstruction_accuracy_calibrated": (
+            calibrated_correct / max(1, tokens_seen)
+            if weight_tensor is not None
+            else correct / max(1, tokens_seen)
+        ),
+        "reconstruction_occupancy_auc": 0.5,
+    }
+    for name in class_total:
+        metrics[f"reconstruction_acc_{name}"] = class_correct[name] / max(
+            1, class_total[name]
+        )
+    if occupancy_labels:
+        scores = torch.cat(occupancy_scores).numpy()
+        labels = torch.cat(occupancy_labels).numpy().astype(int)
+        if labels.min() != labels.max():
+            metrics["reconstruction_occupancy_auc"] = auroc(scores, labels)
+    return metrics
+
+
+def latent_swap_delta(
+    model,
+    loader,
+    device: torch.device,
+    max_batches: int,
+    bf16: bool,
+) -> dict[str, float]:
+    """Compare reconstruction from the own latent with a swapped latent."""
+    from src.dataset.token_stream import PAD
+    from src.modeling.autoencoder.model import restoration_targets
+
+    model.eval()
+    own_total = 0.0
+    swapped_total = 0.0
+    batches = 0
+    for index, batch in enumerate(loader):
+        if index >= max_batches:
+            break
+        batch = {key: value.to(device) for key, value in batch.items()}
+        with torch.autocast(
+            device_type=device.type, dtype=torch.bfloat16, enabled=bf16
+        ):
+            latent = model.encode_latent(
+                batch["tokens"], batch["segment_ids"], batch["padding_mask"]
+            )
+            own_hidden = model.decode(
+                latent,
+                batch["tokens"],
+                batch["segment_ids"],
+                batch["padding_mask"],
+            )
+            permutation = torch.roll(
+                torch.arange(latent.shape[0], device=device), shifts=1
+            )
+            swapped_hidden = model.decode(
+                latent[permutation],
+                batch["tokens"],
+                batch["segment_ids"],
+                batch["padding_mask"],
+            )
+        gold = restoration_targets(batch["tokens"], batch["targets"])
+        valid = batch["padding_mask"].bool() & gold.ne(PAD)
+        if not valid.any():
+            continue
+        own_loss = torch.nn.functional.cross_entropy(
+            model.head(own_hidden[valid]).float(), gold[valid]
+        )
+        swapped_loss = torch.nn.functional.cross_entropy(
+            model.head(swapped_hidden[valid]).float(), gold[valid]
+        )
+        own_total += own_loss.item()
+        swapped_total += swapped_loss.item()
+        batches += 1
+    model.train()
+    own = own_total / max(1, batches)
+    swapped = swapped_total / max(1, batches)
+    return {
+        "latent_swap_own": own,
+        "latent_swap_swapped": swapped,
+        "latent_swap_delta": swapped - own,
+    }
+
+
 def effective_rank_from_hidden(
     hidden: torch.Tensor,
     valid: torch.Tensor,

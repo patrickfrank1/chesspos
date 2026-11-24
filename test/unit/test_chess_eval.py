@@ -9,8 +9,8 @@ from fastapi.testclient import TestClient
 
 from bdd import given, then, when
 from src.dataset.token_stream import VOCAB_SIZE
-from src.chess_eval.app import create_app
-from src.chess_eval.backend import (
+from src.app.chess_eval.app import create_app
+from src.app.chess_eval.backend import (
     apply_move,
     discover_models,
     evaluate_models,

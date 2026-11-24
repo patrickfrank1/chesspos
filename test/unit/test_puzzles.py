@@ -7,7 +7,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from bdd import given, then, when
-from src.chess_eval.puzzles import (
+from src.app.chess_eval.puzzles import (
     background_boards,
     load_solved_puzzles,
     sacrificed_square,

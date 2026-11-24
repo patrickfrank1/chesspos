@@ -82,6 +82,11 @@ including the InfoNCE ablation still queued.
   **0.750**, plateauing from ~56k. Capacity fixed the material axis; the
   apparent late-run decline in the 1,024-position probes was sampling noise.
   See *Full evaluation of the 20M bottleneck*.
+- **Frozen downstream probes** place the bottleneck ahead of every earlier
+  checkpoint: held-out score R² **0.051 / AUC 0.645** (previous frozen best
+  0.023 / 0.587; material baseline 0.068 / 0.655) and sacrifice PR-AUC
+  **0.288 / AUROC 0.745** (previous frozen best 0.203 / 0.697). One epoch is
+  optimal for the frozen score head.
 
 ## Architecture
 
@@ -660,6 +665,160 @@ still separating unrelated positions.
    turn token is recoverable from a clean direction, so it is not a useful
    discriminator between checkpoints.
 
+## Downstream probes on the bottleneck (2026-11-23)
+
+Protocol: `best_step80000.pt`, frozen encoder, only the head trains. The
+bottleneck vector is the `embed()` output. Score regression feeds one position
+per input (`CLS + segment + SEP`), 40k train games from the `train` split (the
+60 GB instance could not hold the full 56k-game split), 3 epochs, 3 seeds, MSE,
+batch 256, lr 1e-3, and evaluates on the held-out `test` split (20k games: 10k
+standard + 10k elite). Sacrifice classification packs a puzzle into a sequence,
+embeds each position as its own window (`--feature native_positions`) and
+pools the per-position bottlenecks with the existing sequence head (mean
+pooling); 1M puzzles (16% subset, 7.57% prevalence), 1 epoch, seed 17, BCE.
+
+### Position score regression (held-out test, mean ± std over 3 seeds)
+
+| model | R² | decisive AUC | MAE |
+|---|---:|---:|---:|
+| **20M AE bottleneck (frozen)** | **0.051 ± 0.004** | **0.645 ± 0.001** | **0.820** |
+| `run_20m_lazy` transformer (frozen) | 0.023 ± 0.001 | 0.587 ± 0.003 | 0.859 |
+| `run_6m_isolated` transformer (frozen) | 0.010 ± 0.002 | 0.571 ± 0.001 | 0.867 |
+| material baseline (affine, same data) | 0.0675 | 0.6549 | 0.829 |
+
+Validation R² on the best epoch was 0.0617 ± 0.0011, consistent with the
+held-out 0.051 after the known elite/standard distribution shift. **Epoch 1 is
+the best epoch for every seed**; epochs 2–3 overfit (val R² 0.061 → 0.036 /
+0.014), which is why the best checkpoint is always the first.
+
+### Sacrifice classification (validation, natural prevalence, 1M subset)
+
+| model | PR-AUC | AUROC | F1 |
+|---|---:|---:|---:|
+| **20M AE bottleneck (frozen)** | **0.288** | **0.745** | **0.322** |
+| `run_20m_lazy` transformer (frozen, 1M) | 0.203 | 0.697 | 0.262 |
+| `run_6m_isolated` transformer (frozen, 1M) | 0.200 | 0.685 | 0.254 |
+| `run_20m_lazy` transformer (frozen, full corpus) | 0.224 | 0.712 | 0.274 |
+
+Precision 0.269, recall 0.399, accuracy 0.840 (below the 0.925 always-negative
+baseline, so read PR-AUC/AUROC). Prevalence is 7.57%, so PR-AUC 0.288 is ~3.8×
+chance.
+
+### Findings
+
+1. **The bottleneck is the strongest frozen representation tested so far.**
+   Against the previous best frozen transformer it adds **+0.028 R² and +0.058
+   decisive AUC** on score regression, and **+0.085 PR-AUC / +0.048 AUROC** on
+   sacrifice. The reconstruction-only objective produces a more usable
+   position embedding than the masked-transformer trunk.
+2. **It nearly matches material-only scoring.** Score R² 0.051 vs 0.068 and
+   AUC 0.645 vs 0.655 for an affine function of material; its MAE is already
+   better (0.820 vs 0.829), because the bottleneck head predicts conservatively
+   and pays for it in R², not in absolute error. Given the same embedding
+   reaches R² 0.75 on a material probe, the remaining gap to material is the
+   realised-result target, not missing material information.
+3. **One epoch is enough for the frozen head.** The probe overfits quickly, so
+   longer schedules are wasted compute and would pick a worse checkpoint.
+4. **Sacrifice is where the bottleneck gains most.** PR-AUC 0.288 is the best
+   frozen number across all models/protocols in this report, and it is close to
+   the earlier *fine-tuned* 6M transformer (0.387) without adapting any encoder
+   parameters.
+5. **Caveats.** The score probe uses 40k rather than 56k games (disk-bound on
+   the 44 GB run) and the sacrifice cell is one seed; the earlier frozen
+   transformer rows used the same frozen-head protocol, so the ranking is
+   comparable, but absolute numbers may shift slightly with the larger split.
+
+Artifacts: `hf://buckets/patrickfrank1/chesspos-checkpoints/downstream/ae20m/`
+(`models/`, `evals/`; metrics JSON, predictions `.npz`, and probe
+checkpoints), plus the local `data/models/downstream/ae20m/` and
+`data/eval/downstream/ae20m/` trees.
+
+## Fine-tuned downstream arms (2026-11-24)
+
+The frozen probes above adapt only the head. These arms unfreeze the whole
+autoencoder (encoder + bottleneck) for one epoch, keeping the same heads:
+score on 40k games (batch 128, encoder LR 1e-5 / head LR 1e-3, seed 17) with a
+20k-game held-out test, and sacrifice on the 1M-puzzle subset (batch 128, same
+LRs, per-position bottleneck pooling, seed 17).
+
+### Position score regression
+
+| recipe | R² | decisive AUC | MAE |
+|---|---:|---:|---:|
+| frozen bottleneck (3 seeds) | 0.0510 ± 0.0043 | 0.6448 ± 0.0006 | 0.820 |
+| **fine-tuned bottleneck** | **0.0681** | **0.6662** | **0.7982** |
+| material baseline (affine) | 0.0675 | 0.6549 | 0.829 |
+| 20M transformer, full fine-tune | 0.131 | 0.713 | 0.773 |
+
+Validation for the fine-tuned arm: R² 0.0731, AUC 0.6702, MAE 0.8045. The arm
+now clears the material-only baseline on all three metrics, but the gain over
+the frozen bottleneck is modest (**+0.017 R², +0.021 AUC, −0.022 MAE**).
+
+### Sacrifice classification (1M subset, natural prevalence)
+
+| recipe | PR-AUC | AUROC | F1 |
+|---|---:|---:|---:|
+| frozen bottleneck | 0.288 | 0.745 | 0.322 |
+| **fine-tuned bottleneck** | **0.341** | **0.775** | **0.361** |
+| 20M transformer, full fine-tune | 0.455 | 0.834 | 0.449 |
+
+Precision 0.323, recall 0.410, accuracy 0.862. Fine-tuning adds **+0.053
+PR-AUC / +0.030 AUROC / +0.039 F1** over the frozen bottleneck.
+
+### Findings
+
+1. **Fine-tuning helps, but the bottleneck has less headroom than the
+   transformer trunk.** The transformer's full fine-tune moved score R²
+   0.023 → 0.131 and sacrifice PR-AUC 0.203 → 0.455; the bottleneck moves
+   0.051 → 0.068 and 0.288 → 0.341. It starts much stronger frozen, and the
+   remaining gap is not recoverable by adapting the same one-epoch recipe.
+2. **The fine-tuned bottleneck beats material-only scoring.** This is the
+   first checkpoint in the project to clear the affine material baseline on
+   score R², decisive AUC, and MAE simultaneously.
+3. **The transformer remains the better fine-tuning base for sacrifice**
+   (PR-AUC 0.455 vs 0.341), even though the bottleneck is the better frozen
+   representation. The two recipes measure different ceilings: retrieval-style
+   reconstruction vs task-adapted supervision.
+4. **Operational:** flash-attn is required on the GPU box. Without it the
+   varlen fallback is a per-segment SDPA loop — a 128×5-position batch took
+   **3.4 s/step** instead of **62 ms** after installing the matching wheel.
+   Batch 256 OOMs on the longest (22-position) puzzles; 128 fits at ~15 GB.
+
+Artifacts: `hf://buckets/patrickfrank1/chesspos-checkpoints/downstream/ae20m_finetune/`
+(`models/`, `evals/`), plus the box-local `data/models/downstream_finetune/`
+and `data/eval/downstream_finetune/` trees.
+
+## Clean pack-size sweep on the 20M bottleneck (2026-11-23)
+
+The 6M post-mortem measured the latent's information limit by reconstructing
+clean gold windows while varying how many consecutive positions share the
+latent (192 windows, no `MASK` tokens). Repeating it on `best_step80000` with
+`scripts/eval/pack_size_sweep.py`:
+
+| context positions | accuracy | empty recall | piece accuracy |
+|---:|---:|---:|---:|
+| 1 | 1.000 | 1.000 | 1.000 |
+| 2 | 1.000 | 1.000 | 1.000 |
+| 3 | 1.000 | 1.000 | 1.000 |
+| 5 | 1.000 | 1.000 | 1.000 |
+| 8 | 0.998 | 0.996 | 0.999 |
+| 12 | 0.992 | 0.989 | 0.996 |
+| 16 | 0.988 | 0.982 | 0.993 |
+| 19 | 0.984 | 0.975 | 0.991 |
+| 24 | 0.978 | 0.968 | 0.988 |
+| 30 | **0.969** | **0.955** | 0.982 |
+
+The 6M curve over the same sizes was 0.929 / 0.870 / 0.790 / **0.753** (1 / 8 /
+19 / 30). The 20M model's 1,024-d bottleneck is therefore **not close to its
+information limit at the training pack size**: it reconstructs 30 positions at
+0.969 with 0.955 empty recall, where the 6M model managed 0.753 / 0.595.
+
+This reframes the earlier plateau: what remains at 30 positions is no longer a
+capacity story. The downstream probes already showed that a linear material
+probe reaches R² 0.75 while the realised-result head reaches only 0.051, so the
+next lever is supervision/task adaptation (or a larger latent only if longer
+windows become a goal), not more reconstruction capacity at 1,024-d.
+
 ## Operational notes (issues hit and fix)
 
 | Symptom | Cause | Fix |
@@ -788,15 +947,13 @@ positions).
 
 ### 2. Metric and tooling fixes
 
-- Log the **unweighted** reconstruction loss alongside the weighted one, and
-  pass the training weights into `evaluate()`, so train/val are comparable.
-- Log **per-class accuracy** (empty / pieces / state), the **calibrated**
-  accuracy `argmax(logits − log w)`, and the **occupancy AUC** — the three
-  numbers that would have made this plateau obvious during training.
-- Store the **resolved** loss weights (not raw CLI args) in checkpoint
-  metadata.
-- Add the latent-swap delta to the periodic evaluation output.
-- Wire the retrieval benchmark for this architecture.
+- **Done (2026-11-23):** the periodic autoencoder evaluation now logs the
+  **unweighted** reconstruction loss next to the weighted one, per-class
+  accuracy (empty / pieces / state), the **calibrated** accuracy
+  `argmax(logits − log w)`, the **occupancy AUC**, and the **latent-swap**
+  delta. The resolved token weights and preset are stored in checkpoint
+  metadata (`token_weights`, `token_weight_preset`).
+- Still open: wire the retrieval benchmark for this architecture.
 
 ### 3. Capacity and data questions
 

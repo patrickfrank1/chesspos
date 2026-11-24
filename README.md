@@ -222,7 +222,16 @@ Notes:
   score/sacrifice checkpoints, Stockfish 19 running locally in the browser, and
   per-square occlusion/KernelSHAP attribution:
 
-    uv run python -m src.chess_eval --host 127.0.0.1 --port 8000
+    uv run python -m src.app.chess_eval --host 127.0.0.1 --port 8000
 
   See [`docs/chess_eval_widget.md`](docs/chess_eval_widget.md) and
   [`docs/attribution.md`](docs/attribution.md).
+
+- Position similarity search over the vector index, with a FEN box, example
+  middlegames, and rendered boards:
+
+    uv run python -m src.run.serve_position_search \
+      --index data/vector/ae-20k \
+      --checkpoint data/models/run_ae_20m_100k/last.pt
+
+  See [`docs/position_vector_index.md`](docs/position_vector_index.md#web-ui).

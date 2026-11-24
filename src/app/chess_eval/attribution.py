@@ -8,7 +8,7 @@ import chess
 import numpy as np
 import torch
 
-from src.chess_eval.backend import (
+from src.app.chess_eval.backend import (
     ModelBatch,
     ModelHandle,
     forward_tokens,

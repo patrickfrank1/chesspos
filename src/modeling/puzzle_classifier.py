@@ -108,7 +108,10 @@ class FrozenEncoderClassifier(nn.Module):
             raise ValueError(
                 "unfreeze_last_block and unfreeze_all are mutually exclusive"
             )
-        if (unfreeze_last_block or unfreeze_all) and feature != "full":
+        native_finetuning = bool(getattr(encoder, "supports_native_finetuning", False))
+        if unfreeze_last_block and feature != "full":
+            raise ValueError("fine-tuning the last block requires feature='full'")
+        if unfreeze_all and feature != "full" and not native_finetuning:
             raise ValueError(
                 "fine-tuning requires feature='full': the native embedding "
                 "runs under torch.no_grad()"

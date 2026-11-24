@@ -44,9 +44,11 @@ from src.training.loop import (
     evaluate,
     format_system_snapshot,
     get_git_commit,
+    latent_swap_delta,
     lr_lambda,
     make_logger,
     periodic_checkpoint_plan,
+    reconstruction_breakdown,
     save_checkpoint,
     scheduler_start_epoch,
     system_snapshot,
@@ -1030,6 +1032,8 @@ def main() -> None:
             "optimizer_state": optimizer.state_dict(),
             "scheduler_state": scheduler.state_dict(),
             "best_val_loss": best_val_loss,
+            "token_weight_preset": args.token_weight_preset,
+            "token_weights": None if weights is None else weights.tolist(),
         }
         if latest_eval is not None:
             save_extra["full_eval"] = {
@@ -1193,7 +1197,33 @@ def main() -> None:
             )
             log(f"step={step} val_loss={val_loss:.4f} val_acc={val_acc:.4f}")
             extras = {"val_loss": val_loss, "val_acc": val_acc}
+            extras["token_weight_preset"] = args.token_weight_preset
+            extras["token_weights"] = None if weights is None else weights.tolist()
             tracker.log_metrics({"val_loss": val_loss, "val_acc": val_acc}, step=step)
+            if args.model_arch == ARCH_ATTENTION_AUTOENCODER:
+                breakdown = reconstruction_breakdown(
+                    raw_model,
+                    val_loader,
+                    device,
+                    args.eval_batches,
+                    bf16,
+                    token_weights=weights,
+                )
+                log(
+                    f"step={step} "
+                    + " ".join(f"{key}={value:.4f}" for key, value in breakdown.items())
+                )
+                extras.update(breakdown)
+                tracker.log_metrics(breakdown, step=step)
+                swap = latent_swap_delta(
+                    raw_model, val_loader, device, args.eval_batches, bf16
+                )
+                log(
+                    f"step={step} "
+                    + " ".join(f"{key}={value:.4f}" for key, value in swap.items())
+                )
+                extras.update(swap)
+                tracker.log_metrics(swap, step=step)
             token_rank = token_effective_rank(
                 raw_model,
                 val_loader,

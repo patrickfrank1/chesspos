@@ -7,26 +7,26 @@ from typing import Sequence
 
 import numpy as np
 
-from src.chess_eval.attribution import (
+from src.app.chess_eval.attribution import (
     METHODS,
     OCCLUSION_MODES,
     attribute_position,
     deletion_curve,
     occlusion_replacement,
 )
-from src.chess_eval.backend import (
+from src.app.chess_eval.backend import (
     ModelHandle,
     forward_tokens,
     load_checkpoint_handle,
     model_batch,
     replay,
 )
-from src.chess_eval.puzzles import (
+from src.app.chess_eval.puzzles import (
     SolvedPuzzle,
     background_boards,
     load_solved_puzzles,
 )
-from src.chess_eval.samples import DEFAULT_PUZZLE_DIR, load_puzzle_samples
+from src.app.chess_eval.samples import DEFAULT_PUZZLE_DIR, load_puzzle_samples
 from src.dataset.token_stream import EMPTY
 
 

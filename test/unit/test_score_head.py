@@ -457,3 +457,27 @@ class TestAutoencoderBottleneck:
             assert model.head.config.d_model == 4
             assert model.encoder.training is False
         return
+
+
+class TestAutoencoderFineTuning:
+    def test_native_fine_tuning_trains_the_autoencoder(self):
+        with given("an autoencoder score probe with every encoder parameter unfrozen"):
+            encoder = tiny_autoencoder(latent_dim=4, d_model=2)
+            head = ScoreHead(ScoreHeadConfig(d_model=4))
+            model = FrozenEncoderScore(
+                encoder, head, feature="native", unfreeze_all=True
+            )
+            tokens, segment_ids, padding_mask = batch_from_fen()
+
+        with when("a training step runs"):
+            model.train()
+            score = model(tokens, segment_ids, padding_mask)
+            (score - 1.0).pow(2).mean().backward()
+
+        with then("gradients reach the bottleneck and the encoder"):
+            assert score.shape == (1,)
+            assert model.encoder.training is True
+            assert any(
+                parameter.grad is not None for parameter in model.encoder.parameters()
+            )
+        return

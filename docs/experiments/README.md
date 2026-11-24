@@ -21,7 +21,14 @@ A 20M-parameter follow-up with a 1024-d latent and rebalanced weights then ran
 to step 81,600 and was **stopped on 2026-11-23**. A full re-evaluation on a
 4,096-position pool showed the extra capacity was real: material R² rose from
 **0.463 (6M/512-d)** to **0.750 (20M/1024-d)** and plateaued from ~56k; the
-1,024-position training probes that suggested a late decline were noise. See
+1,024-position training probes that suggested a late decline were noise. A
+frozen downstream evaluation then placed the bottleneck ahead of every earlier
+frozen checkpoint: score R² **0.051 vs 0.023**, decisive AUC **0.645 vs 0.587**;
+sacrifice PR-AUC **0.288 vs 0.203**, AUROC **0.745 vs 0.697**. A clean
+pack-size sweep reconstructs 30 positions at **0.969** (6M: 0.753), so the
+1,024-d latent is not the remaining constraint. Fine-tuning the whole
+autoencoder lifts score to R² **0.068 / AUC 0.666** (past the material
+baseline) and sacrifice to PR-AUC **0.341 / AUROC 0.775**. See
 [attention_autoencoder_6m_2026-11-22.md](attention_autoencoder_6m_2026-11-22.md).
 
 ## Experiment reports
@@ -30,6 +37,8 @@ to step 81,600 and was **stopped on 2026-11-23**. A full re-evaluation on a
 |---|---|---|---|
 | 2026-11-22 | [Attention autoencoder, one 512-d bottleneck per window](attention_autoencoder_6m_2026-11-22.md) | Single latent per packed window, latent-only decoder, full-sequence reconstruction, 6M params | Stopped at 42k/100k (val loss 1.57 → 0.7415, masked acc 0.33 → 0.650). Plateau = loss/metric mismatch: 88% of errors are empty squares, only 4.9% of loss weight; +3.5 EMPTY bias lifts accuracy to 0.861. 512-d latent caps 30-position reconstruction at 0.753. 20M/1024-d follow-up proposed. |
 | 2026-11-23 | [Attention autoencoder, 20M / 1024-d follow-up](attention_autoencoder_6m_2026-11-22.md#results-20m-run-stopped-at-81600) | 20.39M params, 1024-d latent, `balanced-v1` weights, 50/50 rect/skip-gram masking, batch 128 | Stopped at 81.6k/100k. `val_loss` 0.7443 → 0.5022, `val_acc` 0.8087 → 0.9093. Full re-eval on 4,096 positions: material R² **0.750 [0.736,0.765]** vs **0.463** for the 6M/512-d at the same protocol; plateau from ~56k. Capacity added linear material information (PC2 0.14 → 0.37), not tighter neighbourhoods. |
+| 2026-11-23 | [Downstream probes on the 20M bottleneck](attention_autoencoder_6m_2026-11-22.md#downstream-probes-on-the-bottleneck-2026-11-23) | Frozen bottleneck embeddings for game-score regression and sacrifice classification | Score held-out R² **0.051 ± 0.004**, decisive AUC **0.645** (previous frozen best 0.023 / 0.587; material baseline 0.068 / 0.655). Sacrifice PR-AUC **0.288**, AUROC **0.745** (previous frozen best 0.203 / 0.697). One epoch is optimal; the proxy overfits after it. |
+| 2026-11-24 | [Fine-tuned downstream arms on the 20M bottleneck](attention_autoencoder_6m_2026-11-22.md#fine-tuned-downstream-arms-2026-11-24) | Full autoencoder fine-tuning (encoder + bottleneck) for score and sacrifice | Score test R² **0.0681**, AUC **0.6662**, MAE **0.7982** (clears the material baseline 0.0675 / 0.6549 / 0.829). Sacrifice PR-AUC **0.341**, AUROC **0.775**. Gains over frozen: +0.017 R² and +0.053 PR-AUC; headroom is smaller than the transformer trunk but the frozen start is much stronger. |
 | 2026-11-15 | [Downstream probes: sacrifice classification and position score regression](downstream_probes_2026-11-15.md) | Frozen, last-block, and full-model fine-tuning of `run_20m_lazy` and `run_6m_isolated` on two downstream tasks | Score: frozen AUC 0.587 vs 0.656 for a material baseline; full fine-tuning lifts them to 0.713 / 0.700. Sacrifice (1M subset): frozen PR-AUC ~0.20; full fine-tuning lifts 20m to 0.455 / 6m to 0.387 (AUROC 0.834 / 0.802). Pooling is irrelevant; adaptation is the lever. |
 | 2026-11-10 | [Perceiver 6M: LR schedule collapse and validation drift](perceiver_6m_lr2e4_2026-11-10.md) | Segment-aware Perceiver IO, LR-schedule extension, NCE guard, resume data replay | First run exploded at ~33.4k; resume run stayed stable but val drifted and material R² stayed negative. Stopped at 41.5k. |
 | 2026-11-10 | [Text embedding survey and simplified chess embedding plan](text_embedding_survey_and_simplification_2026-11-10.md) | MTEB/embedding-model patterns, chesspos mapping, hard-negative validation | Recommends a single-tower contrastive baseline, validated hard negatives, large batches, and staged training. |
@@ -68,6 +77,12 @@ Attention autoencoder runs:
   4,096-position probes, metrics JSON, neighbour reports, PCA plot)
 - `run_ae_20m_100k_logs/evals/sweep/` — 6M-vs-20M checkpoint sweep on a fixed
   4,096-position pool
+- `run_ae_20m_100k_logs/evals/pack_size/` — clean 1–30 position reconstruction
+  sweep on the 20M bottleneck
+- `downstream/ae20m/` — frozen bottleneck probes: score (`models/`, `evals/`),
+  sacrifice classifier, metrics JSON and predictions
+- `downstream/ae20m_finetune/` — fine-tuned arms: score checkpoints/eval,
+  sacrifice classifier, metrics
 
 ## Recurring failure modes
 

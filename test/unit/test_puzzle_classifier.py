@@ -656,3 +656,71 @@ class TestPerPositionRecipe:
             assert model.head.classifier.weight.grad is not None
             assert model.encoder.training is False
         return
+
+
+class TestAutoencoderFineTuning:
+    def test_native_position_fine_tuning_trains_the_autoencoder(self):
+        with given("an autoencoder classifier with every encoder parameter unfrozen"):
+            encoder = tiny_autoencoder(latent_dim=4, d_model=2)
+            head = PoolingClassifier(
+                PoolingClassifierConfig(d_model=embedding_dim(encoder, "native"))
+            )
+            model = FrozenEncoderClassifier(
+                encoder,
+                head,
+                feature="native_positions",
+                unfreeze_all=True,
+            )
+            tokens, segment_ids, padding_mask = batch_from_boards()
+
+        with when("a training step runs"):
+            model.train()
+            logits = model(tokens, segment_ids, padding_mask)
+            logits.sum().backward()
+
+        with then("gradients reach the per-position bottleneck path"):
+            assert logits.shape == (2,)
+            assert model.encoder.training is True
+            assert any(
+                parameter.grad is not None for parameter in model.encoder.parameters()
+            )
+        return
+
+
+class TestPerPositionMixedLengths:
+    def test_rows_with_different_position_counts_are_masked_correctly(self):
+        from src.dataset.puzzle_variants import pack_segments
+        from src.dataset.token_stream import PAD, SEP
+        from src.modeling.frozen import embed_per_position
+
+        with given("one row with a single position and one with two"):
+            encoder = tiny_autoencoder(latent_dim=4, d_model=2).eval()
+            first = TokenStreamEncoder().encode(chess.Board())
+            second = TokenStreamEncoder().encode(chess.Board())
+            short, _ = pack_segments([first])
+            long, _ = pack_segments([first, second])
+            width = len(long)
+            tokens = np.full((2, width), PAD, dtype=np.int64)
+            tokens[0, : len(short)] = short
+            tokens[1, : len(long)] = long
+            tokens = torch.from_numpy(tokens)
+            segment_ids = torch.cumsum(tokens == SEP, dim=1)
+            padding = tokens != PAD
+
+        with when("the per-position recipe runs on the padded batch"):
+            embeddings, mask = embed_per_position(encoder, tokens, segment_ids, padding)
+
+        with then("the short row exposes one valid position and both match"):
+            assert mask.tolist() == [[True, False], [True, True]]
+            with torch.no_grad():
+                expected_tokens = (
+                    torch.from_numpy(pack_segments([first])[0]).unsqueeze(0).long()
+                )
+                expected_first, _ = encoder.embed(
+                    expected_tokens,
+                    torch.cumsum(expected_tokens == SEP, dim=1),
+                )
+            torch.testing.assert_close(
+                embeddings[0, 0], expected_first[0, 0], rtol=0, atol=1e-5
+            )
+        return

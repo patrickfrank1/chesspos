@@ -4,15 +4,15 @@ import argparse
 import json
 from typing import Sequence
 
-from src.chess_eval.attribution import (
+from src.app.chess_eval.attribution import (
     DEFAULT_SHAP_SAMPLES,
     METHODS,
     OCCLUSION_MODES,
     attribute_position,
 )
-from src.chess_eval.backend import load_checkpoint_handle, replay
-from src.chess_eval.puzzles import background_boards
-from src.chess_eval.samples import DEFAULT_PUZZLE_DIR
+from src.app.chess_eval.backend import load_checkpoint_handle, replay
+from src.app.chess_eval.puzzles import background_boards
+from src.app.chess_eval.samples import DEFAULT_PUZZLE_DIR
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:

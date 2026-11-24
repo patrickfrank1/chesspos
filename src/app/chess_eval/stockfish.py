@@ -6,7 +6,7 @@ import threading
 import urllib.request
 from pathlib import Path
 
-from src.chess_eval.backend import REPO_ROOT
+from src.app.chess_eval.backend import REPO_ROOT
 
 STOCKFISH_NAME = "Stockfish 19"
 STOCKFISH_WEB_VERSION = "0.6.1"

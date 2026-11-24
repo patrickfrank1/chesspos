@@ -6,7 +6,7 @@ from typing import Sequence
 
 import chess
 
-from src.chess_eval.samples import DEFAULT_PUZZLE_DIR, load_puzzle_samples
+from src.app.chess_eval.samples import DEFAULT_PUZZLE_DIR, load_puzzle_samples
 
 
 @dataclass(frozen=True)

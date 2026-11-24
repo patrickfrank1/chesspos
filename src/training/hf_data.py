@@ -19,6 +19,7 @@ def download_split(
     cache_dir: str | None = None,
     max_bytes: int | None = None,
     log=None,
+    revision: str | None = None,
 ) -> Path:
     """Download ``split`` of a dataset repo and return its local directory.
 
@@ -32,7 +33,7 @@ def download_split(
         allow_patterns: list[str] = [f"{split}/**"]
         log(f"downloading {repo_id} split={split} (unbounded) ...")
     else:
-        shards = _list_split_shards(repo_id, split)
+        shards = _list_split_shards(repo_id, split, revision=revision)
         if not shards:
             raise ValueError(f"no parquet shards found under {split}/ in {repo_id}")
         total = sum(size for _, size in shards)
@@ -48,6 +49,7 @@ def download_split(
         repo_type="dataset",
         allow_patterns=allow_patterns,
         cache_dir=cache_dir,
+        revision=revision,
     )
     snapshot_root = Path(snapshot)
     if max_bytes is not None:

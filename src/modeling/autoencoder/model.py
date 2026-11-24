@@ -33,6 +33,8 @@ class AttentionAutoencoderModel(nn.Module):
     unmasked gold sequence.
     """
 
+    supports_native_finetuning = True
+
     def __init__(self, config: AttentionAutoencoderConfig) -> None:
         super().__init__()
         self.config = config
