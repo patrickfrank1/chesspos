@@ -38,13 +38,19 @@ class PgnChunker:
     def read_block_bytes(self) -> int:
         return max(_MIN_READ_BLOCK, self.chunk_target_bytes // _READ_BLOCK_RATIO)
 
-    def iter_chunks(self, stream: BinaryIO, out_dir: str) -> Iterator[Path]:
+    def iter_chunks(
+        self, stream: BinaryIO, out_dir: str, discard_before: int = 0
+    ) -> Iterator[Path]:
         """Write game-aligned chunks to ``out_dir`` and yield their paths.
 
         A chunk is emitted as soon as it reaches ``chunk_target_bytes``
         and the next game boundary is seen; the final partial chunk is
         emitted at end of stream. An oversized single game becomes one
         complete oversized chunk.
+
+        Chunks with an index below ``discard_before`` are consumed from the
+        stream but neither written nor yielded, so a resumed archive skips
+        already-processed data without the scratch write.
 
         The scan position persists across block reads (resuming just
         before the buffer tail where a separator could straddle a block
@@ -72,15 +78,16 @@ class PgnChunker:
                 search_from = pos + 1
                 cut = pos + 2  # keep the blank line with the previous chunk
                 if cut >= self.chunk_target_bytes:
-                    path = out / f"chunk_{index:04d}.pgn"
-                    path.write_bytes(bytes(buf[:cut]))
-                    yield path
+                    if index >= discard_before:
+                        path = out / f"chunk_{index:04d}.pgn"
+                        path.write_bytes(bytes(buf[:cut]))
+                        yield path
                     index += 1
                     del buf[:cut]
                     # Clamp to 0: a negative start would wrap around and
                     # skip separators near the start of the remainder.
                     search_from = max(0, search_from - cut)
-        if buf:
+        if buf and index >= discard_before:
             path = out / f"chunk_{index:04d}.pgn"
             path.write_bytes(bytes(buf))
             yield path

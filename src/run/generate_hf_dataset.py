@@ -149,6 +149,12 @@ def parse_args() -> argparse.Namespace:
         help="Continue from last batch number on HuggingFace Hub",
     )
     parser.add_argument(
+        "--checkpoint-dir",
+        type=str,
+        default=str(Path.home() / ".cache" / "chesspos" / "archive_state"),
+        help="Directory for per-archive resume checkpoints",
+    )
+    parser.add_argument(
         "--workers",
         type=int,
         default=None,
@@ -231,6 +237,10 @@ def main() -> int:
     )
     debug: bool = _resolve(args.debug, _yaml_val(yaml_cfg, "debug"), False)
 
+    checkpoint_dir: str = args.checkpoint_dir or str(
+        Path.home() / ".cache" / "chesspos" / "archive_state"
+    )
+
     archive_urls: list[str] | None = _resolve(
         args.archive_urls, _yaml_val(yaml_cfg, "archive_urls"), None
     )
@@ -282,6 +292,7 @@ def main() -> int:
             dataset_config=dataset_config,
             preprocessing_config=preprocessing_config,
             source_config=source_config,
+            checkpoint_dir=Path(checkpoint_dir),
         )
         if archive_urls:
             print(f"Processing {len(archive_urls)} archive(s) for {repo_name}")
