@@ -120,7 +120,7 @@ architecture (it has no per-segment views to contrast).
 
 | File | Change |
 |---|---|
-| `src/modeling/autoencoder/config.py` | `AttentionAutoencoderConfig`; defaults are the 6M recipe |
+| `src/modeling/autoencoder/config.py` | `AttentionAutoencoderConfig`; defaults are now the deep-narrow recipe (the 6M run used explicit sizes) |
 | `src/modeling/autoencoder/encoder.py` | packed-stream encoder, varlen blocks |
 | `src/modeling/autoencoder/bottleneck.py` | gated attention pooling → 512-d |
 | `src/modeling/autoencoder/decoder.py` | latent-conditioned decoder, position-only inputs |
@@ -857,6 +857,8 @@ export PYTHONPATH=/workspace/chesspos PYTORCH_CUDA_ALLOC_CONF=expandable_segment
 
 python3 -m src.run.train_masked_transformer \
   --model-arch attention_autoencoder \
+  --d-model 256 --n-layers 4 --n-heads 8 --d-ff 1024 \
+  --n-decoder-layers 3 --latent-dim 512 \
   --data-repo patrickfrank1/chess-positions --data-cache data/hf-cache \
   --stream-shards --streaming --stream-shard-cache data/hf-shards \
   --num-workers 8 --steps 100000 --batch-size 240 --lr 2e-4 --warmup 2000 \
@@ -869,8 +871,9 @@ python3 -m src.run.train_masked_transformer \
   --upload-prefix run_ae_6m_100k
 ```
 
-`--model-arch attention_autoencoder` alone selects the 6M preset
-(d 256, 4 encoder / 3 decoder layers, 8 heads, `d_ff` 1024, latent 512).
+`--model-arch attention_autoencoder` alone selects the current deep-narrow
+preset (d 512, 6 encoder / 3 decoder layers, 8 heads, `d_ff` 1024, latent
+512, 20.4M params). The explicit size flags above reproduce the 6M run.
 
 Pull artifacts:
 
@@ -880,6 +883,11 @@ hf buckets sync hf://buckets/patrickfrank1/chesspos-checkpoints/run_ae_6m_100k/ 
 
 ## Known gaps
 
+- **`val_loss` changed meaning after this report.** The autoencoder evaluation
+  now logs an unweighted content-only loss (PAD/`CLS`/`SEP` excluded). The
+  historical 0.5022 at step 80k includes the untrained structural tokens,
+  which contribute roughly 0.29 nats; the content-only value is about 0.22.
+  Do not compare numbers across the change.
 - **Checkpoint metadata is misleading for this arch.** `build_metadata()`
   serialises raw CLI args, so `last.meta.json` reports `nce_weight=0.1`,
   `inv_weight=0.5`, `var_weight=1.0` even though the resolved objective has all

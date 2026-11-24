@@ -95,8 +95,8 @@ _ARCH_MODEL_DEFAULTS = {
         "latent_dim": None,
     },
     ARCH_ATTENTION_AUTOENCODER: {
-        "d_model": 256,
-        "n_layers": 4,
+        "d_model": 512,
+        "n_layers": 6,
         "n_heads": 8,
         "d_ff": 1024,
         "n_decoder_layers": 3,
@@ -110,7 +110,7 @@ def resolve_model_args(args: argparse.Namespace) -> None:
 
     Command-line values always win; unset flags fall back to the preset for
     the selected architecture, so ``--model-arch attention_autoencoder`` alone
-    builds the six-million-parameter recipe.
+    builds the deep, narrow-bottleneck recipe.
     """
     defaults = _ARCH_MODEL_DEFAULTS[args.model_arch]
     for name, value in defaults.items():
@@ -224,19 +224,19 @@ def parse_args() -> argparse.Namespace:
         "--d-model",
         type=int,
         default=None,
-        help="Model width (default: 512 transformer/perceiver, 256 autoencoder)",
+        help="Model width (default: 512)",
     )
     parser.add_argument(
         "--n-layers",
         type=int,
         default=None,
-        help="Encoder layers (default: 8 transformer/perceiver, 4 autoencoder)",
+        help="Encoder layers (default: 8 transformer/perceiver, 6 autoencoder)",
     )
     parser.add_argument(
         "--n-heads",
         type=int,
         default=None,
-        help="Attention heads (default: 16 transformer/perceiver, 8 autoencoder)",
+        help="Attention heads (default: 16)",
     )
     parser.add_argument(
         "--d-ff",
@@ -382,7 +382,7 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=None,
         help="Probability weight for harder rectangle masking "
-        "(default 0.8, mixed with 0.2 skip-gram)",
+        "(default 0.34, mixed with 0.66 skip-gram)",
     )
     parser.add_argument(
         "--rect-min-rate",
@@ -416,7 +416,7 @@ def parse_args() -> argparse.Namespace:
         "--p-skip-gram",
         type=float,
         default=None,
-        help="Probability weight for skip-gram style masking (default 0.2); "
+        help="Probability weight for skip-gram style masking (default 0.66); "
         "hide all but a small fraction of whole boards",
     )
     parser.add_argument(
@@ -1193,7 +1193,12 @@ def main() -> None:
             save_last_checkpoint(step)
         if actions.evaluate:
             val_loss, val_acc = evaluate(
-                model, val_loader, device, args.eval_batches, bf16
+                model,
+                val_loader,
+                device,
+                args.eval_batches,
+                bf16,
+                full_reconstruction=args.model_arch == ARCH_ATTENTION_AUTOENCODER,
             )
             log(f"step={step} val_loss={val_loss:.4f} val_acc={val_acc:.4f}")
             extras = {"val_loss": val_loss, "val_acc": val_acc}
