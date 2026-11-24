@@ -24,6 +24,7 @@ from src.dataset.game_outcomes import (
     split_for_game,
 )
 from src.modeling.factory import build_model, model_config_from_dict
+from src.modeling.frozen import embedding_dim
 from src.modeling.score_head import (
     FrozenEncoderScore,
     ScoreHead,
@@ -62,7 +63,9 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--dropout", type=float, default=0.0)
     parser.add_argument("--head-hidden-dim", type=int, default=256)
     parser.add_argument("--pooling", choices=("mean", "attention"), default="mean")
-    parser.add_argument("--feature", choices=("native", "full"), default="native")
+    parser.add_argument(
+        "--feature", choices=("native", "full", "native_positions"), default="native"
+    )
     parser.add_argument("--loss", choices=("mse", "huber"), default="mse")
     parser.add_argument("--amp", choices=("none", "bf16"), default="none")
     parser.add_argument(
@@ -374,7 +377,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     encoder = load_frozen_encoder(args.checkpoint, device)
     head = ScoreHead(
         ScoreHeadConfig(
-            d_model=encoder.config.d_model,
+            d_model=embedding_dim(encoder, args.feature),
             hidden_dim=args.head_hidden_dim,
             dropout=args.dropout,
             pooling=args.pooling,

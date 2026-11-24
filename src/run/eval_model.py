@@ -130,7 +130,7 @@ def main() -> None:
         print(f"  {name}: {value:.4f}")
 
     print("\n-- phase structure (PCA) --")
-    projected, corr1, corr2 = phase_stats(embeds, piece_counts)
+    projected, corr1, corr2 = phase_stats(embeds, piece_counts, device=device)
     print(f"  pc1_piece_corr: {corr1:.4f}")
     print(f"  pc2_piece_corr: {corr2:.4f}")
     plot_path = plot_phase_projection(projected, piece_counts, args.out_dir)

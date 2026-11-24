@@ -22,6 +22,8 @@ from src.dataset.puzzle_variants import (
 )
 from src.dataset.token_stream import VOCAB_SIZE, TokenStreamEncoder, pack_stream
 from src.evaluation.retrieval import BenchmarkConfig, build_benchmark
+from src.modeling.autoencoder.config import AttentionAutoencoderConfig
+from src.modeling.autoencoder.model import AttentionAutoencoderModel
 from src.modeling.puzzle_classifier import (
     PoolingClassifier,
     PoolingClassifierConfig,
@@ -78,6 +80,27 @@ def tiny_config() -> TransformerConfig:
 def save_encoder_checkpoint(path: Path) -> None:
     config = tiny_config()
     encoder = MaskedStreamTransformer(config)
+    torch.save(
+        {"model_config": asdict(config), "model_state": encoder.state_dict()},
+        path,
+    )
+    return
+
+
+def save_autoencoder_checkpoint(path: Path) -> None:
+    config = AttentionAutoencoderConfig(
+        vocab_size=VOCAB_SIZE,
+        d_model=2,
+        n_heads=1,
+        n_layers=1,
+        d_ff=4,
+        dropout=0.0,
+        max_seq_len=512,
+        max_segments=8,
+        latent_dim=4,
+        n_decoder_layers=1,
+    )
+    encoder = AttentionAutoencoderModel(config)
     torch.save(
         {"model_config": asdict(config), "model_state": encoder.state_dict()},
         path,
@@ -380,6 +403,50 @@ class TestTrainingSmoke:
             checkpoint = tmp_path / "out" / "best.pt"
             assert checkpoint.exists()
             model = load_classifier(str(checkpoint), torch.device("cpu"))
+            probability = classify_fen(model, chess.STARTING_FEN, torch.device("cpu"))
+            assert 0.0 <= probability <= 1.0
+        return
+
+
+class TestAutoencoderCheckpoint:
+    def test_bottleneck_checkpoint_sizes_the_classifier_head(self, tmp_path):
+        with given("a labeled shard and an autoencoder checkpoint"):
+            save_autoencoder_checkpoint(tmp_path / "encoder.pt")
+            make_training_parquet(tmp_path / "part.parquet")
+            argv = [
+                "train_puzzle_classifier.py",
+                "--data-dir",
+                str(tmp_path),
+                "--theme",
+                "sacrifice",
+                "--checkpoint",
+                str(tmp_path / "encoder.pt"),
+                "--output-dir",
+                str(tmp_path / "out"),
+                "--epochs",
+                "1",
+                "--batch-size",
+                "8",
+                "--num-workers",
+                "0",
+                "--device",
+                "cpu",
+                "--val-ratio",
+                "0.2",
+            ]
+
+        with when("the classifier CLI runs one epoch"):
+            import src.run.train_puzzle_classifier as cli
+
+            with patch("sys.argv", argv):
+                exit_code = cli.main()
+
+        with then("the head is sized to the bottleneck and the model loads"):
+            assert exit_code == 0
+            model = load_classifier(
+                str(tmp_path / "out" / "best.pt"), torch.device("cpu")
+            )
+            assert model.head.config.d_model == 4
             probability = classify_fen(model, chess.STARTING_FEN, torch.device("cpu"))
             assert 0.0 <= probability <= 1.0
         return

@@ -3,16 +3,30 @@ from __future__ import annotations
 import argparse
 import json
 import time
+from collections.abc import Callable
 from dataclasses import asdict
 from pathlib import Path
 
+import numpy as np
 import torch
+from torch import nn
 from torch.utils.data import DataLoader
 
-from src.dataset.token_stream import resolve_max_segments
+from src.dataset.token_stream import (
+    CLS,
+    EMPTY,
+    PIECE_BASE,
+    TURN_WHITE,
+    resolve_max_segments,
+)
 from src.evaluation.eval_suite import full_eval
 from src.evaluation.retrieval import evaluate_retrieval, load_benchmark
-from src.modeling.factory import build_model, model_config_from_dict
+from src.modeling.autoencoder.config import AttentionAutoencoderConfig
+from src.modeling.factory import (
+    ARCH_ATTENTION_AUTOENCODER,
+    build_model,
+    model_config_from_dict,
+)
 from src.modeling.masking import MaskingConfig
 from src.modeling.perceiver.config import PerceiverIOConfig
 from src.modeling.transformer import TransformerConfig
@@ -51,13 +65,56 @@ from src.training.window_dataset import (
     StreamingWindowDataset,
     WindowDataset,
     WindowDatasetConfig,
+    TOKEN_WEIGHT_PRESETS,
     load_game_pool,
     collate_windows,
-    inverse_frequency_weights,
     remote_unigram_counts,
     streaming_unigram_counts,
+    token_weights,
     unigram_counts,
 )
+
+
+_ARCH_MODEL_DEFAULTS = {
+    "transformer": {
+        "d_model": 512,
+        "n_layers": 8,
+        "n_heads": 16,
+        "d_ff": 2048,
+        "n_decoder_layers": None,
+        "latent_dim": None,
+    },
+    "perceiver_io": {
+        "d_model": 512,
+        "n_layers": 8,
+        "n_heads": 16,
+        "d_ff": 2048,
+        "n_decoder_layers": 2,
+        "latent_dim": None,
+    },
+    ARCH_ATTENTION_AUTOENCODER: {
+        "d_model": 256,
+        "n_layers": 4,
+        "n_heads": 8,
+        "d_ff": 1024,
+        "n_decoder_layers": 3,
+        "latent_dim": 512,
+    },
+}
+
+
+def resolve_model_args(args: argparse.Namespace) -> None:
+    """Fill architecture-specific model sizes left unset on the CLI.
+
+    Command-line values always win; unset flags fall back to the preset for
+    the selected architecture, so ``--model-arch attention_autoencoder`` alone
+    builds the six-million-parameter recipe.
+    """
+    defaults = _ARCH_MODEL_DEFAULTS[args.model_arch]
+    for name, value in defaults.items():
+        if getattr(args, name) is None:
+            setattr(args, name, value)
+    return
 
 
 def parse_args() -> argparse.Namespace:
@@ -157,14 +214,35 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--model-arch",
-        choices=("transformer", "perceiver_io"),
+        choices=("transformer", "perceiver_io", ARCH_ATTENTION_AUTOENCODER),
         default="transformer",
         help="Foundation model architecture (default: transformer)",
     )
-    parser.add_argument("--d-model", type=int, default=512)
-    parser.add_argument("--n-layers", type=int, default=8)
-    parser.add_argument("--n-heads", type=int, default=16)
-    parser.add_argument("--d-ff", type=int, default=2048)
+    parser.add_argument(
+        "--d-model",
+        type=int,
+        default=None,
+        help="Model width (default: 512 transformer/perceiver, 256 autoencoder)",
+    )
+    parser.add_argument(
+        "--n-layers",
+        type=int,
+        default=None,
+        help="Encoder layers (default: 8 transformer/perceiver, 4 autoencoder)",
+    )
+    parser.add_argument(
+        "--n-heads",
+        type=int,
+        default=None,
+        help="Attention heads (default: 16 transformer/perceiver, 8 autoencoder)",
+    )
+    parser.add_argument(
+        "--d-ff",
+        type=int,
+        default=None,
+        help="Feed-forward width (default: 2048 transformer/perceiver, "
+        "1024 autoencoder)",
+    )
     parser.add_argument("--dropout", type=float, default=0.1)
     parser.add_argument("--max-seq-len", type=int, default=2048)
     parser.add_argument(
@@ -178,13 +256,24 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--n-state-latents", type=int, default=1)
     parser.add_argument("--n-local-latent-layers", type=int, default=2)
     parser.add_argument("--n-cross-segment-layers", type=int, default=2)
-    parser.add_argument("--n-decoder-layers", type=int, default=2)
+    parser.add_argument(
+        "--n-decoder-layers",
+        type=int,
+        default=None,
+        help="Decoder layers (default: 2 perceiver, 3 autoencoder)",
+    )
     parser.add_argument(
         "--content-readout",
         choices=("attention", "first_latent"),
         default="attention",
     )
     parser.add_argument("--decoder-reconstruction-weight", type=float, default=0.0)
+    parser.add_argument(
+        "--latent-dim",
+        type=int,
+        default=None,
+        help="Autoencoder window bottleneck width (default: 512)",
+    )
     parser.add_argument("--num-workers", type=int, default=4)
     parser.add_argument("--log-every", type=int, default=20)
     parser.add_argument("--eval-every", type=int, default=1_000)
@@ -246,6 +335,14 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=100.0,
         help="Cap on inverse-frequency loss weights (most frequent token = 1.0)",
+    )
+    parser.add_argument(
+        "--token-weight-preset",
+        choices=TOKEN_WEIGHT_PRESETS,
+        default="invfreq",
+        help="Per-token loss weights: 'invfreq' uses unigram counts with "
+        "--freq-cap; 'balanced-v1' uses the fixed empty/piece/state table and "
+        "skips the count pass",
     )
     parser.add_argument("--bf16", action="store_true")
     parser.add_argument("--compile", action="store_true")
@@ -389,7 +486,75 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--aux-turn-weight", type=float, default=0.0)
     parser.add_argument("--aux-castle-weight", type=float, default=0.0)
     parser.add_argument("--aux-ep-weight", type=float, default=0.0)
-    return parser.parse_args()
+    args = parser.parse_args()
+    resolve_model_args(args)
+    return args
+
+
+def full_reconstruction_weights(args: argparse.Namespace) -> bool:
+    """Whether the dataset should weight every position, not only masked ones."""
+    return getattr(args, "model_arch", None) == ARCH_ATTENTION_AUTOENCODER
+
+
+def dataset_token_weights(
+    args: argparse.Namespace, *, counts_supplier: Callable[[], np.ndarray]
+) -> np.ndarray | None:
+    """Resolve the per-token loss weights for the training dataset.
+
+    Returns ``None`` when weighting is disabled. ``balanced-v1`` is a fixed
+    table, so its ``counts_supplier`` is never called — this skips the remote or
+    streaming unigram pass entirely.
+    """
+    if args.no_freq_weighting:
+        return None
+    if args.token_weight_preset == "invfreq":
+        return token_weights("invfreq", counts_supplier(), cap=args.freq_cap)
+    return token_weights(args.token_weight_preset)
+
+
+def describe_token_weights(preset: str, weights: np.ndarray) -> str:
+    """Compact log line for the resolved per-token table."""
+    return (
+        f"per-token loss weighting: preset={preset} "
+        f"empty={weights[EMPTY]:.1f} pawn={weights[PIECE_BASE]:.1f} "
+        f"knight={weights[PIECE_BASE + 1]:.1f} "
+        f"bishop={weights[PIECE_BASE + 2]:.1f} "
+        f"rook={weights[PIECE_BASE + 3]:.1f} "
+        f"queen={weights[PIECE_BASE + 4]:.1f} "
+        f"king={weights[PIECE_BASE + 5]:.1f} "
+        f"state={weights[TURN_WHITE]:.1f} cls={weights[CLS]:.1f}"
+    )
+
+
+def view_helpers(
+    raw_model: nn.Module, args: argparse.Namespace
+) -> tuple[Callable | None, Callable | None, Callable | None]:
+    """Resolve the pooled-view callables used by the training objectives.
+
+    Returns ``(content_hidden_fn, encode_views_fn, encode_views_alone_fn)``.
+    The visible-identity objective trains on the content trunk and disables
+    the view pools; architectures without ``encode_views`` (the window
+    autoencoder) leave them unset so the reconstruction-only objective cannot
+    call a missing helper.
+    """
+    encode_views = getattr(raw_model, "encode_views", None)
+    content_hidden_fn = None
+    if args.visible_identity_weight > 0:
+        content_hidden = raw_model.content_hidden_states
+        content_hidden_fn = (
+            torch.compile(content_hidden, dynamic=True)
+            if args.compile
+            else content_hidden
+        )
+        encode_views_fn = None
+    elif encode_views is None:
+        encode_views_fn = None
+    else:
+        encode_views_fn = (
+            torch.compile(encode_views, dynamic=True) if args.compile else encode_views
+        )
+    encode_views_alone_fn = getattr(raw_model, "encode_views_alone", encode_views)
+    return content_hidden_fn, encode_views_fn, encode_views_alone_fn
 
 
 def masking_config(args: argparse.Namespace) -> MaskingConfig:
@@ -437,6 +602,28 @@ def masking_config(args: argparse.Namespace) -> MaskingConfig:
 
 def auxiliary_config(args: argparse.Namespace) -> AuxiliaryLossConfig:
     """Build the weighted loss configuration from parsed args."""
+    if getattr(args, "model_arch", None) == ARCH_ATTENTION_AUTOENCODER:
+        # The autoencoder is trained by full-sequence reconstruction alone.
+        # VICReg/InfoNCE need per-segment views the window bottleneck does not
+        # produce, and a hard bottleneck already rules out trivial collapse.
+        return AuxiliaryLossConfig(
+            mlm_weight=args.mlm_weight,
+            visible_identity_weight=0.0,
+            inv_weight=0.0,
+            var_weight=0.0,
+            cov_weight=0.0,
+            nce_weight=0.0,
+            alone_var_weight=0.0,
+            alone_cov_weight=0.0,
+            material_weight=0.0,
+            piece_count_weight=0.0,
+            phase_weight=0.0,
+            turn_weight=0.0,
+            castle_weight=0.0,
+            ep_weight=0.0,
+            warmup_steps=0,
+            content_pooling=False,
+        )
     return AuxiliaryLossConfig(
         mlm_weight=args.mlm_weight,
         visible_identity_weight=args.visible_identity_weight,
@@ -488,6 +675,7 @@ def streaming_train_config(
         seed=args.seed,
         shuffle_buffer=args.shuffle_buffer,
         prefetch_shards=args.prefetch_shards,
+        full_reconstruction_weights=full_reconstruction_weights(args),
         resume_step=0 if args.no_resume_data_skip else start_step,
         batch_size=args.batch_size,
         num_workers=args.num_workers,
@@ -561,6 +749,7 @@ def main() -> None:
     if args.resume:
         checkpoint = torch.load(args.resume, map_location="cpu", weights_only=False)
         model_config = model_config_from_dict(checkpoint["model_config"])
+        args.model_arch = getattr(model_config, "arch", "transformer")
         start_step = checkpoint["step"]
         best_val_loss = checkpoint.get(
             "best_val_loss", checkpoint.get("val_loss", float("inf"))
@@ -588,6 +777,18 @@ def main() -> None:
             content_pooling=args.content_pooling,
             aux_heads=aux_heads,
         )
+    elif args.model_arch == ARCH_ATTENTION_AUTOENCODER:
+        model_config = AttentionAutoencoderConfig(
+            d_model=args.d_model,
+            n_layers=args.n_layers,
+            n_heads=args.n_heads,
+            d_ff=args.d_ff,
+            dropout=args.dropout,
+            max_seq_len=args.max_seq_len,
+            max_segments=args.max_segments,
+            latent_dim=args.latent_dim,
+            n_decoder_layers=args.n_decoder_layers,
+        )
     else:
         model_config = TransformerConfig(
             d_model=args.d_model,
@@ -604,22 +805,8 @@ def main() -> None:
     model = build_model(model_config).to(device)
     raw_model = model
     model = apply_compile(model, args.compile)
-    content_hidden_fn = None
-    if args.visible_identity_weight > 0:
-        content_hidden_fn = (
-            torch.compile(raw_model.content_hidden_states, dynamic=True)
-            if args.compile
-            else raw_model.content_hidden_states
-        )
-        encode_views_fn = None
-    else:
-        encode_views_fn = (
-            torch.compile(raw_model.encode_views, dynamic=True)
-            if args.compile
-            else raw_model.encode_views
-        )
-    encode_views_alone_fn = getattr(
-        raw_model, "encode_views_alone", raw_model.encode_views
+    content_hidden_fn, encode_views_fn, encode_views_alone_fn = view_helpers(
+        raw_model, args
     )
     n_params = sum(p.numel() for p in model.parameters())
     log(
@@ -631,25 +818,27 @@ def main() -> None:
         train_dataset = StreamingWindowDataset(
             streaming_train_config(args, data_dir=str(train_dir), start_step=start_step)
         )
-        if not args.no_freq_weighting:
-            if getattr(args, "stream_shards", False):
-                train_dataset.config.unigram_weights = inverse_frequency_weights(
-                    remote_unigram_counts(
-                        args.data_repo,
-                        split="train",
-                        cache_dir=args.stream_shard_cache,
-                        log=log,
-                        cache_path=Path(args.stream_shard_cache) / "unigram_counts.npz",
-                    ),
-                    cap=args.freq_cap,
-                )
-                log("frequency-aware loss weighting enabled (lazy remote counts)")
-            else:
-                train_dataset.config.unigram_weights = inverse_frequency_weights(
-                    streaming_unigram_counts(str(train_dir), log=log),
-                    cap=args.freq_cap,
-                )
-                log("frequency-aware loss weighting enabled (streaming counts)")
+        if getattr(args, "stream_shards", False):
+            weights = dataset_token_weights(
+                args,
+                counts_supplier=lambda: remote_unigram_counts(
+                    args.data_repo,
+                    split="train",
+                    cache_dir=args.stream_shard_cache,
+                    log=log,
+                    cache_path=Path(args.stream_shard_cache) / "unigram_counts.npz",
+                ),
+            )
+        else:
+            weights = dataset_token_weights(
+                args,
+                counts_supplier=lambda: streaming_unigram_counts(
+                    str(train_dir), log=log
+                ),
+            )
+        train_dataset.config.unigram_weights = weights
+        if weights is not None:
+            log(describe_token_weights(args.token_weight_preset, weights))
     else:
         train_dataset = WindowDataset(
             WindowDatasetConfig(
@@ -657,13 +846,15 @@ def main() -> None:
                 max_seq_len=args.max_seq_len,
                 max_segments=args.max_segments,
                 masking=masking_config(args),
+                full_reconstruction_weights=full_reconstruction_weights(args),
             )
         )
-        if not args.no_freq_weighting:
-            train_dataset.config.unigram_weights = inverse_frequency_weights(
-                unigram_counts(train_dataset.games), cap=args.freq_cap
-            )
-            log("frequency-aware loss weighting enabled")
+        weights = dataset_token_weights(
+            args, counts_supplier=lambda: unigram_counts(train_dataset.games)
+        )
+        train_dataset.config.unigram_weights = weights
+        if weights is not None:
+            log(describe_token_weights(args.token_weight_preset, weights))
     log(f"loading val split from {val_dir} ...")
     val_games = load_game_pool(
         Path(val_dir),
@@ -682,6 +873,7 @@ def main() -> None:
             max_segments=args.max_segments,
             masking=masking_config(args),
             seed=args.seed,
+            full_reconstruction_weights=full_reconstruction_weights(args),
         )
     )
     if getattr(args, "stream_shards", False):
@@ -1120,25 +1312,28 @@ def main() -> None:
                     )
                 )
                 extras["full_eval"] = metrics
-            hard_records = collect_hard_negatives(
-                raw_model,
-                batch,
-                loss_config,
-                step=step,
-                top_k=args.hard_negative_top_k,
-                generator=torch.Generator(device=device).manual_seed(args.seed + step),
-            )
-            hard_path = write_hard_negatives(hard_records, checkpoint_dir, step)
-            if hard_path is not None:
-                log(f"step={step} hard negatives saved to {hard_path}")
-                if args.upload_bucket:
-                    upload_file(
-                        hard_path,
-                        bucket_id=args.upload_bucket,
-                        remote_path=(
-                            f"{args.upload_prefix}/hard_negatives/{hard_path.name}"
-                        ),
-                    )
+            if args.model_arch != ARCH_ATTENTION_AUTOENCODER:
+                hard_records = collect_hard_negatives(
+                    raw_model,
+                    batch,
+                    loss_config,
+                    step=step,
+                    top_k=args.hard_negative_top_k,
+                    generator=torch.Generator(device=device).manual_seed(
+                        args.seed + step
+                    ),
+                )
+                hard_path = write_hard_negatives(hard_records, checkpoint_dir, step)
+                if hard_path is not None:
+                    log(f"step={step} hard negatives saved to {hard_path}")
+                    if args.upload_bucket:
+                        upload_file(
+                            hard_path,
+                            bucket_id=args.upload_bucket,
+                            remote_path=(
+                                f"{args.upload_prefix}/hard_negatives/{hard_path.name}"
+                            ),
+                        )
             latest_metrics = {
                 key: value for key, value in extras.items() if key != "full_eval"
             }

@@ -30,6 +30,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import BinaryIO
 
+import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
 import zstandard
@@ -301,6 +302,29 @@ class BatchUploader:
         return
 
 
+def _packed_list_array(rows: list[dict]) -> pa.ListArray:
+    """Build the ``packed`` column directly from the int16 payloads.
+
+    ``pa.array`` promotes each element to int64 before casting it down to
+    int16, which quadruples peak memory for a full batch (~3.9GB instead
+    of ~1GB for 100k games) and fragments the allocator across batches,
+    eventually pushing the driver into Ray's OOM killer. Concatenating the
+    int16 payloads and describing them with offsets avoids that copy.
+    """
+    counts = np.fromiter(
+        (len(row["packed"]) for row in rows), dtype=np.int64, count=len(rows)
+    )
+    offsets = np.zeros(len(rows) + 1, dtype=np.int32)
+    offsets[1:] = np.cumsum(counts, dtype=np.int64)
+    if rows:
+        values = np.concatenate(
+            [np.asarray(row["packed"], dtype=np.int16) for row in rows]
+        )
+    else:
+        values = np.empty(0, dtype=np.int16)
+    return pa.ListArray.from_arrays(pa.array(offsets), pa.array(values))
+
+
 @dataclass
 class ArchivePipeline:
     dataset_config: DatasetConfig
@@ -361,9 +385,7 @@ class ArchivePipeline:
                 part = emit_rows[start : start + batch_size]
                 table = pa.table(
                     {
-                        "packed": pa.array(
-                            [r["packed"] for r in part], type=pa.list_(pa.int16())
-                        ),
+                        "packed": _packed_list_array(part),
                         "n_positions": pa.array(
                             [r["n_positions"] for r in part], type=pa.int32()
                         ),

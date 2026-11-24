@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 import torch
 
 from bdd import given, then, when
@@ -349,4 +350,73 @@ class TestProbeConfidenceIntervals:
             assert metrics["pc2_piece_corr_ci_low"] <= metrics["pc2_piece_corr_ci_high"]
             assert metrics["pc1_piece_corr"] >= 0
             assert metrics["pc2_piece_corr"] >= 0
+        return
+
+    def test_phase_stats_accepts_an_explicit_device(self):
+        with given("a rank-two embedding matrix and matching piece counts"):
+            t = torch.linspace(-1.0, 1.0, 128)
+            embeds = torch.stack((t, t * t), dim=1).repeat(1, 4)
+            piece_counts = (10.0 * t + 20.0).numpy()
+
+        with when("phase stats are computed with an explicit CPU device"):
+            projected, corr1, corr2 = phase_stats(embeds, piece_counts, device="cpu")
+
+        with then("the projection and non-negative correlations are returned"):
+            assert projected.shape == (128, 2)
+            assert corr1 >= 0.0
+            assert corr2 >= 0.0
+        return
+
+    def test_phase_stats_matches_the_numpy_projection(self):
+        with given("a rank-two embedding matrix"):
+            t = torch.linspace(-1.0, 1.0, 128)
+            embeds = torch.stack((t, t * t), dim=1).repeat(1, 4)
+            piece_counts = (10.0 * t + 20.0).numpy()
+
+        with when("the projection is compared with a numpy SVD"):
+            projected, _, _ = phase_stats(embeds, piece_counts, device="cpu")
+            x = embeds.numpy()
+            x = x - x.mean(axis=0)
+            _, _, vt = np.linalg.svd(x, full_matrices=False)
+            reference = x @ vt[:2].T
+
+        with then("the two projections agree up to per-component sign"):
+            assert np.allclose(np.abs(projected), np.abs(reference), atol=1e-4)
+        return
+
+    def test_phase_stats_ci_accepts_an_explicit_device(self):
+        with given("random embeddings and two bootstrap resamples"):
+            torch.manual_seed(0)
+            embeds = torch.randn(128, 8)
+            piece_counts = np.random.default_rng(0).integers(2, 32, size=128)
+
+        with when("the bootstrap CI is computed on CPU explicitly"):
+            metrics = phase_stats_ci(
+                embeds, piece_counts, seed=0, n_bootstrap=2, device="cpu"
+            )
+
+        with then("the bounds stay ordered"):
+            assert metrics["pc1_piece_corr_ci_low"] <= metrics["pc1_piece_corr_ci_high"]
+            assert metrics["pc2_piece_corr_ci_low"] <= metrics["pc2_piece_corr_ci_high"]
+        return
+
+    @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
+    def test_phase_stats_cuda_matches_cpu(self):
+        with given("a rank-two embedding matrix on both devices"):
+            t = torch.linspace(-1.0, 1.0, 128)
+            embeds = torch.stack((t, t * t), dim=1).repeat(1, 4)
+            piece_counts = (10.0 * t + 20.0).numpy()
+
+        with when("phase stats are computed on CPU and CUDA"):
+            cpu_projected, cpu_corr1, cpu_corr2 = phase_stats(
+                embeds, piece_counts, device="cpu"
+            )
+            gpu_projected, gpu_corr1, gpu_corr2 = phase_stats(
+                embeds.cuda(), piece_counts, device="cuda"
+            )
+
+        with then("the projections and correlations agree"):
+            assert np.allclose(np.abs(cpu_projected), np.abs(gpu_projected), atol=1e-3)
+            assert np.isclose(cpu_corr1, gpu_corr1, atol=1e-3)
+            assert np.isclose(cpu_corr2, gpu_corr2, atol=1e-3)
         return

@@ -7,7 +7,12 @@ from dataclasses import dataclass
 import torch
 from torch import nn
 
-from src.modeling.frozen import FEATURE_RECIPES, encoder_embeddings, freeze_encoder
+from src.modeling.frozen import (
+    FEATURE_RECIPES,
+    embedding_dim,
+    encoder_embeddings,
+    freeze_encoder,
+)
 from src.modeling.token_pool import TokenPool, TokenPoolConfig
 from src.modeling.transformer import MaskedStreamTransformer
 
@@ -142,11 +147,17 @@ class FrozenEncoderScore(nn.Module):
         self.unfreeze_last_block = unfreeze_last_block
         self.unfreeze_all = unfreeze_all
         self.token_pooling = token_pooling
-        self.isolated = feature == "native" and bool(encoder.config.content_pooling)
+        self.isolated = feature in ("native", "native_positions") and bool(
+            getattr(encoder.config, "content_pooling", False)
+        )
+        if token_pooling == "attention" and not hasattr(encoder, "token_states"):
+            raise ValueError(
+                "attention token pooling requires an encoder with token_states"
+            )
         if token_pooling == "attention":
             self.token_pool = TokenPool(
                 TokenPoolConfig(
-                    d_model=encoder.config.d_model,
+                    d_model=embedding_dim(encoder, feature),
                     mode="attention",
                     token_filter="content" if self.isolated else "full",
                 )

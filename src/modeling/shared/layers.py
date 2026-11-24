@@ -7,6 +7,7 @@ import torch.nn.functional as F
 from torch import nn
 
 from src.modeling.shared.attention import scaled_dot_product_attention
+from src.modeling.varlen import varlen_attention
 
 
 class FeedForward(nn.Module):
@@ -131,6 +132,53 @@ class TransformerLayer(nn.Module):
         attn_mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
         x = self.attn(x, key_padding_mask=key_padding_mask, attn_mask=attn_mask)
+        return x + self.ff(self.ln_ff(x))
+
+
+class VarlenTransformerLayer(nn.Module):
+    """Pre-norm self-attention plus feed-forward over flattened valid tokens.
+
+    Every row's valid tokens are concatenated into one stream delimited by
+    ``cu_seqlens``. That keeps the attention mask out of the S x S layout, so
+    the cascade can use the flash-attn varlen kernel (or a per-segment SDPA
+    loop off CUDA) instead of a dense boolean mask, which would force the
+    slower math kernel.
+    """
+
+    def __init__(self, d_model: int, n_heads: int, d_ff: int, dropout: float) -> None:
+        super().__init__()
+        if d_model % n_heads != 0:
+            raise ValueError("d_model must be divisible by n_heads")
+        self.d_model = d_model
+        self.n_heads = n_heads
+        self.head_dim = d_model // n_heads
+        self.dropout = dropout
+        self.ln_attn = nn.LayerNorm(d_model)
+        self.qkv = nn.Linear(d_model, 3 * d_model)
+        self.attn_out = nn.Linear(d_model, d_model)
+        self.ln_ff = nn.LayerNorm(d_model)
+        self.ff = FeedForward(d_model, d_ff, dropout)
+        return
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        cu_seqlens: torch.Tensor,
+        max_seqlen: int,
+    ) -> torch.Tensor:
+        """Run the layer over flat valid tokens ``[T, d_model]``."""
+        h = self.ln_attn(x)
+        qkv = self.qkv(h).view(-1, 3, self.n_heads, self.head_dim)
+        q, k, v = qkv.permute(1, 0, 2, 3).unbind(0)
+        attended = varlen_attention(
+            q,
+            k,
+            v,
+            cu_seqlens,
+            max_seqlen,
+            dropout_p=self.dropout if self.training else 0.0,
+        )
+        x = x + self.attn_out(attended.reshape(x.shape[0], self.d_model))
         return x + self.ff(self.ln_ff(x))
 
 

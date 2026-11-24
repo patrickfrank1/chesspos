@@ -19,12 +19,13 @@ from src.dataset.puzzle_variants import (
     load_puzzle_records,
     split_for_puzzle,
 )
+from src.modeling.factory import build_model, model_config_from_dict
+from src.modeling.frozen import embedding_dim
 from src.modeling.puzzle_classifier import (
     FrozenEncoderClassifier,
     PoolingClassifier,
     PoolingClassifierConfig,
 )
-from src.modeling.factory import build_model, model_config_from_dict
 from src.training.losses import (
     FocalLossConfig,
     focal_loss_with_logits,
@@ -64,7 +65,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--pooling", choices=("mean", "attention"), default="attention")
     parser.add_argument(
         "--feature",
-        choices=("native", "full"),
+        choices=("native", "full", "native_positions"),
         default="native",
         help="Encoder embedding: native embed() or full-trunk encode()",
     )
@@ -316,7 +317,7 @@ def main() -> int:
     encoder = load_frozen_encoder(args.checkpoint, device)
     head = PoolingClassifier(
         PoolingClassifierConfig(
-            d_model=encoder.config.d_model,
+            d_model=embedding_dim(encoder, args.feature),
             dropout=args.dropout,
             hidden_dim=args.head_hidden_dim,
             pooling=args.pooling,

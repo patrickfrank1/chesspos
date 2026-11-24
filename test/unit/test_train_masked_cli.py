@@ -1,10 +1,22 @@
+import numpy as np
+import pytest
+
 from bdd import given, then, when
+from src.dataset.token_stream import CLS, EMPTY, PIECE_BASE, VOCAB_SIZE
+from src.modeling.autoencoder import AttentionAutoencoderConfig
+from src.modeling.factory import build_model
+from src.modeling.transformer import TransformerConfig
 from src.modeling.masking import MaskingConfig
+from src.training.window_dataset import balanced_v1_weights
 from src.run.train_masked_transformer import (
     auxiliary_config,
+    dataset_token_weights,
+    describe_token_weights,
+    full_reconstruction_weights,
     masking_config,
     parse_args,
     streaming_train_config,
+    view_helpers,
 )
 
 
@@ -542,4 +554,295 @@ class TestStreamShardsFlags:
 
         with then("remote shard fetching stays disabled"):
             assert config.remote_repo is None
+        return
+
+
+class TestAttentionAutoencoderFlags:
+    def test_autoencoder_preset_matches_the_six_million_recipe(self, monkeypatch):
+        with given("the attention autoencoder architecture and no size flags"):
+            monkeypatch.setattr(
+                "sys.argv",
+                ["train_masked_transformer", "--model-arch", "attention_autoencoder"],
+            )
+
+        with when("the arguments are parsed"):
+            args = parse_args()
+
+        with then("the compact six-million-parameter preset is selected"):
+            assert args.d_model == 256
+            assert args.n_heads == 8
+            assert args.n_layers == 4
+            assert args.d_ff == 1024
+            assert args.n_decoder_layers == 3
+            assert args.latent_dim == 512
+        return
+
+    def test_explicit_size_overrides_the_preset(self, monkeypatch):
+        with given("the autoencoder architecture with explicit widths"):
+            monkeypatch.setattr(
+                "sys.argv",
+                [
+                    "train_masked_transformer",
+                    "--model-arch",
+                    "attention_autoencoder",
+                    "--d-model",
+                    "320",
+                    "--n-layers",
+                    "5",
+                    "--n-heads",
+                    "8",
+                    "--d-ff",
+                    "1280",
+                    "--n-decoder-layers",
+                    "2",
+                    "--latent-dim",
+                    "768",
+                ],
+            )
+
+        with when("the arguments are parsed"):
+            args = parse_args()
+
+        with then("the explicit values win over the preset"):
+            assert args.d_model == 320
+            assert args.n_layers == 5
+            assert args.n_heads == 8
+            assert args.d_ff == 1280
+            assert args.n_decoder_layers == 2
+            assert args.latent_dim == 768
+        return
+
+    def test_autoencoder_auxiliary_config_is_reconstruction_only(self, monkeypatch):
+        with given("the autoencoder architecture and default loss weights"):
+            monkeypatch.setattr(
+                "sys.argv",
+                ["train_masked_transformer", "--model-arch", "attention_autoencoder"],
+            )
+            args = parse_args()
+
+        with when("the auxiliary config is built"):
+            config = auxiliary_config(args)
+
+        with then("only the reconstruction loss is active"):
+            assert config.auxiliary_enabled() is False
+            assert config.mlm_weight == 1.0
+            assert config.warmup_steps == 0
+        return
+
+    def test_autoencoder_weights_every_position(self, monkeypatch):
+        with given("the autoencoder architecture"):
+            monkeypatch.setattr(
+                "sys.argv",
+                ["train_masked_transformer", "--model-arch", "attention_autoencoder"],
+            )
+            args = parse_args()
+
+        with when("the weighting policy is queried"):
+            full = full_reconstruction_weights(args)
+
+        with then("visible positions stay supervised"):
+            assert full is True
+        return
+
+    def test_transformer_keeps_masked_only_weighting(self, monkeypatch):
+        with given("the default transformer architecture"):
+            monkeypatch.setattr("sys.argv", ["train_masked_transformer"])
+            args = parse_args()
+
+        with when("the weighting policy is queried"):
+            full = full_reconstruction_weights(args)
+
+        with then("only masked positions are supervised"):
+            assert full is False
+        return
+
+    def test_streaming_config_carries_reconstruction_weighting(self, monkeypatch):
+        with given("streaming autoencoder args"):
+            monkeypatch.setattr(
+                "sys.argv",
+                [
+                    "train_masked_transformer",
+                    "--streaming",
+                    "--model-arch",
+                    "attention_autoencoder",
+                ],
+            )
+            args = parse_args()
+
+        with when("the streaming train config is built"):
+            config = streaming_train_config(args, data_dir="data/train", start_step=0)
+
+        with then("full-sequence weighting reaches the dataset"):
+            assert config.full_reconstruction_weights is True
+        return
+
+
+class TestViewHelpers:
+    def test_transformer_without_identity_loss_pools_views(self, monkeypatch):
+        with given("a transformer model and the default objectives"):
+            monkeypatch.setattr("sys.argv", ["train_masked_transformer"])
+            args = parse_args()
+            model = build_model(TransformerConfig(d_model=16, n_heads=2, n_layers=1))
+
+        with when("the view helpers are resolved"):
+            content_hidden, encode_views, alone = view_helpers(model, args)
+
+        with then("the content-only helper stays unset and views are pooled"):
+            assert content_hidden is None
+            assert encode_views is not None
+            assert alone is not None
+        return
+
+    def test_identity_objective_uses_the_content_trunk(self, monkeypatch):
+        with given("a transformer model and a positive visible-identity weight"):
+            monkeypatch.setattr(
+                "sys.argv",
+                ["train_masked_transformer", "--visible-identity-weight", "0.5"],
+            )
+            args = parse_args()
+            model = build_model(TransformerConfig(d_model=16, n_heads=2, n_layers=1))
+
+        with when("the view helpers are resolved"):
+            content_hidden, encode_views, alone = view_helpers(model, args)
+
+        with then("the content helper is used and the view pools are disabled"):
+            assert content_hidden is not None
+            assert encode_views is None
+            assert alone is not None
+        return
+
+    def test_autoencoder_has_no_view_helpers(self, monkeypatch):
+        with given("an autoencoder model without encode_views"):
+            monkeypatch.setattr(
+                "sys.argv",
+                ["train_masked_transformer", "--model-arch", "attention_autoencoder"],
+            )
+            args = parse_args()
+            model = build_model(
+                AttentionAutoencoderConfig(
+                    d_model=16,
+                    n_heads=2,
+                    n_layers=1,
+                    d_ff=32,
+                    latent_dim=8,
+                    n_decoder_layers=1,
+                )
+            )
+
+        with when("the view helpers are resolved"):
+            content_hidden, encode_views, alone = view_helpers(model, args)
+
+        with then("every view helper is unset instead of raising"):
+            assert content_hidden is None
+            assert encode_views is None
+            assert alone is None
+        return
+
+
+class TestTokenWeightPreset:
+    def test_default_preset_is_inverse_frequency(self, monkeypatch):
+        with given("no preset flag"):
+            monkeypatch.setattr("sys.argv", ["train_masked_transformer"])
+
+        with when("the arguments are parsed"):
+            args = parse_args()
+
+        with then("the historical inverse-frequency scheme is used"):
+            assert args.token_weight_preset == "invfreq"
+        return
+
+    def test_balanced_v1_skips_unigram_counting(self, monkeypatch):
+        with given("the balanced-v1 preset"):
+            monkeypatch.setattr(
+                "sys.argv",
+                ["train_masked_transformer", "--token-weight-preset", "balanced-v1"],
+            )
+            args = parse_args()
+            calls = []
+
+            def counts_supplier():
+                calls.append(1)
+                return np.ones(VOCAB_SIZE)
+
+        with when("the dataset token weights are resolved"):
+            weights = dataset_token_weights(args, counts_supplier=counts_supplier)
+
+        with then("the fixed table is used without touching the counts"):
+            assert calls == []
+            assert weights is not None
+            assert weights[EMPTY] == pytest.approx(1.0)
+            assert weights[CLS] == 0.0
+        return
+
+    def test_invfreq_preset_uses_counts_and_cap(self, monkeypatch):
+        with given("the default preset with --freq-cap 5"):
+            monkeypatch.setattr(
+                "sys.argv", ["train_masked_transformer", "--freq-cap", "5"]
+            )
+            args = parse_args()
+            counts = np.zeros(VOCAB_SIZE)
+            counts[EMPTY] = 1_000_000
+            counts[PIECE_BASE] = 10
+
+        with when("the dataset token weights are resolved"):
+            weights = dataset_token_weights(args, counts_supplier=lambda: counts)
+
+        with then("the cap is applied to the inverse-frequency table"):
+            assert weights is not None
+            assert weights[EMPTY] == pytest.approx(1.0)
+            assert weights[PIECE_BASE] == pytest.approx(5.0)
+        return
+
+    def test_no_freq_weighting_takes_precedence(self, monkeypatch):
+        with given("both --no-freq-weighting and a preset"):
+            monkeypatch.setattr(
+                "sys.argv",
+                [
+                    "train_masked_transformer",
+                    "--no-freq-weighting",
+                    "--token-weight-preset",
+                    "balanced-v1",
+                ],
+            )
+            args = parse_args()
+            calls = []
+
+            def counts_supplier():
+                calls.append(1)
+                return np.ones(VOCAB_SIZE)
+
+        with when("the dataset token weights are resolved"):
+            weights = dataset_token_weights(args, counts_supplier=counts_supplier)
+
+        with then("weighting is disabled without touching the counts"):
+            assert weights is None
+            assert calls == []
+        return
+
+    def test_unknown_preset_is_rejected_by_the_cli(self, monkeypatch):
+        with given("an unrecognised preset on the command line"):
+            monkeypatch.setattr(
+                "sys.argv",
+                ["train_masked_transformer", "--token-weight-preset", "mystery"],
+            )
+
+        with when("the arguments are parsed"):
+            with then("argparse rejects the choice"):
+                with pytest.raises(SystemExit):
+                    parse_args()
+        return
+
+    def test_balanced_v1_summary_reports_the_table(self):
+        with given("the resolved balanced-v1 table"):
+            weights = balanced_v1_weights()
+
+        with when("the log summary is formatted"):
+            text = describe_token_weights("balanced-v1", weights)
+
+        with then("the preset and the key weights are visible"):
+            assert "preset=balanced-v1" in text
+            assert "empty=1.0" in text
+            assert "pawn=2.0" in text
+            assert "queen=4.0" in text
+            assert "cls=0.0" in text
         return
