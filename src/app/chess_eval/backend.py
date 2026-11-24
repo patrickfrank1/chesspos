@@ -16,7 +16,7 @@ from src.dataset.token_stream import N_SLOTS, SEGMENT_LEN, TokenStreamEncoder
 from src.run.classify_position import load_classifier
 from src.run.eval_score_probe import load_score_probe
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
+REPO_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_MODEL_ROOTS = (
     REPO_ROOT / "data/models/downstream/score",
     REPO_ROOT / "data/models/downstream/sacrifice",

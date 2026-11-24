@@ -11,7 +11,7 @@ import pyarrow.parquet as pq
 from src.dataset.puzzle_variants import split_stream
 from src.dataset.token_stream import TokenStreamEncoder
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
+REPO_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_PUZZLE_DIR = REPO_ROOT / "data/processed/puzzles"
 
 

@@ -10,12 +10,12 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from src.chess_eval.attribution import (
+from src.app.chess_eval.attribution import (
     METHODS,
     OCCLUSION_MODES,
     attribute_position,
 )
-from src.chess_eval.backend import (
+from src.app.chess_eval.backend import (
     DEFAULT_MODEL_ROOTS,
     catalog_by_id,
     discover_models,
@@ -24,9 +24,9 @@ from src.chess_eval.backend import (
     resolve_device,
     state_response,
 )
-from src.chess_eval.puzzles import background_boards
-from src.chess_eval.samples import DEFAULT_PUZZLE_DIR, load_puzzle_samples
-from src.chess_eval.stockfish import ensure_nnue, nnue_info
+from src.app.chess_eval.puzzles import background_boards
+from src.app.chess_eval.samples import DEFAULT_PUZZLE_DIR, load_puzzle_samples
+from src.app.chess_eval.stockfish import ensure_nnue, nnue_info
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 mimetypes.add_type("application/wasm", ".wasm")

@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 from typing import Sequence
 
-from src.chess_eval.app import create_app
+from src.app.chess_eval.app import create_app
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:

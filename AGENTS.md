@@ -174,6 +174,7 @@ docs.
 
 ```
 src/
+  app/            # interactive web apps (chess_eval, position_search)
   dataset/        # ETL + HF dataset client + position encoders (current focus)
   modeling/       # PyTorch model definitions
   training/       # Data pipeline for training

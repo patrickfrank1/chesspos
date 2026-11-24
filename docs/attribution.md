@@ -10,7 +10,7 @@ The same code path serves both because both models read the same token stream
 (`src/dataset/token_stream.py`): 64 square tokens, then turn, castling, and
 en-passant. Only the output head and the optional window differ.
 
-Implementation: [`src/chess_eval/attribution.py`](../src/chess_eval/attribution.py).
+Implementation: [`src/app/chess_eval/attribution.py`](../src/app/chess_eval/attribution.py).
 
 ## Value function
 
@@ -142,7 +142,7 @@ The strongest test is chess-grounded: **does the explanation rank the piece
 the solution actually sacrifices near the top?** The puzzle shards contain the
 solution, so the sacrificed piece is recoverable: it is the solver's piece
 captured on its destination square by the immediate reply
-([`src/chess_eval/puzzles.py`](../src/chess_eval/puzzles.py)).
+([`src/app/chess_eval/puzzles.py`](../src/app/chess_eval/puzzles.py)).
 
 ```bash
 uv run python -m src.run.evaluate_attribution \

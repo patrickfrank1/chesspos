@@ -23,7 +23,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 def build_app(args: argparse.Namespace):
     from src.search.embedder import CheckpointEmbedder
     from src.search.factory import open_position_store
-    from src.web.app import create_app
+    from src.app.position_search.app import create_app
 
     embedder = CheckpointEmbedder(args.checkpoint, device=args.device)
     store = open_position_store(

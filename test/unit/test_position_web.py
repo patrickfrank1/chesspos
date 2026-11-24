@@ -9,8 +9,8 @@ from bdd import given, then, when
 from position_support import FakeEmbedder, make_position_row
 from src.search.memory_store import MemoryPositionStore
 from src.run.serve_position_search import parse_args as parse_serve_args
-from src.web.app import create_app
-from src.web.examples import EXAMPLES
+from src.app.position_search.app import create_app
+from src.app.position_search.examples import EXAMPLES
 
 
 def _client() -> tuple[TestClient, MemoryPositionStore]:

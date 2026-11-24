@@ -15,7 +15,7 @@ from pydantic import BaseModel, Field
 from src.dataset.token_stream import TokenStreamEncoder
 from src.search.codec import decode_board
 from src.search.query import GameHit, search_games
-from src.web.examples import EXAMPLES, Example
+from src.app.position_search.examples import EXAMPLES, Example
 
 PAGE_PATH = Path(__file__).with_name("static") / "index.html"
 QUERY_BOARD_SIZE = 320

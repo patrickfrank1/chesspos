@@ -8,8 +8,8 @@ import pyarrow.parquet as pq
 from fastapi.testclient import TestClient
 
 from bdd import given, then, when
-from src.chess_eval.app import create_app
-from src.chess_eval.samples import load_puzzle_samples
+from src.app.chess_eval.app import create_app
+from src.app.chess_eval.samples import load_puzzle_samples
 from src.dataset.token_stream import TokenStreamEncoder, pack_stream
 
 

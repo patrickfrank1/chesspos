@@ -31,7 +31,7 @@ outputs of the trained downstream checkpoints.
 
 ```bash
 uv sync --extra cpu
-uv run python -m src.chess_eval --host 127.0.0.1 --port 8000
+uv run python -m src.app.chess_eval --host 127.0.0.1 --port 8000
 ```
 
 Open <http://127.0.0.1:8000>.
@@ -117,7 +117,7 @@ about 3 s.
 The browser engine is the full `sf_19` build from
 [`@lichess-org/stockfish-web`](https://github.com/lichess-org/stockfish-web)
 version `0.6.1`, vendored under
-`src/chess_eval/static/stockfish/`. It runs inside a dedicated Web
+`src/app/chess_eval/static/stockfish/`. It runs inside a dedicated Web
 Worker, so searches do not block the board UI.
 
 The NNUE file (`nn-1a298aa575a0.nnue`, about 94 MB) is downloaded on first use
@@ -149,7 +149,7 @@ missing.
 The engine evaluation is White-POV: centipawns are negated when Black is to
 move, and mate scores are shown as `#N` for White or `#-N` for Black. The PV is
 shown in UCI notation. Stockfish is GPLv3/AGPL-3.0; the vendored license is in
-`src/chess_eval/static/stockfish/LICENSE`.
+`src/app/chess_eval/static/stockfish/LICENSE`.
 
 ## Limitations
 

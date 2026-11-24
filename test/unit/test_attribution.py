@@ -11,21 +11,21 @@ import torch
 from fastapi.testclient import TestClient
 
 from bdd import given, then, when
-from src.chess_eval.app import create_app
-from src.chess_eval.attribution import (
+from src.app.chess_eval.app import create_app
+from src.app.chess_eval.attribution import (
     attribute_position,
     deletion_curve,
     kernel_shap,
     occlusion_deltas,
 )
-from src.chess_eval.backend import ModelHandle, ModelInfo, evaluate_handle
+from src.app.chess_eval.backend import ModelHandle, ModelInfo, evaluate_handle
 from src.dataset.token_stream import EMPTY, MASK, VOCAB_SIZE
 from src.modeling.puzzle_classifier import PoolingClassifier, PoolingClassifierConfig
 from src.modeling.score_head import ScoreHead, ScoreHeadConfig
 from src.modeling.transformer import MaskedStreamTransformer, TransformerConfig
 from src.run.classify_position import load_classifier
 from src.run.eval_score_probe import load_score_probe
-from src.chess_eval.puzzles import SolvedPuzzle
+from src.app.chess_eval.puzzles import SolvedPuzzle
 from src.run.evaluate_attribution import (
     attribution_report,
     piece_localization_report,
