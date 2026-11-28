@@ -146,30 +146,96 @@ python3 -m src.run.train_masked_transformer \
 
 ### Response probes on each arm (5 000-step checkpoints)
 
-Early-exit masked accuracy (128 paired windows, board masking):
+Early-exit masked accuracy (128 paired windows, board masking). `k*` is the
+first depth within 0.3 pt of the full model.
 
-| arm | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 |
-|---|---:|---:|---:|---:|---:|---:|---:|---:|
-| D4 | 0.7130 | 0.7702 | 0.8094 | **0.8457** | | | | |
-| D6 | 0.6674 | 0.7448 | 0.7902 | 0.8236 | 0.8557 | **0.8608** | | |
-| D8 | 0.6923 | 0.7385 | 0.7633 | 0.7895 | 0.8137 | 0.8335 | 0.8527 | **0.8590** |
+| arm | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | last-block gain | k\\* |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| D4 | 0.7130 | 0.7702 | 0.8094 | **0.8457** | | | | | | | | | +3.6 pt | 4 |
+| D6 | 0.6674 | 0.7448 | 0.7902 | 0.8236 | 0.8557 | **0.8608** | | | | | | | +0.5 pt | 6 |
+| D8 | 0.6923 | 0.7385 | 0.7633 | 0.7895 | 0.8137 | 0.8335 | 0.8527 | **0.8590** | | | | | +0.6 pt | 8 |
+| D12 | 0.6817 | 0.7289 | 0.7611 | 0.7787 | 0.7894 | 0.8066 | 0.8205 | 0.8347 | 0.8383 | 0.8491 | 0.8556 | **0.8635** | +0.8 pt | 12 |
 
-Residual drift (`rel_delta` per block) on the same checkpoints:
+Residual drift (`rel_delta` / `cos` per block) on the same checkpoints:
 
 | arm | deltas |
 |---|---|
 | D4 | 0.322, 0.322, 0.267, 0.337 |
 | D6 | 0.295, 0.294, 0.260, 0.280, 0.241, 0.310 |
 | D8 | 0.286, 0.269, 0.270, 0.252, 0.229, 0.246, 0.236, 0.239 |
+| D12 | 0.286, 0.277, 0.264, 0.250, 0.204, 0.191, 0.182, 0.180, 0.160, 0.169, 0.157, 0.201 |
 
-Even a 5 000-step model still gains from *every* block in the early-exit
-curve, but the last-block gain shrinks with depth (+2.9 pt at D4, +0.5 pt at
-D6, +0.6 pt at D8), and in D8 the trailing blocks are the quietest ones — the
-first sign of saturation in the whole set of cheap probes.
+Every block still carries decodable information in every arm, but the
+margin shrinks with depth (+3.6 pt for D4's last block, +0.5-0.8 pt for the
+deeper arms), and D12's trailing blocks attenuate to `rel_delta 0.16` before
+the last block ticks back up to 0.20 — mild saturation, not collapse.
+
+Latent truncation on each final arm checkpoint (512 basis windows, 1024
+boards, GPU):
+
+| arm | acc @512 | acc @192 | rank 99 % | `R²_mat` @512 |
+|---|---:|---:|---:|---:|
+| D4 | 0.8499 | 0.8500 | 91 | 0.180 |
+| D6 | 0.8608 | 0.8607 | 99 | 0.215 |
+| D8 | 0.8596 | 0.8594 | 101 | 0.275 |
+| D12 | 0.8630 | 0.8626 | 99 | 0.392 |
+
+Reconstruction accuracy and effective rank **stop moving** past D6 while the
+material probe keeps improving (0.18 → 0.39): extra depth at a fixed token
+budget buys attribute information, not more reconstructable content.
+
+Layer pruning at 5 000 steps (D6 arm, skip one block):
+
+| block | 0 | 1 | 2 | 3 | 4 | 5 |
+|---|---:|---:|---:|---:|---:|---:|
+| acc drop | 4.21 pt | 2.25 pt | 2.34 pt | 2.17 pt | 3.03 pt | **0.51 pt** |
+
+The same block that costs 5.64 pt to remove in the converged 96 k model is
+nearly free at 5 k: the final block **becomes load-bearing late in training**.
+That is the main caveat when reading a short-horizon sweep.
+
+### What P5 says
+
+- 4 → 6 blocks: real gain at matched tokens (val loss −0.040, probe accuracy
+  +1.1 pt, rank +8).
+- 6 → 8 blocks: flat on loss (+0.004) and on top-1 probe accuracy (+0.0 pt,
+  within noise), rank +2.
+- 8 → 12 blocks: NLL keeps improving (−0.046) but top-1 only +0.3 pt and
+  effective rank −2, i.e. the extra depth mostly sharpens confidence.
+- Every arm is still improving at step 5 000 (≈ 0.37 B tokens), so the knee
+  should be re-checked at the full budget before it is treated as final.
+
 
 
 
 
 ## Verdict per §1 row
 
-<!-- verdict table -->
+| signal | observation | reads as |
+|---|---|---|
+| last-layer pruning cost | 5.64 pt in the converged 6L model; 0.51 pt at 5 k steps | **depth-limited** at convergence, free early |
+| early-exit accuracy | rises to the final block in all four arms (`k*` = L) | **depth-limited** within a model |
+| consecutive-block drift | no block near identity; trailing blocks of D12 attenuate to 0.16 | depth-limited, mild saturation at ≥ 8 blocks |
+| latent effective rank vs depth | 74 → 170 inside the 96 k model; 91 / 99 / 101 / 99 across arms | grows within a model, **flat across arms past D6** |
+| depth sweep slope at top | 4→6 −0.040 loss; 6→8 +0.004; 8→12 −0.046 loss, +0.3 pt top-1 | **knee at 6-8 blocks at fixed tokens** |
+| iso-FLOP: depth vs tokens | not run (needs equal-GPU-hour arms) | open |
+
+**Decision.** Depth is not saturated inside a trained model — every block,
+including the last, is causally load-bearing once training has converged.
+But at a fixed token budget the *marginal* arm beyond 6-8 blocks buys
+calibration, not decodable content or latent rank. The next run should stay
+at 6 encoder blocks (optionally test 8) and spend the saved compute on tokens
+(batch 128 or a longer step budget), then re-run P2/P4 to confirm the knee at
+the full horizon.
+
+## Artifacts
+
+- Probe JSONs: `data/eval/depth_probe/` locally, synced to
+  `hf://buckets/patrickfrank1/chesspos-checkpoints/run_ae_d512l6h8_100k/probes/`.
+- Depth-sweep checkpoints, logs and eval history:
+  `hf://buckets/patrickfrank1/chesspos-checkpoints/depth_sweep/N{4,6,8,12}/`.
+- Scripts: `scripts/probe_residual_drift.py`, `scripts/probe_early_exit.py`,
+  `scripts/eval_latent_truncation.py`, `scripts/probe_layer_pruning.py`,
+  shared plumbing in `src/evaluation/probes.py`, BDD tests in
+  `test/unit/test_depth_probes.py`.
+- GPU cost: one RTX 6000 Ada at $0.54/h, instance 63013073, ~2.6 h ≈ $1.40.
