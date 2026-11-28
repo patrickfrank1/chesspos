@@ -23,6 +23,7 @@ from pathlib import Path
 
 import torch
 
+from src.evaluation.core.embeddings import collate_segments
 from src.evaluation.eval_suite import (
     board_metadata,
     material_probe_ci,
@@ -31,7 +32,6 @@ from src.evaluation.eval_suite import (
 from src.evaluation.probes import (
     count_parameters,
     effective_rank,
-    embed_segments_at_depth,
     encoder_states,
     latent_from_state,
     load_checkpoint_model,
@@ -103,18 +103,51 @@ def main() -> None:
     _, _, materials = board_metadata(segments)
 
     depth_rows = []
-    for depth in depths:
-        latents = []
-        for batch in batches:
+    # One encoder pass over each pool, keeping the latent at every exit depth.
+    # Re-encoding per depth would recompute the same blocks L times.
+    depth_latents: dict[int, list[torch.Tensor]] = {depth: [] for depth in depths}
+    depth_embeds: dict[int, list[torch.Tensor]] = {depth: [] for depth in depths}
+    for index, batch in enumerate(batches):
+        with torch.no_grad():
             states = encoder_states(
                 model,
                 batch["tokens"],
                 batch["segment_ids"],
                 batch["padding_mask"],
             )
-            latents.append(
-                latent_from_state(model, states[depth], batch["padding_mask"]).float()
+            for depth in depths:
+                depth_latents[depth].append(
+                    latent_from_state(
+                        model, states[depth], batch["padding_mask"]
+                    ).float()
+                )
+        if index % 32 == 0:
+            print(f"window batch {index}/{len(batches)}", flush=True)
+    for start in range(0, len(segments), 64):
+        board_batch = {
+            key: value.to(device)
+            for key, value in collate_segments(segments[start : start + 64]).items()
+        }
+        with torch.no_grad():
+            states = encoder_states(
+                model,
+                board_batch["tokens"],
+                board_batch["segment_ids"],
+                board_batch["padding_mask"],
             )
+            for depth in depths:
+                depth_embeds[depth].append(
+                    torch.nn.functional.normalize(
+                        latent_from_state(
+                            model, states[depth], board_batch["padding_mask"]
+                        ).float(),
+                        dim=-1,
+                    ).cpu()
+                )
+    print(f"encoded pools at depths {depths}", flush=True)
+
+    for depth in depths:
+        latents = depth_latents[depth]
         window_matrix = torch.cat(latents, dim=0)
         mean, components, explained = pca_basis(window_matrix)
         keep = set(range(min(args.accuracy_windows, window_matrix.shape[0])))
@@ -128,9 +161,7 @@ def main() -> None:
                 accuracy_batches.append((batch, latent[mask]))
             offset += latent.shape[0]
 
-        embeds = embed_segments_at_depth(
-            model, segments, device, depth=depth, batch_size=64, bf16=False
-        )
+        embeds = torch.cat(depth_embeds[depth], dim=0)
         embed_mean, embed_components, embed_explained = pca_basis(embeds)
 
         rows = []
