@@ -282,6 +282,171 @@ class TestReconstructionLoss:
         return
 
 
+class TestChunkedReconstructionLoss:
+    def _pair(self, chunks: int) -> tuple[AttentionAutoencoderModel, ...]:
+        reference = AttentionAutoencoderModel(tiny_config(loss_chunks=1)).eval()
+        chunked = AttentionAutoencoderModel(tiny_config(loss_chunks=chunks)).eval()
+        chunked.load_state_dict(reference.state_dict())
+        return reference, chunked
+
+    def test_chunked_loss_matches_the_single_pass_value(self):
+        with given("two identical autoencoders, one scoring everything at once"):
+            reference, chunked = self._pair(chunks=4)
+            batch, _ = masked_batch(game_segments())
+
+        with when("the same window is scored one-shot and in four chunks"):
+            with torch.no_grad():
+                whole = reference(
+                    batch["tokens"],
+                    batch["segment_ids"],
+                    padding_mask=batch["padding_mask"],
+                    targets=batch["targets"],
+                    weights=batch["weights"],
+                )
+                pieces = chunked(
+                    batch["tokens"],
+                    batch["segment_ids"],
+                    padding_mask=batch["padding_mask"],
+                    targets=batch["targets"],
+                    weights=batch["weights"],
+                )
+
+        with then("the loss is numerically the same"):
+            assert pieces["loss"].item() == pytest.approx(
+                whole["loss"].item(), rel=1e-5
+            )
+            assert pieces["n_supervised"] == whole["n_supervised"]
+        return
+
+    def test_chunked_loss_matches_the_single_pass_gradients(self):
+        with given("two identical trainable autoencoders"):
+            reference, chunked = self._pair(chunks=4)
+            batch, _ = masked_batch(game_segments())
+
+        with when("both losses are backpropagated"):
+            outputs = []
+            for model in (reference, chunked):
+                model.zero_grad(set_to_none=True)
+                output = model(
+                    batch["tokens"],
+                    batch["segment_ids"],
+                    padding_mask=batch["padding_mask"],
+                    targets=batch["targets"],
+                    weights=batch["weights"],
+                )
+                output["loss"].backward()
+                outputs.append(output)
+
+        with then("the head and trunk gradients agree"):
+            assert torch.allclose(
+                reference.head.weight.grad,
+                chunked.head.weight.grad,
+                atol=1e-6,
+                rtol=1e-4,
+            )
+            assert torch.allclose(
+                reference.encoder.embedding.token_embedding.weight.grad,
+                chunked.encoder.embedding.token_embedding.weight.grad,
+                atol=1e-6,
+                rtol=1e-4,
+            )
+        return
+
+    def test_head_never_scores_more_than_one_chunk(self):
+        with given("a chunked autoencoder and a spy on the vocabulary head"):
+            model = AttentionAutoencoderModel(tiny_config(loss_chunks=4)).eval()
+            batch, _ = masked_batch(game_segments())
+            rows = []
+
+            def record(_module, inputs, _output):
+                rows.append(inputs[0].shape[0])
+                return
+
+            handle = model.head.register_forward_hook(record)
+
+        with when("the reconstruction loss is computed"):
+            try:
+                with torch.no_grad():
+                    output = model(
+                        batch["tokens"],
+                        batch["segment_ids"],
+                        padding_mask=batch["padding_mask"],
+                        targets=batch["targets"],
+                        weights=batch["weights"],
+                    )
+            finally:
+                handle.remove()
+
+        with then("the head runs once per non-empty chunk"):
+            supervised = output["n_supervised"]
+            assert 1 <= len(rows) <= 4
+            assert sum(rows) == supervised
+            assert max(rows) <= -(-supervised // 4)
+        return
+
+    def test_all_zero_weights_still_fall_back_to_the_mean(self):
+        with given("identical autoencoders and an all-zero weight table"):
+            reference, chunked = self._pair(chunks=4)
+            batch, _ = masked_batch(game_segments())
+            zeros = torch.zeros_like(batch["weights"])
+
+        with when("both score the window"):
+            with torch.no_grad():
+                whole = reference(
+                    batch["tokens"],
+                    batch["segment_ids"],
+                    padding_mask=batch["padding_mask"],
+                    targets=batch["targets"],
+                    weights=zeros,
+                )
+                pieces = chunked(
+                    batch["tokens"],
+                    batch["segment_ids"],
+                    padding_mask=batch["padding_mask"],
+                    targets=batch["targets"],
+                    weights=zeros,
+                )
+
+        with then("chunking keeps the unweighted-mean semantics"):
+            assert pieces["loss"].item() == pytest.approx(
+                whole["loss"].item(), rel=1e-5
+            )
+        return
+
+    def test_padding_is_ignored_by_the_chunked_loss(self):
+        with given("the same window with and without trailing padding"):
+            model = AttentionAutoencoderModel(tiny_config(loss_chunks=4)).eval()
+            batch, _ = masked_batch(game_segments())
+            padded_tokens, padded_ids, padded_padding = pad_window(
+                batch["tokens"], batch["segment_ids"], extra=37
+            )
+            padded_targets = torch.full_like(padded_tokens, IGNORE_INDEX)
+            padded_targets[:, : batch["targets"].shape[1]] = batch["targets"]
+
+        with when("both variants are scored"):
+            with torch.no_grad():
+                plain = model(
+                    batch["tokens"],
+                    batch["segment_ids"],
+                    padding_mask=batch["padding_mask"],
+                    targets=batch["targets"],
+                    weights=torch.ones_like(batch["weights"]),
+                )
+                padded = model(
+                    padded_tokens,
+                    padded_ids,
+                    padding_mask=padded_padding,
+                    targets=padded_targets,
+                    weights=torch.ones_like(padded_tokens, dtype=torch.float32),
+                )
+
+        with then("the padded tail never enters a chunk"):
+            assert plain["loss"].item() == pytest.approx(
+                padded["loss"].item(), rel=1e-5
+            )
+        return
+
+
 class TestEmbeddingInterface:
     def test_embed_returns_one_vector_per_row(self):
         with given("an autoencoder and one position per row"):
@@ -330,6 +495,7 @@ class TestConfiguration:
             invalid = (
                 {"latent_dim": 0},
                 {"n_decoder_layers": 0},
+                {"loss_chunks": 0},
             )
 
         with when("each config is constructed"):

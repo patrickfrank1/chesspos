@@ -45,6 +45,7 @@ from src.training.loop import (
     evaluate,
     format_system_snapshot,
     get_git_commit,
+    limit_gpu_memory,
     lr_lambda,
     make_logger,
     periodic_checkpoint_plan,
@@ -105,6 +106,7 @@ _ARCH_MODEL_DEFAULTS = {
         "dca_past_layers_k": 2,
         "dca_variant": "dca",
         "grad_checkpointing": True,
+        "loss_chunks": 8,
     },
 }
 
@@ -317,6 +319,21 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=1,
         help="Micro-batches accumulated per optimizer step",
+    )
+    parser.add_argument(
+        "--loss-chunks",
+        type=int,
+        default=None,
+        help="Slices over supervised tokens when scoring the vocab head; bounds "
+        "the largest reconstruction-loss activation (default: 8 for the "
+        "autoencoder, 1 elsewhere)",
+    )
+    parser.add_argument(
+        "--memory-fraction",
+        type=float,
+        default=0.95,
+        help="Cap this process's share of the CUDA device so an OOM raises "
+        "instead of killing the box (0 disables; default 0.95)",
     )
     parser.add_argument(
         "--require-flash",
@@ -782,6 +799,8 @@ def main() -> None:
         torch.set_float32_matmul_precision("high")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     bf16 = args.bf16 and device.type == "cuda"
+    if limit_gpu_memory(args.memory_fraction, device):
+        log(f"capping process memory at {args.memory_fraction:.0%} of {device}")
 
     start_step = 0
     best_val_loss = float("inf")
@@ -843,6 +862,7 @@ def main() -> None:
             dca_past_layers_k=args.dca_past_layers_k,
             dca_variant=args.dca_variant,
             grad_checkpointing=args.grad_checkpointing,
+            loss_chunks=args.loss_chunks,
         )
     else:
         model_config = TransformerConfig(
@@ -867,7 +887,8 @@ def main() -> None:
     log(
         f"device={device} params={n_params / 1e6:.2f}M bf16={bf16} "
         f"compile={args.compile} flash={FLASH_AVAILABLE} "
-        f"grad_checkpointing={getattr(model_config, 'grad_checkpointing', False)}"
+        f"grad_checkpointing={getattr(model_config, 'grad_checkpointing', False)} "
+        f"loss_chunks={getattr(model_config, 'loss_chunks', 1)}"
     )
     if args.require_flash and not (FLASH_AVAILABLE and device.type == "cuda"):
         raise SystemExit(

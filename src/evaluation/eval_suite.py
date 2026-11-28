@@ -17,6 +17,7 @@ from src.dataset.token_stream import (
 )
 from src.evaluation.core.embeddings import embed_tokens
 from src.modeling.masking import IGNORE_INDEX, MaskingConfig
+from src.modeling.shared.heads import chunked_argmax
 from src.modeling.transformer import MaskedStreamTransformer
 from src.training.window_dataset import (
     WindowDataset,
@@ -111,7 +112,7 @@ def mlm_breakdown(
                     targets=batch["targets"],
                 )
                 valid = batch["targets"].ne(IGNORE_INDEX)
-                predictions = model.head(output["hidden_states"][valid]).argmax(-1)
+                predictions = chunked_argmax(model.head, output["hidden_states"][valid])
             correct = predictions == batch["targets"][valid]
             targets = batch["targets"][valid]
             low, high = SLOT_CONTENT_BOUNDS

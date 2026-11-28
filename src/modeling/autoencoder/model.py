@@ -89,6 +89,53 @@ class AttentionAutoencoderModel(nn.Module):
                 return (per_token * w).sum() / total
         return per_token.mean()
 
+    def _chunked_cross_entropy(
+        self,
+        hidden: torch.Tensor,
+        gold: torch.Tensor,
+        weights: torch.Tensor | None,
+    ) -> torch.Tensor:
+        """Run the vocab head one chunk of tokens at a time.
+
+        The head is the largest activation in the model: scoring every
+        supervised token at once materialises ``[tokens, vocab]`` logits, which
+        at batch 256 and a 2k window is several GB in bf16. Slicing the gathered
+        hidden states instead keeps the peak at one chunk while staying a static
+        unrolled loop, so ``torch.compile`` sees one graph rather than a
+        data-dependent trip count.
+        """
+        if hidden.shape[0] == 0:
+            return hidden.new_zeros(())
+        chunks = self.config.loss_chunks
+        if chunks == 1:
+            return self._weighted_cross_entropy(self.head(hidden), gold, weights)
+        hidden_parts = torch.tensor_split(hidden, chunks)
+        gold_parts = torch.tensor_split(gold, chunks)
+        weight_parts = (
+            (None,) * chunks if weights is None else torch.tensor_split(weights, chunks)
+        )
+        total = hidden.new_zeros(())
+        unweighted = hidden.new_zeros(())
+        weight_total = hidden.new_zeros(())
+        count = 0
+        for hidden_part, gold_part, weight_part in zip(
+            hidden_parts, gold_parts, weight_parts
+        ):
+            if hidden_part.shape[0] == 0:
+                continue
+            per_token = F.cross_entropy(
+                self.head(hidden_part), gold_part, reduction="none"
+            )
+            unweighted = unweighted + per_token.sum()
+            if weight_part is not None:
+                w = weight_part.to(per_token.dtype)
+                total = total + (per_token * w).sum()
+                weight_total = weight_total + w.sum()
+            count += per_token.shape[0]
+        if weights is not None and weight_total > 0:
+            return total / weight_total
+        return unweighted / count
+
     def loss_from_logits(
         self,
         logits: torch.Tensor,
@@ -131,14 +178,16 @@ class AttentionAutoencoderModel(nn.Module):
             return output
         gold = restoration_targets(tokens, targets)
         supervised = padding_mask.bool() & gold.ne(PAD)
-        # The vocabulary head runs only on real tokens; the padded tail never
-        # needs logits, which keeps the [batch * seq, vocab] tensor small.
-        logits = self.head(flatten_valid(hidden, supervised))
+        # The vocabulary head runs only on real tokens, which keeps the
+        # [tokens, vocab] tensor small; chunking keeps it bounded in memory.
+        flat_hidden = flatten_valid(hidden, supervised)
         flat_gold = torch.masked_select(gold, supervised)
         flat_weights = (
             None if weights is None else torch.masked_select(weights, supervised)
         )
-        output["loss"] = self._weighted_cross_entropy(logits, flat_gold, flat_weights)
+        output["loss"] = self._chunked_cross_entropy(
+            flat_hidden, flat_gold, flat_weights
+        )
         output["n_supervised"] = int(supervised.sum().item())
         return output
 

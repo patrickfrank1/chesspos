@@ -5,11 +5,13 @@ from torch.optim.lr_scheduler import LambdaLR
 
 from bdd import given, then, when
 from src.modeling.masking import IGNORE_INDEX
+from src.modeling.shared.heads import chunked_argmax
 from src.training.loop import (
     NceCollapseGuard,
     apply_compile,
     effective_rank_from_hidden,
     evaluate,
+    limit_gpu_memory,
     lr_lambda,
     periodic_checkpoint_plan,
     scheduler_start_epoch,
@@ -396,4 +398,111 @@ class TestPeriodicCheckpointPlan:
             assert plan.save_before_eval is False
             assert plan.evaluate is False
             assert plan.save_after_eval is False
+        return
+
+
+class TestMemoryFractionGuard:
+    def test_cuda_guard_caps_the_process(self, monkeypatch):
+        with given("CUDA available and a spy on the allocator cap"):
+            calls: list[tuple[float, int | None]] = []
+            monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+            monkeypatch.setattr(
+                torch.cuda,
+                "set_per_process_memory_fraction",
+                lambda fraction, index=None: calls.append((fraction, index)),
+            )
+
+        with when("the guard is applied to gpu 0"):
+            applied = limit_gpu_memory(0.95, torch.device("cuda", 0))
+
+        with then("the process is capped on that device"):
+            assert applied is True
+            assert calls == [(0.95, 0)]
+        return
+
+    def test_zero_fraction_disables_the_guard(self, monkeypatch):
+        with given("CUDA available and a spy on the allocator cap"):
+            calls: list[float] = []
+            monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+            monkeypatch.setattr(
+                torch.cuda,
+                "set_per_process_memory_fraction",
+                lambda fraction, index=None: calls.append(fraction),
+            )
+
+        with when("the guard is called with zero"):
+            applied = limit_gpu_memory(0.0, torch.device("cuda", 0))
+
+        with then("nothing is capped"):
+            assert applied is False
+            assert calls == []
+        return
+
+    def test_cpu_guard_is_a_no_op(self, monkeypatch):
+        with given("a CPU device"):
+            calls: list[float] = []
+            monkeypatch.setattr(
+                torch.cuda,
+                "set_per_process_memory_fraction",
+                lambda fraction, index=None: calls.append(fraction),
+            )
+
+        with when("the guard is applied"):
+            applied = limit_gpu_memory(0.95, torch.device("cpu"))
+
+        with then("no CUDA call happens"):
+            assert applied is False
+            assert calls == []
+        return
+
+
+class TestChunkedArgmax:
+    def test_chunked_argmax_matches_the_one_shot_head(self):
+        with given("a vocab head and random hidden states"):
+            torch.manual_seed(0)
+            head = nn.Linear(16, 32)
+            hidden = torch.randn(100, 16)
+
+        with when("the predictions are computed one-shot and in chunks"):
+            whole = head(hidden).argmax(-1)
+            pieces = chunked_argmax(head, hidden, chunks=7)
+
+        with then("the chunked predictions are identical"):
+            assert torch.equal(pieces, whole)
+        return
+
+    def test_head_never_scores_more_than_one_chunk(self):
+        with given("a spy on the head's input rows"):
+            head = nn.Linear(16, 32)
+            hidden = torch.randn(64, 16)
+            rows: list[int] = []
+
+            def record(_module, inputs, _output):
+                rows.append(inputs[0].shape[0])
+                return
+
+            handle = head.register_forward_hook(record)
+
+        with when("argmax runs with four chunks"):
+            try:
+                chunked_argmax(head, hidden, chunks=4)
+            finally:
+                handle.remove()
+
+        with then("every call sees at most a quarter of the rows"):
+            assert len(rows) == 4
+            assert sum(rows) == 64
+            assert max(rows) == 16
+        return
+
+    def test_empty_input_returns_no_predictions(self):
+        with given("an empty hidden tensor"):
+            head = nn.Linear(16, 32)
+
+        with when("argmax runs"):
+            predictions = chunked_argmax(head, torch.zeros(0, 16))
+
+        with then("the result is empty and typed as indices"):
+            assert predictions.shape == (0,)
+            assert predictions.dtype == torch.long
         return

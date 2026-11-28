@@ -21,6 +21,7 @@ from torch.utils.data import DataLoader
 from src.dataset.token_stream import CLS, MASK, SEP
 from src.evaluation.retrieval import effective_rank
 from src.modeling.masking import IGNORE_INDEX
+from src.modeling.shared.heads import chunked_argmax
 from src.modeling.transformer import MaskedStreamTransformer, TransformerConfig
 
 
@@ -38,6 +39,19 @@ def apply_compile(model: torch.nn.Module, enabled: bool) -> torch.nn.Module:
     if not enabled:
         return model
     return torch.compile(model, dynamic=True)
+
+
+def limit_gpu_memory(fraction: float, device: torch.device) -> bool:
+    """Cap this process's share of ``device`` so an OOM raises instead of
+    taking the machine down with it.
+
+    ``fraction <= 0`` disables the cap, and non-CUDA devices are untouched.
+    Returns whether the cap was applied.
+    """
+    if fraction <= 0 or device.type != "cuda" or not torch.cuda.is_available():
+        return False
+    torch.cuda.set_per_process_memory_fraction(fraction, device.index)
+    return True
 
 
 def make_logger(path: str | None):
@@ -279,7 +293,7 @@ def evaluate(
             )
         losses.append(output["loss"].item())
         valid = batch["targets"].ne(IGNORE_INDEX)
-        predictions = model.head(output["hidden_states"][valid]).argmax(-1)
+        predictions = chunked_argmax(model.head, output["hidden_states"][valid])
         correct += (predictions == batch["targets"][valid]).sum().item()
         total += valid.sum().item()
     model.train()

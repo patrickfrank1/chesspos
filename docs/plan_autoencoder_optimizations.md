@@ -27,8 +27,10 @@ Landed on this branch:
 | P4 DCA | `src/modeling/shared/dca.py` (`GRNv3`, `DCALayer`, `DCAStackState`); preset `dca=True, dca_locations="both"` — two independent stacks, no cross-bottleneck path |
 | flash attention | every block, DCA or standard, still calls `varlen_attention`; `--require-flash` fails at startup when the kernel is unusable |
 | torch.compile | DCA + checkpointing trace under `dynamic=True`; covered by a CUDA test and verified on a CPU smoke run |
+| P2 chunked CE | `loss_chunks` config field + `--loss-chunks`, 8 in the preset; the vocab head scores one slice of supervised tokens at a time, so the `[tokens, vocab]` logits tensor never materialises whole. The eval argmax in `src/training/loop.py` and `src/evaluation/eval_suite.py` goes through the same `chunked_argmax` helper |
+| P2 memory cap | `--memory-fraction` (default 0.95) caps this process's CUDA share so an OOM raises instead of OOM-killing the box; `0` disables |
 
-Two findings from landing it:
+Three findings from landing it:
 
 1. **`context_fn` is not traceable.** Dynamo rejects
    `checkpoint(..., context_fn=...)`, so the bf16 recompute context lives
@@ -36,6 +38,15 @@ Two findings from landing it:
    graph break.
 2. **`8:4` with a 256-d latent is 26.56M params**, slightly under the 26.7M
    plan estimate, which had ignored the narrower bottleneck projection.
+3. **Chunk by count, not by size.** `torch.tensor_split(hidden, chunks)` with a
+   fixed chunk count keeps the loop a static unrolled graph; a fixed row size
+   would make the trip count data-dependent and recompile per token count.
+   Loss and gradients match the one-shot path to `0.0` / `9e-8` in fp32.
+
+Already in place before P2 (verified, no change needed): `zero_grad` uses
+`set_to_none=True` in both loops, `torch.set_float32_matmul_precision("high")`
+covers the fp32 eval probes, and the DataLoader already runs persistent workers
+with pinning and `--prefetch-factor`.
 
 Open from §1.6 and now runnable with flags alone: the decoder-depth
 confirmation (3 vs 4), iso-FLOP arms, the masking-mixture re-check, the seed
@@ -298,15 +309,15 @@ use the **effective** batch or resumed runs will silently re-see data.
 
 ## 4. P2 — Other PyTorch tricks (ranked by expected value / risk)
 
-| # | change | expected win | risk | notes |
+| # | change | expected win | risk | status |
 |---|---|---|---|---|
-| 1 | **Chunked cross-entropy** — compute logits+CE in slices over supervised tokens instead of materializing `[tokens, 806]` | memory, not speed: the head is the largest single activation in eval paths | low | decoder already restricted to supervised tokens in the loss path; eval computes all valid |
-| 2 | `optimizer.zero_grad(set_to_none=True)` | small, free | none | currently plain `zero_grad()`; `src/run/train_masked_transformer.py:1101` |
-| 3 | `torch.backends.cuda.matmul.allow_tf32 = True` | only affects the fp32 PCA/SVD probes | none | training is bf16 already |
-| 4 | Tune `--num-workers`, `--prefetch-factor` (persistent/pinned already on) | data-side headroom for deeper models | none | verify `cpu_load` stays < cores |
-| 5 | Fusion of head+CE via a fused kernel (Liger / `torch.compile` on the loss fn) | speed + memory | medium | new dependency; only after 1 and 2 |
-| 6 | `mode="reduce-overhead"` (CUDA graphs) | up to +15 % | **high** | dynamic varlen lengths cause graph recapture; defer until lengths are bucketed |
-| 7 | `torch.cuda.set_per_process_memory_fraction(0.95)` | prevents one process from OOM-killing the watchdog | low | operational guard only |
+| 1 | **Chunked cross-entropy** — compute logits+CE in slices over supervised tokens instead of materializing `[tokens, 806]` | memory, not speed: the head is the largest single activation in eval paths | low | **done** — `loss_chunks` / `--loss-chunks`, 8 in the preset; the eval argmax is chunked too (`src/modeling/shared/heads.py`) |
+| 2 | `optimizer.zero_grad(set_to_none=True)` | small, free | none | **already present** in both loops |
+| 3 | `torch.backends.cuda.matmul.allow_tf32 = True` | only affects the fp32 PCA/SVD probes | none | **already covered** by `set_float32_matmul_precision("high")` |
+| 4 | Tune `--num-workers`, `--prefetch-factor` (persistent/pinned already on) | data-side headroom for deeper models | none | **already present**; `cpu_load` is logged every step |
+| 5 | Fusion of head+CE via a fused kernel (Liger / `torch.compile` on the loss fn) | speed + memory | medium | deferred — needs a new dependency; revisit after the b256 hardware smoke |
+| 6 | `mode="reduce-overhead"` (CUDA graphs) | up to +15 % | **high** | deferred — dynamic varlen lengths cause graph recapture |
+| 7 | `torch.cuda.set_per_process_memory_fraction(0.95)` | prevents one process from OOM-killing the watchdog | low | **done** — `--memory-fraction`, `0` disables |
 
 **Do not do:** switch to fp16 (stability + wheel matching), disable
 `dynamic=True` (recompiles per sequence length), or use reentrant checkpointing
@@ -719,6 +730,7 @@ architecture.
 | no recompile storm | `TORCH_LOGS=recompiles` | count bounded, flat per step |
 | FlashAttention active | `FLASH_AVAILABLE` import + dtype assert on recompute | never fp32 |
 | numerics | checkpointed vs plain equivalence test | ≤ 1e-5 loss |
+| chunked loss | chunked vs one-shot value and gradients | value exact in fp32, grads ≤ 1e-6 |
 | memory | `torch.cuda.max_memory_allocated()` around 30 steps | ≤ 44 GB |
 | throughput | `tokens/s` after warmup, second logged interval | ≥ 300k |
 | resume | kill + restart, step and data position correct | yes |

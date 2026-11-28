@@ -579,6 +579,27 @@ class TestAttentionAutoencoderFlags:
             assert args.dca_locations == "both"
             assert args.dca_past_layers_k == 2
             assert args.grad_checkpointing is True
+            assert args.loss_chunks == 8
+        return
+
+    def test_loss_chunks_can_be_disabled_or_retuned(self, monkeypatch):
+        with given("explicit chunk counts on the autoencoder arch"):
+            monkeypatch.setattr(
+                "sys.argv",
+                [
+                    "train_masked_transformer",
+                    "--model-arch",
+                    "attention_autoencoder",
+                    "--loss-chunks",
+                    "3",
+                ],
+            )
+
+        with when("the arguments are parsed"):
+            args = parse_args()
+
+        with then("the explicit chunk count wins"):
+            assert args.loss_chunks == 3
         return
 
     def test_explicit_size_overrides_the_preset(self, monkeypatch):

@@ -586,7 +586,7 @@ def train_loop_per_worker(config: dict) -> None:
                 step=step,
                 generator=target_generator,
             )
-        optimizer.zero_grad()
+        optimizer.zero_grad(set_to_none=True)
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.grad_clip)
         optimizer.step()

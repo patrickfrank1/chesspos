@@ -31,6 +31,7 @@ class AttentionAutoencoderConfig(EncoderConfig):
     dca_past_layers_k: int = 2
     dca_variant: str = "dca"
     grad_checkpointing: bool = False
+    loss_chunks: int = 1
 
     def __post_init__(self) -> None:
         super().__post_init__()
@@ -40,6 +41,8 @@ class AttentionAutoencoderConfig(EncoderConfig):
             raise ValueError("latent_dim must be positive")
         if self.n_decoder_layers < 1:
             raise ValueError("n_decoder_layers must be at least 1")
+        if self.loss_chunks < 1:
+            raise ValueError("loss_chunks must be at least 1")
         if self.dca_locations not in DCA_LOCATIONS:
             raise ValueError(f"dca_locations must be one of {DCA_LOCATIONS}")
         if self.dca_variant not in DCA_VARIANTS:
@@ -80,6 +83,7 @@ def production_config(**overrides) -> AttentionAutoencoderConfig:
         "dca_past_layers_k": 2,
         "dca_variant": "dca",
         "grad_checkpointing": True,
+        "loss_chunks": 8,
     }
     values.update(overrides)
     return AttentionAutoencoderConfig(**values)
