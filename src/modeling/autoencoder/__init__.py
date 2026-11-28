@@ -1,7 +1,10 @@
 """Masked attention autoencoder with a single window-level bottleneck."""
 
 from src.modeling.autoencoder.bottleneck import AttentionBottleneck
-from src.modeling.autoencoder.config import AttentionAutoencoderConfig
+from src.modeling.autoencoder.config import (
+    AttentionAutoencoderConfig,
+    production_config,
+)
 from src.modeling.autoencoder.decoder import LatentDecoder
 from src.modeling.autoencoder.encoder import PackedSegmentEmbedding, SequenceEncoder
 from src.modeling.autoencoder.model import (
@@ -18,5 +21,6 @@ __all__ = [
     "PackedSegmentEmbedding",
     "SequenceEncoder",
     "build_attention_autoencoder",
+    "production_config",
     "restoration_targets",
 ]

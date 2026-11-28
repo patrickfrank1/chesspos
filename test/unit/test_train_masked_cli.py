@@ -558,7 +558,7 @@ class TestStreamShardsFlags:
 
 
 class TestAttentionAutoencoderFlags:
-    def test_autoencoder_preset_matches_the_six_million_recipe(self, monkeypatch):
+    def test_autoencoder_preset_is_the_8_4_production_recipe(self, monkeypatch):
         with given("the attention autoencoder architecture and no size flags"):
             monkeypatch.setattr(
                 "sys.argv",
@@ -568,13 +568,17 @@ class TestAttentionAutoencoderFlags:
         with when("the arguments are parsed"):
             args = parse_args()
 
-        with then("the compact six-million-parameter preset is selected"):
-            assert args.d_model == 256
+        with then("the 8:4 production recipe is selected"):
+            assert args.d_model == 512
             assert args.n_heads == 8
-            assert args.n_layers == 4
+            assert args.n_layers == 8
             assert args.d_ff == 1024
-            assert args.n_decoder_layers == 3
-            assert args.latent_dim == 512
+            assert args.n_decoder_layers == 4
+            assert args.latent_dim == 256
+            assert args.dca is True
+            assert args.dca_locations == "both"
+            assert args.dca_past_layers_k == 2
+            assert args.grad_checkpointing is True
         return
 
     def test_explicit_size_overrides_the_preset(self, monkeypatch):

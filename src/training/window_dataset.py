@@ -50,6 +50,7 @@ class WindowDatasetConfig:
     prefetch_shards: int = 0
     resume_step: int = 0
     batch_size: int = 1
+    accum_steps: int = 1
     num_workers: int = 1
     remote_repo: str | None = None
     remote_split: str = "train"
@@ -60,6 +61,11 @@ class WindowDatasetConfig:
     def __post_init__(self) -> None:
         self.max_segments = resolve_max_segments(self.max_seq_len, self.max_segments)
         return
+
+    @property
+    def effective_batch_size(self) -> int:
+        """Windows consumed per optimizer step (micro-batch x accumulation)."""
+        return self.batch_size * self.accum_steps
 
 
 def worker_skip_windows(
@@ -705,7 +711,7 @@ class StreamingWindowDataset(IterableDataset):
         worker_id = 0 if info is None else info.id
         skip = worker_skip_windows(
             self.config.resume_step,
-            self.config.batch_size,
+            self.config.effective_batch_size,
             self.config.num_workers,
             worker_id,
         )

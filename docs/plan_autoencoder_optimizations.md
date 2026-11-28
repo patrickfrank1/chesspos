@@ -15,6 +15,32 @@ it buys layers. Full tables and artifacts:
 `docs/experiments/depth_probing_2026-11-28.md` (lands with the probe scripts
 from `feature/depth-probing-plan`); §1.2-1.5 below is self-contained.
 
+## 0. Implementation status (2026-11-28)
+
+Landed on this branch:
+
+| item | state |
+|---|---|
+| recipe | `production_config()` and the CLI `--model-arch attention_autoencoder` preset: **8 enc + 4 dec**, `d_model 512`, `d_ff 1024`, **latent 256**, 26.56M params |
+| P0 activation checkpointing | `grad_checkpointing` config field + `--[no-]grad-checkpointing`, on in the preset; loop-level, bf16-preserving recompute |
+| P1 gradient accumulation | `--grad-accum-steps`; resume skip uses `effective_batch_size = batch_size × accum` |
+| P4 DCA | `src/modeling/shared/dca.py` (`GRNv3`, `DCALayer`, `DCAStackState`); preset `dca=True, dca_locations="both"` — two independent stacks, no cross-bottleneck path |
+| flash attention | every block, DCA or standard, still calls `varlen_attention`; `--require-flash` fails at startup when the kernel is unusable |
+| torch.compile | DCA + checkpointing trace under `dynamic=True`; covered by a CUDA test and verified on a CPU smoke run |
+
+Two findings from landing it:
+
+1. **`context_fn` is not traceable.** Dynamo rejects
+   `checkpoint(..., context_fn=...)`, so the bf16 recompute context lives
+   inside the checkpointed callable instead (§2). Same dtype guarantee, no
+   graph break.
+2. **`8:4` with a 256-d latent is 26.56M params**, slightly under the 26.7M
+   plan estimate, which had ignored the narrower bottleneck projection.
+
+Open from §1.6 and now runnable with flags alone: the decoder-depth
+confirmation (3 vs 4), iso-FLOP arms, the masking-mixture re-check, the seed
+spread, and the batch-256 LR re-scan.
+
 ---
 
 ## 1. Baseline and measured depth value (6000 Ada 48 GB)
@@ -170,35 +196,45 @@ production target.
 - `preserve_rng_state=True` — **ignored under `torch.compile`; RNG is always
   preserved.** So checkpointing is compatible with our `dynamic=True` compile.
 - `context_fn` (non-reentrant only) — returns two context managers for forward
-  and recompute. **Use it to force bf16 autocast on recompute**, because
-  recompute runs inside backward, outside the training autocast block.
+  and recompute. It would be the natural way to force bf16 on recompute, but
+  **Dynamo cannot trace it**: `torch.compile` raises
+  `NotImplementedError: checkpoint not implemented for
+  <class '...NestedUserFunctionVariable'> context_fn`. Put the autocast
+  *inside* the checkpointed callable instead (`src/modeling/checkpointing.py`
+  `autocast_for`), which is traced correctly and re-enters on recompute.
 
-**Why `context_fn` matters here (correctness, not style).**
+**Why the recompute dtype matters (correctness, not style).**
 `src/modeling/varlen.py:varlen_attention` silently falls back to SDPA when the
 input dtype is not fp16/bf16. If recompute runs in fp32, the model still trains
 but quietly loses the FlashAttention path — a ~2× attention slowdown that looks
 like "checkpointing is expensive" rather than "we broke the fast path".
 
-**Sketch.**
+**Sketch (as implemented).**
 
 ```python
 from torch.utils.checkpoint import checkpoint
 
-def _amp_ctx():
+def autocast_for(device_type: str):
+    if device_type != "cuda":
+        return contextlib.nullcontext()
     return torch.autocast("cuda", dtype=torch.bfloat16)
 
-def _run(self, block, x, cu, max_seqlen):
-    if not self.grad_checkpointing:
-        return block(x, cu, max_seqlen)
-    return checkpoint(
-        block, x, cu, max_seqlen,
-        use_reentrant=False,
-        preserve_rng_state=True,
-        context_fn=lambda: (_amp_ctx(), _amp_ctx()),
-    )
+def _run_blocks(self, flat, cu, max_seqlen):
+    with autocast_for(flat.device.type):        # re-entered on recompute
+        return self._block_loop(flat, cu, max_seqlen)
+
+def run_checkpointed(fn, *args, enabled: bool):
+    if not enabled:
+        return fn(*args)
+    return checkpoint(fn, *args, use_reentrant=False, preserve_rng_state=True)
 ```
 
+Checkpoint the **block loop** rather than each block: one stored input, and it
+is the only option that works with DCA, where the stack is a live Python
+structure.
+
 Wrap **encoder blocks** first (the memory hog at depth), then decoder blocks.
+
 Head/CE are not worth checkpointing.
 
 **Flags.** `--grad-checkpointing`, `AttentionAutoencoderConfig.grad_checkpointing`.

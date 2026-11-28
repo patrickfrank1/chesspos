@@ -30,6 +30,7 @@ from src.modeling.factory import (
 from src.modeling.masking import MaskingConfig
 from src.modeling.perceiver.config import PerceiverIOConfig
 from src.modeling.transformer import TransformerConfig
+from src.modeling.varlen import FLASH_AVAILABLE
 from src.training.checkpoint_hub import (
     build_metadata,
     collect_data_provenance,
@@ -93,12 +94,17 @@ _ARCH_MODEL_DEFAULTS = {
         "latent_dim": None,
     },
     ARCH_ATTENTION_AUTOENCODER: {
-        "d_model": 256,
-        "n_layers": 4,
+        "d_model": 512,
+        "n_layers": 8,
         "n_heads": 8,
         "d_ff": 1024,
-        "n_decoder_layers": 3,
-        "latent_dim": 512,
+        "n_decoder_layers": 4,
+        "latent_dim": 256,
+        "dca": True,
+        "dca_locations": "both",
+        "dca_past_layers_k": 2,
+        "dca_variant": "dca",
+        "grad_checkpointing": True,
     },
 }
 
@@ -260,7 +266,7 @@ def parse_args() -> argparse.Namespace:
         "--n-decoder-layers",
         type=int,
         default=None,
-        help="Decoder layers (default: 2 perceiver, 3 autoencoder)",
+        help="Decoder layers (default: 2 perceiver, 4 autoencoder)",
     )
     parser.add_argument(
         "--content-readout",
@@ -272,7 +278,50 @@ def parse_args() -> argparse.Namespace:
         "--latent-dim",
         type=int,
         default=None,
-        help="Autoencoder window bottleneck width (default: 512)",
+        help="Autoencoder window bottleneck width (default: 256)",
+    )
+    parser.add_argument(
+        "--dca",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="DeepCrossAttention routing (default: on for the autoencoder)",
+    )
+    parser.add_argument(
+        "--dca-locations",
+        choices=("encoder", "decoder", "both"),
+        default=None,
+        help="Which module routes; 'both' is two independent stacks and no "
+        "connection crosses the bottleneck",
+    )
+    parser.add_argument(
+        "--dca-past-layers-k",
+        type=int,
+        default=None,
+        help="Recent stack slots per block; 0 keeps the full stack",
+    )
+    parser.add_argument(
+        "--dca-variant",
+        choices=("dca", "grn"),
+        default=None,
+        help="'dca' composes q/k/v separately; 'grn' feeds one composed input",
+    )
+    parser.add_argument(
+        "--grad-checkpointing",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Recompute block activations in backward (default: on for the "
+        "autoencoder)",
+    )
+    parser.add_argument(
+        "--grad-accum-steps",
+        type=int,
+        default=1,
+        help="Micro-batches accumulated per optimizer step",
+    )
+    parser.add_argument(
+        "--require-flash",
+        action="store_true",
+        help="Fail at startup unless the flash-attn varlen kernel is usable",
     )
     parser.add_argument("--num-workers", type=int, default=4)
     parser.add_argument("--log-every", type=int, default=20)
@@ -678,6 +727,7 @@ def streaming_train_config(
         full_reconstruction_weights=full_reconstruction_weights(args),
         resume_step=0 if args.no_resume_data_skip else start_step,
         batch_size=args.batch_size,
+        accum_steps=args.grad_accum_steps,
         num_workers=args.num_workers,
         remote_repo=args.data_repo if lazy else None,
         remote_split="train",
@@ -788,6 +838,11 @@ def main() -> None:
             max_segments=args.max_segments,
             latent_dim=args.latent_dim,
             n_decoder_layers=args.n_decoder_layers,
+            dca=args.dca,
+            dca_locations=args.dca_locations,
+            dca_past_layers_k=args.dca_past_layers_k,
+            dca_variant=args.dca_variant,
+            grad_checkpointing=args.grad_checkpointing,
         )
     else:
         model_config = TransformerConfig(
@@ -810,8 +865,15 @@ def main() -> None:
     )
     n_params = sum(p.numel() for p in model.parameters())
     log(
-        f"device={device} params={n_params / 1e6:.2f}M bf16={bf16} compile={args.compile}"
+        f"device={device} params={n_params / 1e6:.2f}M bf16={bf16} "
+        f"compile={args.compile} flash={FLASH_AVAILABLE} "
+        f"grad_checkpointing={getattr(model_config, 'grad_checkpointing', False)}"
     )
+    if args.require_flash and not (FLASH_AVAILABLE and device.type == "cuda"):
+        raise SystemExit(
+            "--require-flash needs CUDA and the flash-attn varlen kernel "
+            f"(flash_available={FLASH_AVAILABLE}, device={device.type})"
+        )
 
     train_dir, val_dir = resolve_data_dirs(args, log=log)
     if args.streaming:
@@ -1079,39 +1141,49 @@ def main() -> None:
             f"arm_below={args.nce_guard_arm_below}"
         )
 
+    accum_steps = max(1, args.grad_accum_steps)
     for step in range(start_step + 1, args.steps + 1):
-        try:
-            batch = next(train_iter)
-        except StopIteration:
-            train_iter = iter(train_loader)
-            batch = next(train_iter)
-
-        batch = {k: v.to(device, non_blocking=pin_memory) for k, v in batch.items()}
-        with autocast():
-            loss, components = compute_training_loss(
-                model,
-                batch,
-                loss_config,
-                step=step,
-                generator=target_generator,
-                encode_views_fn=encode_views_fn,
-                encode_views_alone_fn=encode_views_alone_fn,
-                content_hidden_fn=content_hidden_fn,
+        micro_batches = []
+        for _ in range(accum_steps):
+            try:
+                batch = next(train_iter)
+            except StopIteration:
+                train_iter = iter(train_loader)
+                batch = next(train_iter)
+            micro_batches.append(
+                {k: v.to(device, non_blocking=pin_memory) for k, v in batch.items()}
             )
-        optimizer.zero_grad()
-        loss.backward()
+
+        optimizer.zero_grad(set_to_none=True)
+        step_loss = 0.0
+        for batch in micro_batches:
+            with autocast():
+                loss, components = compute_training_loss(
+                    model,
+                    batch,
+                    loss_config,
+                    step=step,
+                    generator=target_generator,
+                    encode_views_fn=encode_views_fn,
+                    encode_views_alone_fn=encode_views_alone_fn,
+                    content_hidden_fn=content_hidden_fn,
+                )
+            (loss / accum_steps).backward()
+            step_loss += loss.item()
+            for key, value in components.items():
+                running_components[key] = (
+                    running_components.get(key, 0.0) + value.item() / accum_steps
+                )
+        running_loss += step_loss
+        running_count += 1
+
         torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
         optimizer.step()
         scheduler.step()
 
-        running_loss += loss.item()
-        running_count += 1
-        for key, value in components.items():
-            running_components[key] = running_components.get(key, 0.0) + value.item()
-
         if step % args.log_every == 0:
             elapsed = time.time() - start
-            tokens_per_step = args.batch_size * args.max_seq_len
+            tokens_per_step = args.batch_size * accum_steps * args.max_seq_len
             avg_loss = running_loss / running_count
             tokens_per_second = tokens_per_step * args.log_every / elapsed
             component_means = {
