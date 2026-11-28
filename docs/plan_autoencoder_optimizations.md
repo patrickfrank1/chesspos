@@ -48,9 +48,41 @@ Already in place before P2 (verified, no change needed): `zero_grad` uses
 covers the fp32 eval probes, and the DataLoader already runs persistent workers
 with pinning and `--prefetch-factor`.
 
+### 0.1 Hardware result: `8:4 @ b256` does not fit 48 GB (2026-11-28)
+
+Measured on the rented RTX 6000 Ada (48 GB, torch 2.8.0+cu128, flash-attn
+2.8.3.post2, `compile=True`, real streamed batches of 30-segment windows):
+
+| shape | micro-batch | peak VRAM | s/step | padded tok/s |
+|---|---:|---:|---:|---:|
+| 8:4 + DCA + checkpointing | 32 | 12.4 GB | — | — |
+| 8:4 + DCA + checkpointing | 64 | 24.6 GB | 0.81 | 162k |
+| 8:4 + DCA + checkpointing | 128 | **OOM** (>47.6 GB) | — | — |
+| 8:4 + DCA, no checkpointing | 64 | 37.5 GB | 0.63 | 207k |
+| 8:4, no DCA, checkpointing | 64 | 16.1 GB | 0.66 | 200k |
+| 6:3 baseline @ b128 (control) | 128 | 39.7 GB | 0.82 | 319k |
+
+Three things this changes:
+
+1. **`b256` is out; effective 256 comes from accumulation.** `--batch-size 64
+   --grad-accum-steps 4` is the same optimizer step at 32.8 GB / 47.6 GB and
+   275k padded tok/s (1.9 s/step), i.e. the P1 lever is now load-bearing, not
+   a fallback.
+2. **DCA is the memory hog, not depth.** At equal micro-batch it adds 8.5 GB
+   with checkpointing and 12.3 GB without: each `GRNv3` composes `S` slots into
+   three full-width tensors per block. This is the §6.5 "no `S×` scaling" risk
+   materialising; `S = 4` is the practical ceiling at 48 GB.
+3. **Checkpointing costs ~25 % throughput** (0.63 → 0.81 s/step), so the run
+   that fits at b64 runs with `--no-grad-checkpointing`; it is only needed
+   above b64 with DCA on.
+
+The 100k-step run (`run_ae_d512l8d4_100k`) is launched with 64 × 4, lr 2e-4,
+warmup 2000, DCA on, checkpointing off, at ~54 h / ~$30.
+
 Open from §1.6 and now runnable with flags alone: the decoder-depth
 confirmation (3 vs 4), iso-FLOP arms, the masking-mixture re-check, the seed
-spread, and the batch-256 LR re-scan.
+spread, and the batch-256 LR re-scan — the last is now moot at micro-batch 64,
+where lr 2e-4 is the proven value from the b240 baseline run.
 
 ---
 
