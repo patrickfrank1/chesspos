@@ -97,12 +97,12 @@ class AttentionAutoencoderModel(nn.Module):
     ) -> torch.Tensor:
         """Run the vocab head one chunk of tokens at a time.
 
-        The head is the largest activation in the model: scoring every
-        supervised token at once materialises ``[tokens, vocab]`` logits, which
-        at batch 256 and a 2k window is several GB in bf16. Slicing the gathered
-        hidden states instead keeps the peak at one chunk while staying a static
-        unrolled loop, so ``torch.compile`` sees one graph rather than a
-        data-dependent trip count.
+        Scoring every supervised token at once materialises ``[tokens, vocab]``
+        logits on top of the gathered hidden states. With the shipped 52-token
+        vocabulary that tensor is small (~55 MiB bf16 at a 524k-token batch), so
+        this is a guard rather than a big win; it matters for wide vocabularies
+        and keeps eval memory flat. The chunk count is fixed so the loop is a
+        static unrolled graph instead of a data-dependent trip count.
         """
         if hidden.shape[0] == 0:
             return hidden.new_zeros(())

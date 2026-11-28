@@ -1,5 +1,10 @@
 # Design: Piece-Square Token Stream Encoding
 
+> **Superseded** by the 64-slot encoding in
+> [`adr/0001-64-slot-token-encoding.md`](adr/0001-64-slot-token-encoding.md).
+> The 806-token vocabulary described below is the old piece-square format;
+> the shipped encoder uses `VOCAB_SIZE = 52`.
+
 - **Status:** Proposed
 - **Date:** 2026-10-03
 - **Scope:** New position encoding (`token_stream`), its encoder/decoder, and the

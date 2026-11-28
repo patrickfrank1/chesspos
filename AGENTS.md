@@ -57,7 +57,8 @@ entity-relationship diagram and runtime flow. Summary:
   training loop.
 - **Encoder** (`src/dataset/token_stream.py`) — `TokenStreamEncoder` is the
   only encoder (no ABC/registry/config); it hardcodes the token stream format:
-  variable-length `int16` segments, vocab of 806 tokens.
+  variable-length `int16` segments of 64 square slots + turn/castle/
+  en-passant, vocab of **52** tokens (64-slot encoding, `docs/adr/0001`).
 
 ## Development Paradigms
 

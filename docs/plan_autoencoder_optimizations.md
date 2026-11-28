@@ -343,7 +343,7 @@ use the **effective** batch or resumed runs will silently re-see data.
 
 | # | change | expected win | risk | status |
 |---|---|---|---|---|
-| 1 | **Chunked cross-entropy** — compute logits+CE in slices over supervised tokens instead of materializing `[tokens, 806]` | memory, not speed: the head is the largest single activation in eval paths | low | **done** — `loss_chunks` / `--loss-chunks`, 8 in the preset; the eval argmax is chunked too (`src/modeling/shared/heads.py`) |
+| 1 | **Chunked cross-entropy** — compute logits+CE in slices over supervised tokens instead of materializing `[tokens, vocab]` | memory, not speed | low | **done** — `loss_chunks` / `--loss-chunks`, 8 in the preset; the eval argmax is chunked too (`src/modeling/shared/heads.py`). Note: with the shipped **52**-token vocabulary the logits are only ~55 MiB bf16 at a 524k-token batch, so this is a guard for wide vocabularies, not a measurable win (the 806 in the original row was the superseded piece-square vocabulary) |
 | 2 | `optimizer.zero_grad(set_to_none=True)` | small, free | none | **already present** in both loops |
 | 3 | `torch.backends.cuda.matmul.allow_tf32 = True` | only affects the fp32 PCA/SVD probes | none | **already covered** by `set_float32_matmul_precision("high")` |
 | 4 | Tune `--num-workers`, `--prefetch-factor` (persistent/pinned already on) | data-side headroom for deeper models | none | **already present**; `cpu_load` is logged every step |

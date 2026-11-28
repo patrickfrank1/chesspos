@@ -292,12 +292,13 @@ already handles file distribution):
 The only encoder, hardcoded into the ETL (no ABC, no registry, no config).
 Variable-length `int16` token segments:
 
-- Vocabulary: `PAD=0, MASK=1, SEP=2, CLS=3`, `TURN_WHITE=4`, `TURN_BLACK=5`,
-  `CASTLE_BASE=6` (base + 4-bit rights mask → 6–21), `EP_BASE=22` (base +
-  square index → 22–37, only when en passant is *legal*), `PIECE_SQUARE_BASE=38`
-  (base + 64·piece_index + square → 38–805), `VOCAB_SIZE=806`.
-- Segment layout: `TURN CASTLE [EP] piece-square*` with piece tokens sorted by
-  square ascending (canonical order).
+- Vocabulary (52 ids, `docs/adr/0001`): `PAD=0, MASK=1, SEP=2, CLS=3`,
+  `EMPTY=4`, `PIECE_BASE=5` (12 piece ids → 5–16), `TURN_WHITE=17`,
+  `TURN_BLACK=18`, `CASTLE_BASE=19` (base + 4-bit rights mask → 19–34),
+  `EP_BASE=35` (base + square offset → 35–51, `EP_NONE` when en passant is not
+  legal), `VOCAB_SIZE=52`.
+- Segment layout (67 tokens): 64 square slots (`EMPTY` or a piece id), then
+  `TURN`, `CASTLE`, `EP`. Packing is `CLS + (segment + SEP) * N`.
 - `encode_batch` returns `(padded (N, L) int16, lengths (N,) int32)`.
 - `decode`/`decode_batch` invert the encoding (round trip is exact against
   `board.epd()`; halfmove/fullmove counters are not encoded).

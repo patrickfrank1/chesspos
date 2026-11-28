@@ -15,8 +15,8 @@ eval batches.
   between per masked token. Example: `val_loss=3.46` → perplexity ≈ 31.8.
 - Probability assigned to the true token: `p = exp(-val_loss)`. Example:
   `val_loss=3.46` → ≈ 3.2%.
-- Baselines: uniform guess over the 806-token vocabulary →
-  `ln(806) ≈ 6.69` (matches the loss seen in the first steps); a perfect
+- Baselines: uniform guess over the 52-token vocabulary →
+  `ln(52) ≈ 3.95` (matches the loss seen in the first steps); a perfect
   model → 0.
 - Monotone and smooth — use it as the primary training/selection signal
   (best checkpoint = lowest `val_loss`).
@@ -25,7 +25,7 @@ eval batches.
 
 Fraction of masked tokens predicted exactly right (argmax equals target).
 
-- Random baseline: 1/806 ≈ 0.12%.
+- Random baseline: 1/52 ≈ 1.9%.
 - Skewed upward by frequent tokens: common piece-square states and special
   tokens recur constantly, so `val_acc` jumps in steps rather than moving
   smoothly. It systematically overstates "position knowledge" — trivial
