@@ -1,17 +1,25 @@
 # Plan: Autoencoder Training Optimizations
 
-Status: proposed (2026-11-24; DCA added 2026-11-28). Goal: raise the
-compute/depth ceiling and the throughput of the attention autoencoder on **one
-48 GB GPU**, without losing `torch.compile` or FlashAttention. P0-P3 lower the
-cost of depth; P4 (DeepCrossAttention) is the one lever that aims to raise the
-quality obtained *per unit* of depth.
+Status: proposed (2026-11-24; DCA added 2026-11-28; priorities revised
+2026-11-28 after the depth probes). Goal: raise the compute ceiling and the
+throughput of the attention autoencoder on **one 48 GB GPU**, without losing
+`torch.compile` or FlashAttention. P0-P3 lower the cost of compute; P4
+(DeepCrossAttention) is the one lever that aims to raise the quality obtained
+*per unit* of depth.
 
 Companion plan: `docs/plan_depth_probing.md` (decides *how much* depth is
-worth buying; this plan decides *how to afford it*).
+worth buying; this plan decides *how to afford it*). Its first pass ran on
+2026-11-28 and the answer is in §1.2-1.5: **depth pays up to about 6-8 encoder
+blocks per token and then flattens**, so freed memory should buy tokens before
+it buys layers. Full tables and artifacts:
+`docs/experiments/depth_probing_2026-11-28.md` (lands with the probe scripts
+from `feature/depth-probing-plan`); §1.2-1.5 below is self-contained.
 
 ---
 
-## 1. Baseline (measured, 6000 Ada 48 GB)
+## 1. Baseline and measured depth value (6000 Ada 48 GB)
+
+### 1.1 Current shape
 
 | item | value |
 |---|---|
@@ -23,21 +31,90 @@ worth buying; this plan decides *how to afford it*).
 | memory model | ~**29.7 MB per block per sample**, ~0.6 GB weights+optimizer+context |
 
 Consequence: at 48 GB the current shape supports ~20 blocks at batch 64 or
-~16 blocks at batch 128. Everything below exists to break that trade-off.
+~16 blocks at batch 128. But §1.3 says only 6-8 encoder blocks are worth
+buying per token, so the trade-off worth breaking is **batch × steps**, not
+depth. Everything below is retargeted at that.
+
+### 1.2 Depth is not saturated inside a converged model
+
+From `best_step96000` of `run_ae_d512l6h8_100k` (6 enc + 3 dec), 128 paired
+windows from three fresh `test/` shards (8 192 games, board masking, seed 17):
+
+| probe | result |
+|---|---|
+| residual drift | no near-identity block; `rel_delta` 0.51-0.65 per block, the last block largest (0.648) |
+| early exit | 0.689 → 0.728 → 0.803 → 0.843 → 0.884 → **0.940**; `k*` = 6, the last block alone +5.6 pt |
+| latent effective rank (99 %) | 74 → 87 → 107 → 124 → 142 → **170** with depth |
+| layer pruning | every block ≥ 2.0 pt; the last block costs the most (**5.64 pt**) |
+
+Read: do not shrink to 4 encoder blocks to save compute. At convergence the
+final block is the single most valuable one to keep.
+
+### 1.3 At a fixed token budget, the marginal arm past 6-8 blocks is calibration
+
+Four matched arms, 5 000 steps at batch 64, only `--n-layers` differs
+(`p_rect 0.34 / p_skip_gram 0.66`, balanced-v1, lr 2e-4, seed 17, compiled
+bf16):
+
+| arm | enc:dec | params | val_loss @5k | val_acc @5k | early-exit acc @full depth | rank 99 % | VRAM @ b64 | step time @ b64 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| D4 | 4:3 | 16.19M | 0.6597 | 0.8421 | 0.8499 | 91 | 15.9 GB | 0.30 s |
+| D6 | 6:3 | 20.40M | 0.6202 | 0.8459 | 0.8608 | 99 | 19.2 GB | 0.35 s |
+| D8 | 8:3 | 24.60M | 0.6237 | 0.8483 | 0.8596 | 101 | 22.5 GB | 0.39 s |
+| D12 | 12:3 | 33.01M | 0.5776 | 0.8494 | 0.8630 | 99 | 29.1 GB | 0.51 s |
+
+- 4 → 6 blocks: −0.040 val loss, +1.1 pt probe accuracy, +8 rank. Real.
+- 6 → 8 blocks: 0.004 **worse** val loss and +0.0 pt top-1 on the probe. Flat
+  at the 0.3 pt noise floor.
+- 8 → 12 blocks: −0.046 val loss but only +0.3 pt on the paired probe (+0.1 pt
+  on the training val set) and rank −2. The extra depth sharpens confidence; it
+  does not add decodable content.
+- Material `R²` on the final latent still rises with arm depth
+  (0.18 / 0.22 / 0.28 / 0.39), so deeper arms do buy attribute information
+  even where reconstruction is flat.
+- VRAM grows ~1.65 GB per encoder block per 64 samples, consistent with the
+  29.7 MB/block/sample model above; step time grows sublinearly (0.30 → 0.51 s
+  from 4 to 12 encoder blocks).
+
+### 1.4 The last block earns its keep late
+
+Pruning the last block costs **5.64 pt at 96 000 steps** but **0.51 pt at
+5 000 steps** in the same 6-layer recipe. Short-horizon arms understate the
+final block, so the 6-8 block knee is a fixed-token result at ~0.37 B tokens
+and must be re-confirmed at the target horizon before it is treated as final
+(the verification matrix in §7 carries the check).
+
+### 1.5 What this changes here
+
+| item | before | after |
+|---|---|---|
+| P0 target shape | `16:4 @ b128` (20 blocks) | **`8:3 @ b256`**; `16:4` demoted to a one-off depth check |
+| where freed memory goes | more depth | **more tokens** (batch first, then steps) |
+| P3 loops | optional capacity lever | test-time-compute / regulariser question, deferred |
+| P4 DCA | main arm at `16:4` | main arm at **9 blocks (6:3)**; 16-block arms secondary |
+| depth acceptance | "does depth still help?" | known to be flat past ~8 enc blocks per token; judge new ideas on wall-clock and tokens |
 
 ---
 
 ## 2. P0 — Activation checkpointing (biggest lever, do first)
 
-**Target.** Keep batch 128 and go to 16-24 blocks. Estimated VRAM with
-checkpointing (stores block inputs, recomputes block internals):
+**Target.** With the measured knee at 6-8 encoder blocks (§1.3), the
+first-class shape is **`8:3` at batch 256**, not `16:4` at batch 128. Measured
+without checkpointing at batch 64: 22.5 GB for `8:3`, i.e. ~45 GB at batch 128
+and OOM at batch 256 — so checkpointing is what buys the token budget. Keep
+batch 128 as the fallback. `16:4` remains a one-off depth check, not a
+production target.
+
+**VRAM with checkpointing** (encoder blocks; stores block inputs, recomputes
+block internals):
 
 | config | stored inputs | live block | total |
 |---|---:|---:|---:|
-| 9 blocks @ b128 (today, no ckpt) | — | — | 34.7 GB (measured) |
-| 16 blocks @ b128 | 4.3 GB | 3.8 GB | **~9 GB** |
-| 24 blocks @ b128 | 6.4 GB | 3.8 GB | **~11 GB** |
-| 32 blocks @ b256 | 17.2 GB | 7.6 GB | **~26 GB** |
+| `6 enc` @ b128 (today, no ckpt) | — | — | 34.7 GB (measured) |
+| **`8 enc` @ b256 (new target)** | 4.3 GB | 7.6 GB | **~13 GB** |
+| `16 enc` @ b128 | 4.3 GB | 3.8 GB | **~9 GB** |
+| `24 enc` @ b128 | 6.4 GB | 3.8 GB | **~11 GB** |
+| `32 enc` @ b256 | 17.2 GB | 7.6 GB | **~26 GB** |
 
 **API contract** (PyTorch 2.8/2.14 docs):
 
@@ -100,7 +177,12 @@ Store it in checkpoint metadata so embedders rebuild the same module graph.
 
 **Cost.** ~+25-30 % step time (one extra block forward per block).
 
-**Acceptance.** 16 enc + 4 dec at batch 128 trains under 48 GB at ≥ 300k tok/s.
+**Acceptance.** Primary: `8:3` (11 blocks, 24.6M params) at **batch 256**
+trains under 48 GB at ≥ 300k padded tok/s. That is the real win over more
+blocks: doubling the batch at the depth knee is worth ~1.5× tokens/s after the
+~30% checkpointing overhead, whereas another 4 blocks were worth ≤ 0.3 pt of
+top-1 at fixed tokens (§1.3). Secondary: 16 enc + 4 dec at batch 128 still fits
+(the depth check from §1.4).
 
 **DCA interaction.** If P4 lands, checkpoint the block **loop** rather than
 each block; a per-block checkpoint would save the depth stack as a block input
@@ -174,27 +256,39 @@ to write it (~30 lines) rather than import it.
   ~one iteration, which is the whole point.
 
 **Why it is optional now.** Once checkpointing exists (§2), memory is no longer
-an argument for loops — depth is affordable directly. Loops remain interesting
-for two reasons: (a) parameter sharing is a strong regulariser and our budget is
-*tokens*, not parameters; (b) **test-time compute scaling**.
+an argument for loops — depth is affordable directly. The depth probes sharpen
+this: at a fixed token budget the marginal encoder block past 8 is worth ≤ 0.3
+pt of top-1 (§1.3), so loops are **not** a cheap route to capacity. They remain
+interesting for two reasons: (a) parameter sharing is a strong regulariser and
+our budget is *tokens*, not parameters; (b) **test-time compute scaling**.
+Ship PR1/PR2 first; only start this if the checkpointed `8:3 @ b256` run leaves
+the loops-vs-depth question open.
 
 **Test-time mode.** `--inference-loops K` evaluated at `K = 1, 2, 3, 4` on a
 fixed pool. If accuracy or `R²_material` rises with `K` at fixed parameters,
 that is a capability a fixed-depth model does not have. Record `n_loops` in
 checkpoint metadata so `feature/position-vector-index` embedders reproduce it.
 
-**Ablation (matched compute, ~5k steps each).**
+**Ablation (matched compute, ~5k steps each).** Target the measured knee
+(§1.3) rather than 12 effective blocks: the question is whether 2 loops × 4
+blocks matches 1 loop × 8 blocks, not whether either reaches 12.
 
 | arm | blocks | loops | effective depth |
 |---|---:|---:|---:|
-| L1 | 12 | 1 | 12 |
-| L2 | 6 | 2 | 12 |
-| L3 | 4 | 3 | 12 |
-| L4 | 6 | 2 (checkpointed) | 12, memory of 6 |
+| L1 | 8 | 1 | 8 (knee baseline) |
+| L2 | 4 | 2 | 8 |
+| L3 | 2 | 4 | 8 |
+| L4 | 4 | 2 (checkpointed) | 8, memory of 4 |
+
+If L1-L4 tie, loops add nothing at the knee; re-run L2 at effective depth 12
+only if a later long-horizon run moves the knee (§1.4).
 
 **Failure mode.** Fixed-point collapse: later iterations converge and compute
-is wasted. Detect with residual drift / early-exit flatness (see plan A, P1/P2)
-and stop the experiment early if `cos(h_loop, h_loop−1) → 1`.
+is wasted. The detectors now exist: run `scripts/probe_residual_drift.py` and
+`scripts/probe_early_exit.py` on looped checkpoints and stop early if
+`cos(h_loop, h_loop−1) → 1` or the exit curve is flat after the second loop.
+Both scripts share `src/evaluation/probes.py` with the depth probes, so their
+numbers are directly comparable to §1.2.
 
 **Instability guard.** If loss spikes with loops ≥ 3, reduce loop LR via
 per-loop scaling or drop to 2 loops; report rather than tune away.
@@ -205,8 +299,15 @@ per-loop scaling or drop to 2 loops; report rather than tune away.
 
 **Status.** Proposed; measure before adopting. DCA is orthogonal to P0-P3: P0
 and P1 make depth affordable, DCA aims to make the depth you buy more
-efficient. Do not start the DCA ablation until activation checkpointing (P0) is
-stable, because the 16-block arm depends on it.
+efficient. The 16-block arms still depend on P0, so land checkpointing before
+them; the 9-block arms (A0-A2) can run without it.
+
+**Revised scope (2026-11-28).** The depth probes (§1.3) put the fixed-token
+knee at 6-8 encoder blocks, so the question is no longer "does routing make 16
+blocks worth it" but "does routing make 9 blocks behave like more". Lead with
+the 9-block arms (A0-A2), which fit without P0; run the 16-block arms (A3-A6)
+as the secondary check. The paper's own caveat still applies: the reported
+gain shrinks with width, and `d_model=512` sits mid-range.
 
 **Source.** Heddes, Javanmard, Axiotis, Fu, Bateni, Mirrokni,
 *DeepCrossAttention: Supercharging Transformer Residual Connections*
@@ -237,10 +338,10 @@ Reported results (LM1B/C4, 6-42 layers, TPU):
 
 Relevance here: our autoencoder squeezes an entire packed window into one
 512-d vector before reconstruction. Any token-level information lost to depth
-dilution cannot be recovered by the decoder or by a downstream probe. The
-encoder is also the part we are trying to deepen. DCA is the only proposal in
-this plan that raises quality **per unit of depth**; the rest only lower the
-price of depth.
+dilution cannot be recovered by the decoder or by a downstream probe. Depth is
+worth buying up to the measured knee of 6-8 encoder blocks (§1.3), and DCA is
+the only proposal in this plan that raises quality **per unit of depth**; the
+rest only lower the price of compute.
 
 Keep expectations calibrated. The evidence is decoder-only language modelling
 on TPUs. The paper's width-scaling table shows the gain shrinking as width
@@ -427,14 +528,20 @@ flash. Use the current packed-window corpus and one fixed validation pool so
 `val_loss` is comparable across arms.
 
 | arm | blocks | routing | stack | purpose |
-|---|---|---:|---:|---|
+|---|---:|---|---:|---|
 | A0 | 9 | standard | — | current baseline |
 | A1 | 9 | GRN-v1 only | 2 | cheapest DenseFormer control; paper's largest single gain |
-| A2 | 9 | DCA | 2 | DCA at the affordable depth |
+| A2 | 9 | DCA | 2 | DCA at the affordable depth — **primary comparison** |
 | A3 | 16 | standard | — | depth bought by P0 |
-| A4 | 16 | DCA | 2 | main candidate |
+| A4 | 16 | DCA | 2 | depth check (secondary) |
 | A5 | 16 | DCA | 0 (full) | cost of completeness |
 | A6 | 16 | DCA, decoder only | 2 | where the gain lives |
+
+Run **A0-A2 first**: they are the 9-block comparison and fit without P0. A3-A6
+are secondary and depend on checkpointing. Because A3 is already known to be
+within noise of A0 on top-1 at fixed tokens (§1.3), the meaningful bars are
+A2 vs A0 at matched wall-clock and A4 vs A3 at matched wall-clock — not raw
+depth against a fixed token count.
 
 - 5k steps per arm, same seed and data order. Report `val_loss` at fixed
   **tokens** and at fixed **wall-clock**; DCA costs ~30% step time, so the two
@@ -474,9 +581,12 @@ architecture.
 ### 6.6 Acceptance for P4
 
 - Baseline and DCA arms differ only by config flags; no per-arm code forks.
-- A4 reaches A3's final `val_loss` in **≤ 0.67× the tokens and ≤ 0.9× the
-  wall-clock**, or improves final `val_loss` by ≥ 2% relative at matched
-  wall-clock.
+- **Primary (9 blocks, reachable without P0):** A2 reaches A0's final
+  `val_loss` in **≤ 0.85× the tokens and ≤ 0.95× the wall-clock**, or improves
+  final `val_loss` by ≥ 1.5% relative at matched wall-clock.
+- **Secondary (16 blocks):** A4 reaches A3's final `val_loss` in **≤ 0.67× the
+  tokens and ≤ 0.9× the wall-clock**, or improves final `val_loss` by ≥ 2%
+  relative at matched wall-clock.
 - `test_r2_material` improves outside the 95% CI, not just reconstruction
   loss.
 - Peak VRAM at `16:4 @ b128` stays under 44 GB with checkpointing; step time
@@ -505,37 +615,47 @@ architecture.
 | DCA param overhead | count at `d=512, k=2` | < 1% |
 | DCA memory | peak VRAM with `S=4`, 16 blocks | no `S×` scaling; ≤ 44 GB |
 | DCA throughput | `tokens/s` at `16:4 @ b128` | ≥ 220k (≤ 1.35× step time) |
+| depth knee at the target horizon | `scripts/probe_early_exit.py` + `scripts/probe_layer_pruning.py` on the final checkpoint | `k*` = full depth and every block ≥ 0.5 pt, i.e. the §1.3 knee has not moved |
 
 ---
 
 ## 8. Rollout (one PR each, all from `main`)
 
 1. **PR1 — activation checkpointing** (+ config, flags, 4 tests, docs).
-   Immediately unlocks `16:4 @ batch 128`.
+   Unlocks the new primary shape **`8:3` @ batch 256**; the `16:4 @ b128` run
+   stays as the depth check.
 2. **PR2 — gradient accumulation** (+ effective-batch resume fix, 3 tests).
+   Also the fallback route to a large effective batch if `b256` is tight.
 3. **PR3 — chunked CE, `zero_grad(set_to_none=True)`, dataloader tuning**
    (memory/latency only; no numerics change).
 4. **PR4 — DeepCrossAttention** (GRN-v3, DCA block, config flags, 10 tests,
-   loop-level checkpoint integration, ablation report). Ships disabled by
-   default; promote only if §6.6 passes.
-5. **PR5 — looped encoder** (optional; only if plan A's P1-P3 leave the
-   depth-vs-loops question open). If both P3 and P4 land, the looped encoder
-   resets the DCA stack at each iteration.
+   loop-level checkpoint integration, ablation report). Lead with the 9-block
+   arms A0-A2; run A3-A6 only if A2 wins. Ships disabled by default; promote
+   only if §6.6 passes.
+5. **PR5 — looped encoder** (optional; only if the checkpointed `8:3 @ b256`
+   run and P4 leave the depth-vs-loops question open). If both P3 and P4 land,
+   the looped encoder resets the DCA stack at each iteration.
 
 Each PR runs the verification matrix on a fresh box before merge; PR1 and PR2
-also get a real 200-step smoke run at `16:4 @ batch 128` to confirm the
-throughput and memory estimates on hardware rather than on paper.
+also get a real 200-step smoke run at `8:3 @ b256` (plus one `16:4 @ b128`
+smoke for the depth check) to confirm the throughput and memory estimates on
+hardware rather than on paper.
 
 ---
 
 ## 9. Success metrics
 
-- `16:4` (4:1, 20 blocks, 43.5M params) trains at batch 128 under 48 GB.
-- ≥ 300k padded tok/s at that shape (i.e. checkpointing overhead < 35 %).
+- **Primary shape (revised 2026-11-28):** `8:3` (11 blocks, 24.6M params) at
+  **batch 256** under 48 GB, at ≥ 300k padded tok/s (checkpointing overhead
+  < 35 %).
+- Secondary: `16:4` (20 blocks, 43.5M params) at batch 128 still fits, for the
+  one-off depth re-check (§1.4).
 - Zero recompilation growth across 1k steps; FlashAttention used on both passes.
 - Equivalence tests prove checkpointing and accumulation are numerically inert.
+- The depth knee holds at the target horizon: full-depth `k*` and every block
+  ≥ 0.5 pt of pruning cost.
 - If P3 lands: a measured accuracy-vs-inference-loop curve for the looped model.
-- If P4 lands: A4 reaches A3's `val_loss` in ≤ 0.67× tokens and ≤ 0.9×
-  wall-clock, `test_r2_material` improves outside the 95% CI, and the 16:4
-  shape still fits under 44 GB at ≥ 220k tok/s. Otherwise the negative result
-  is recorded and `dca` stays off.
+- If P4 lands: A2 beats A0 at matched wall-clock (9 blocks), A4 beats A3 at
+  matched wall-clock (16 blocks), `test_r2_material` improves outside the 95%
+  CI, and the `16:4` shape still fits under 44 GB at ≥ 220k tok/s. Otherwise
+  the negative result is recorded and `dca` stays off.
