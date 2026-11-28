@@ -1190,7 +1190,7 @@ def main() -> None:
                     content_hidden_fn=content_hidden_fn,
                 )
             (loss / accum_steps).backward()
-            step_loss += loss.item()
+            step_loss += loss.item() / accum_steps
             for key, value in components.items():
                 running_components[key] = (
                     running_components.get(key, 0.0) + value.item() / accum_steps
