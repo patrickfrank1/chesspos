@@ -112,11 +112,63 @@ block is the largest, not zero.**
 
 ## P5 — Depth sweep
 
-`scripts/…` → 4 / 6 / 8 / 12 encoder layers, 5000 steps, batch 64,
-`p_rect 0.34 / p_skip_gram 0.66`, balanced-v1, lr 2e-4, warmup 500, seed 17,
-compiled bf16 on an RTX 6000 Ada.
+Four matched arms, 5000 steps each, batch 64, `p_rect 0.34 / p_skip_gram
+0.66`, `balanced-v1` token weights, lr 2e-4, warmup 500, seed 17, compiled
+bf16 on one RTX 6000 Ada (vast.ai instance 63013073). Only `--n-layers`
+varies (4 / 6 / 8 / 12 encoder blocks; 3 decoder blocks in every arm).
+
+```bash
+python3 -m src.run.train_masked_transformer \
+  --model-arch attention_autoencoder \
+  --n-layers $N --n-decoder-layers 3 \
+  --d-model 512 --n-heads 8 --d-ff 1024 --latent-dim 512 \
+  --token-weight-preset balanced-v1 --p-rect 0.34 --p-skip-gram 0.66 \
+  --data-repo patrickfrank1/chess-positions --data-cache data/hf-cache \
+  --stream-shards --streaming --stream-shard-cache data/hf-shards \
+  --num-workers 12 --steps 5000 --batch-size 64 --lr 2e-4 --warmup 500 \
+  --max-seq-len 2048 --max-segments 30 --seed 17 \
+  --log-every 100 --eval-every 1000 --eval-batches 20 --save-every 1000 \
+  --bf16 --compile --no-resume-data-skip \
+  --checkpoint-dir data/models/depth_sweep/N$N \
+  --log-file data/models/depth_sweep/N$N/train.log \
+  --upload-bucket patrickfrank1/chesspos-checkpoints \
+  --upload-prefix depth_sweep/N$N
+```
+
+| arm | encoder blocks | params | val loss @1k | @2k | @3k | @4k | @5k | val acc @5k |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| D4 | 4 | 16.19M | 0.9369 | 0.7473 | 0.6964 | 0.6691 | **0.6597** | 0.8421 |
+| D6 | 6 | 20.40M | 0.9318 | 0.7411 | 0.6675 | 0.6279 | **0.6202** | 0.8459 |
+| D8 | 8 | 24.60M | 0.9165 | 0.7398 | 0.6604 | 0.6321 | **0.6237** | 0.8483 |
+| D12 | 12 | 33.01M | 0.8992 | 0.7110 | 0.6310 | 0.5889 | **0.5776** | 0.8494 |
 
 <!-- P5 table -->
+
+### Response probes on each arm (5 000-step checkpoints)
+
+Early-exit masked accuracy (128 paired windows, board masking):
+
+| arm | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| D4 | 0.7130 | 0.7702 | 0.8094 | **0.8457** | | | | |
+| D6 | 0.6674 | 0.7448 | 0.7902 | 0.8236 | 0.8557 | **0.8608** | | |
+| D8 | 0.6923 | 0.7385 | 0.7633 | 0.7895 | 0.8137 | 0.8335 | 0.8527 | **0.8590** |
+
+Residual drift (`rel_delta` per block) on the same checkpoints:
+
+| arm | deltas |
+|---|---|
+| D4 | 0.322, 0.322, 0.267, 0.337 |
+| D6 | 0.295, 0.294, 0.260, 0.280, 0.241, 0.310 |
+| D8 | 0.286, 0.269, 0.270, 0.252, 0.229, 0.246, 0.236, 0.239 |
+
+Even a 5 000-step model still gains from *every* block in the early-exit
+curve, but the last-block gain shrinks with depth (+2.9 pt at D4, +0.5 pt at
+D6, +0.6 pt at D8), and in D8 the trailing blocks are the quietest ones — the
+first sign of saturation in the whole set of cheap probes.
+
+
+
 
 ## Verdict per §1 row
 

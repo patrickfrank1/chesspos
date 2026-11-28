@@ -297,7 +297,8 @@ def truncate(
 def effective_rank(explained: torch.Tensor, threshold: float) -> int:
     """Smallest ``k`` whose leading components reach the variance threshold."""
     cumulative = torch.cumsum(explained, dim=0)
-    return int(torch.searchsorted(cumulative, torch.tensor(threshold)).item()) + 1
+    target = torch.tensor(threshold, dtype=cumulative.dtype, device=cumulative.device)
+    return int(torch.searchsorted(cumulative, target).item()) + 1
 
 
 @torch.no_grad()

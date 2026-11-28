@@ -15,6 +15,7 @@ from src.dataset.token_stream import (
 from src.evaluation.probes import (
     accuracy_counts,
     counts_to_metrics,
+    effective_rank,
     depth_accuracy,
     encoder_states,
     latent_from_state,
@@ -161,6 +162,16 @@ def test_truncate_at_full_rank_is_the_identity():
     # Then the matrix is returned unchanged
     with then("truncation is lossless"):
         assert torch.allclose(restored, matrix, atol=1e-5)
+
+
+def test_effective_rank_counts_components_to_reach_the_threshold():
+    # Given a variance profile that reaches 99 % only at the last component
+    explained = torch.tensor([0.5, 0.3, 0.15, 0.05])
+
+    # When the effective rank is taken at two thresholds
+    with then("the rank matches the cumulative variance"):
+        assert effective_rank(explained, 0.90) == 3
+        assert effective_rank(explained, 0.99) == 4
 
 
 def test_accuracy_counts_split_piece_and_scalar_tokens():
